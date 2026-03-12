@@ -1,7 +1,6 @@
 name: Sports Betting Automation
 
 on:
-  # Manual trigger from the GitHub Actions UI.
   workflow_dispatch:
     inputs:
       sport:
@@ -14,12 +13,9 @@ on:
           - nba
           - nfl
           - nhl
-
-  # Daily scheduled trigger (UTC). Adjust as needed.
   schedule:
     - cron: "0 9 * * *"
 
-# Prevent overlapping runs for the same branch/workflow.
 concurrency:
   group: sports-betting-${{ github.ref }}
   cancel-in-progress: false
@@ -29,9 +25,6 @@ jobs:
     name: Run sports betting algorithm
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
-    # Placeholder secrets/environment values.
-    # Add these in GitHub: Settings -> Secrets and variables -> Actions.
     env:
       PYTHONUNBUFFERED: "1"
       BETTING_API_KEY: ${{ secrets.BETTING_API_KEY }}
@@ -41,13 +34,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-          # Pip cache uses requirements.txt checksum to speed repeat runs.
           cache: pip
           cache-dependency-path: requirements.txt
 
@@ -58,11 +50,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Ensure required folders exist
+      - name: Ensure output folder exists
         shell: bash
         run: |
           set -euxo pipefail
           mkdir -p "$OUTPUT_DIR"
+          echo "OUTPUT_DIR=$OUTPUT_DIR"
 
       - name: Select algorithm run command
         id: run_cmd
@@ -71,7 +64,6 @@ jobs:
           set -euo pipefail
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            # Scheduled runs default to all sports.
             SPORT_MODE="all"
           else
             SPORT_MODE="${{ github.event.inputs.sport || 'all' }}"
@@ -107,20 +99,52 @@ jobs:
           echo "Executing: ${{ steps.run_cmd.outputs.command }}"
           ${{ steps.run_cmd.outputs.command }}
 
-      - name: Upload output artifacts
+      - name: Debug filesystem state
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: betting-outputs-${{ github.run_id }}-${{ steps.run_cmd.outputs.sport_mode || 'unknown' }}
-          path: |
-            data/outputs/**
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Failure summary
-        if: failure()
         shell: bash
         run: |
-          echo "❌ Sports betting workflow failed."
-          echo "Check logs above and confirm configuration, dependencies, and secrets."
-          echo "Run mode attempted: ${{ steps.run_cmd.outputs.sport_mode || 'unknown' }}"
+          set +e
+          echo "===== pwd ====="
+          pwd
+          echo "===== ls -R ====="
+          ls -R
+          echo "===== find . -type f ====="
+          find . -type f | sort
+          echo "===== find data/outputs -type f ====="
+          find data/outputs -type f | sort
+
+      - name: Validate expected output files exist
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REQUIRED_FILES=(
+            "data/outputs/predictions.csv"
+            "data/outputs/recommended_bets.csv"
+            "data/outputs/daily_report.txt"
+          )
+
+          MISSING=0
+          for f in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "Missing required output: $f"
+              MISSING=1
+            else
+              echo "Found required output: $f"
+            fi
+          done
+
+          if [ "$MISSING" -ne 0 ]; then
+            echo "One or more required outputs are missing."
+            exit 1
+          fi
+
+      - name: Upload output artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: betting-outputs-${{ github.run_id }}-${{ steps.run_cmd.outputs.sport_mode || 'unknown' }}
+          path: data/outputs/**
+          if-no-files-found: error
+          retention-days: 14
