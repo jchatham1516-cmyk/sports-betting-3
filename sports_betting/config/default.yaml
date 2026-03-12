@@ -1,0 +1,40 @@
+sports_enabled:
+  - nba
+  - nfl
+  - nhl
+
+logging:
+  level: INFO
+
+bankroll:
+  bankroll: 10000
+  unit_size: 100
+  stake_mode: fractional_kelly
+  kelly_fraction: 0.25
+  max_units_per_bet: 2.0
+
+thresholds:
+  nba:
+    moneyline: {min_edge: 0.02, min_ev: 0.01, min_confidence: 0.58}
+    spread:    {min_edge: 0.025, min_ev: 0.01, min_confidence: 0.60}
+    total:     {min_edge: 0.025, min_ev: 0.01, min_confidence: 0.60}
+  nfl:
+    moneyline: {min_edge: 0.018, min_ev: 0.012, min_confidence: 0.60}
+    spread:    {min_edge: 0.022, min_ev: 0.012, min_confidence: 0.62}
+    total:     {min_edge: 0.022, min_ev: 0.012, min_confidence: 0.62}
+  nhl:
+    moneyline: {min_edge: 0.02, min_ev: 0.01, min_confidence: 0.58}
+    spread:    {min_edge: 0.02, min_ev: 0.01, min_confidence: 0.58}
+    total:     {min_edge: 0.02, min_ev: 0.01, min_confidence: 0.58}
+
+output:
+  top_n: 10
+  formats: [csv, json]
+
+backtest:
+  start_date: "2022-10-01"
+  end_date: "2025-01-01"
+
+apis:
+  odds_provider_key: "YOUR_API_KEY"
+  injury_provider_key: "YOUR_API_KEY"
