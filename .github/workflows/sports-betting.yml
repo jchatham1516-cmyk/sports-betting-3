@@ -101,6 +101,16 @@ jobs:
           echo "sport_mode=$SPORT_MODE" >> "$GITHUB_OUTPUT"
           echo "command=$CMD" >> "$GITHUB_OUTPUT"
 
+      - name: Preflight validate historical inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.run_cmd.outputs.sport_mode }}" = "all" ]; then
+            python -m sports_betting.scripts.preflight --sports nba nfl nhl
+          else
+            python -m sports_betting.scripts.preflight --sports "${{ steps.run_cmd.outputs.sport_mode }}"
+          fi
+
       - name: Run betting algorithm
         shell: bash
         run: |

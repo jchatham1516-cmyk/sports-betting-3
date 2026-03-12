@@ -16,6 +16,7 @@ import pandas as pd
 
 ROOT = Path("sports_betting/data")
 LOGGER = logging.getLogger(__name__)
+SUPPORTED_SPORTS = ("nba", "nfl", "nhl")
 
 SPORT_TO_ODDS_API_KEY = {
     "nba": "basketball_nba",
@@ -74,9 +75,87 @@ FEATURE_COLUMNS_BY_SPORT = {
     ],
 }
 
+TARGET_COLUMNS = ["home_win", "home_cover", "over_hit"]
+
+
+def historical_file_path(sport: str) -> Path:
+    return ROOT / "historical" / f"{sport}_historical.csv"
+
+
+def model_artifact_path(sport: str) -> Path:
+    return ROOT / "models" / f"{sport}_model.pkl"
+
+
+def required_historical_columns(sport: str) -> list[str]:
+    if sport not in FEATURE_COLUMNS_BY_SPORT:
+        raise ValueError(f"Unsupported sport '{sport}'. Supported sports: {', '.join(sorted(FEATURE_COLUMNS_BY_SPORT))}")
+    return sorted(set(FEATURE_COLUMNS_BY_SPORT[sport] + ["spread_line", "total_line"] + TARGET_COLUMNS))
+
+
+def _normalize_sports(sports: list[str] | tuple[str, ...] | None) -> list[str]:
+    normalized = list(sports) if sports else list(SUPPORTED_SPORTS)
+    unknown = [sport for sport in normalized if sport not in SUPPORTED_SPORTS]
+    if unknown:
+        raise ValueError(f"Unsupported sport(s): {', '.join(unknown)}. Supported: {', '.join(SUPPORTED_SPORTS)}")
+    return normalized
+
+
+def validate_historical_requirements(
+    sports: list[str] | tuple[str, ...] | None = None,
+    allow_model_artifacts: bool = True,
+    validate_schema: bool = True,
+) -> None:
+    sports_to_check = _normalize_sports(sports)
+    missing_messages: list[str] = []
+    schema_messages: list[str] = []
+
+    for sport in sports_to_check:
+        hist_path = historical_file_path(sport)
+        artifact_path = model_artifact_path(sport)
+        hist_exists = hist_path.exists()
+        artifact_exists = artifact_path.exists()
+
+        if not hist_exists and not (allow_model_artifacts and artifact_exists):
+            missing_messages.append(
+                f"- {sport.upper()}: missing both historical CSV ({hist_path}) and trained model artifact ({artifact_path})."
+            )
+            continue
+
+        if validate_schema and hist_exists:
+            df = pd.read_csv(hist_path, nrows=5)
+            required_cols = required_historical_columns(sport)
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                schema_messages.append(
+                    f"- {sport.upper()}: {hist_path} is missing columns: {', '.join(missing_cols)}"
+                )
+
+    if missing_messages or schema_messages:
+        details = [
+            "Historical data preflight failed.",
+            "Required historical CSV files:",
+            *(f"- {sport.upper()}: {historical_file_path(sport)}" for sport in sports_to_check),
+            "",
+            "Required trained model artifacts (alternative to CSV at runtime):",
+            *(f"- {sport.upper()}: {model_artifact_path(sport)}" for sport in sports_to_check),
+            "",
+            "Required historical CSV schema by sport:",
+        ]
+        for sport in sports_to_check:
+            details.append(f"- {sport.upper()}: {', '.join(required_historical_columns(sport))}")
+        if missing_messages:
+            details.extend(["", "Missing data/model files:", *missing_messages])
+        if schema_messages:
+            details.extend(["", "Schema issues:", *schema_messages])
+        raise RuntimeError("\n".join(details))
+
 
 def _is_test_mode() -> bool:
     return os.getenv("TEST_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def is_test_mode() -> bool:
+    return _is_test_mode()
 
 
 def load_csv_or_empty(path: Path) -> pd.DataFrame:
@@ -233,7 +312,7 @@ def fetch_live_daily_odds(sport: str) -> pd.DataFrame:
 
 
 def load_historical_and_daily(sport: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    hist_path = ROOT / "historical" / f"{sport}_historical.csv"
+    hist_path = historical_file_path(sport)
     daily_path = ROOT / "raw" / f"{sport}_daily.csv"
 
     historical = load_csv_or_empty(hist_path)
@@ -247,10 +326,17 @@ def load_historical_and_daily(sport: str) -> tuple[pd.DataFrame, pd.DataFrame]:
             daily = generate_sample_data(sport, rows=12)
         return historical, daily
 
-    if historical.empty:
+    if historical.empty and not model_artifact_path(sport).exists():
         raise RuntimeError(
             f"[{sport.upper()}] Missing historical file at {hist_path}. "
-            "Live mode does not auto-generate synthetic training data."
+            "Live mode does not auto-generate synthetic training data and no trained model artifact was found."
+        )
+
+    if historical.empty:
+        LOGGER.warning(
+            "[%s] Historical CSV missing but model artifact is present at %s. Skipping in-run retraining.",
+            sport.upper(),
+            model_artifact_path(sport),
         )
 
     daily = fetch_live_daily_odds(sport)
