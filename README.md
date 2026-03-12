@@ -65,6 +65,31 @@ Outputs:
 - `sports_betting/data/outputs/daily_card.txt`
 - `sports_betting/data/outputs/backtest_summary.csv`
 
+### Production model behavior
+- Live daily runs now **prefer loading saved model artifacts** at:
+  - `sports_betting/data/models/nba_model.pkl`
+  - `sports_betting/data/models/nfl_model.pkl`
+  - `sports_betting/data/models/nhl_model.pkl`
+- If an artifact for a sport is missing, the app trains from that sport's historical CSV and saves a new artifact.
+- Preflight remains strict and will fail when both historical CSV and model artifact are missing.
+
+## Train and save model artifacts
+```bash
+python -m sports_betting.scripts.train_models --sports nba nfl nhl
+```
+
+Per-sport examples:
+```bash
+python -m sports_betting.scripts.train_models --sports nba
+python -m sports_betting.scripts.train_models --sports nfl
+python -m sports_betting.scripts.train_models --sports nhl
+```
+
+Validate production inputs before daily runs:
+```bash
+python -m sports_betting.scripts.preflight --sports nba nfl nhl
+```
+
 ## Run tests
 ```bash
 pytest sports_betting/tests -q
