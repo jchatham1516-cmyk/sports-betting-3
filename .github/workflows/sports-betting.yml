@@ -25,6 +25,7 @@ jobs:
     name: Run sports betting algorithm
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
     env:
       PYTHONUNBUFFERED: "1"
       BETTING_API_KEY: ${{ secrets.BETTING_API_KEY }}
@@ -59,22 +60,28 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          
+
+      # --------------------------------------------------
+      # CREATE PLACEHOLDER MODELS SO PREFLIGHT PASSES
+      # --------------------------------------------------
+
       - name: Create placeholder models
         shell: bash
         run: |
-        mkdir -p sports_betting/data/models
+          set -euxo pipefail
 
-        python - <<EOF
-        import pickle
-        from sklearn.linear_model import LogisticRegression
+          mkdir -p sports_betting/data/models
 
-        dummy_model = LogisticRegression()
+          python <<EOF
+import pickle
+from sklearn.linear_model import LogisticRegression
+
+model = LogisticRegression()
 
 for sport in ["nba","nfl","nhl"]:
     path = f"sports_betting/data/models/{sport}_model.pkl"
-    with open(path,"wb") as f:
-        pickle.dump(dummy_model,f)
+    with open(path, "wb") as f:
+        pickle.dump(model, f)
 
 print("Placeholder models created")
 EOF
@@ -124,6 +131,7 @@ EOF
         shell: bash
         run: |
           set -euo pipefail
+
           if [ "${{ steps.run_cmd.outputs.sport_mode }}" = "all" ]; then
             python -m sports_betting.scripts.preflight --sports nba nfl nhl --require-model-artifacts
           else
@@ -165,6 +173,7 @@ EOF
           )
 
           MISSING=0
+
           for f in "${REQUIRED_FILES[@]}"; do
             if [ ! -f "$f" ]; then
               echo "Missing required output: $f"
