@@ -3,7 +3,7 @@
 Production-oriented, modular Python framework for disciplined, data-driven daily betting recommendations.
 
 ## What this system does
-- Ingests daily schedules + odds (CSV-based in this starter, API-ready by design).
+- Ingests live daily schedules + odds from The Odds API (no implicit mock fallback in live mode).
 - Trains interpretable probability models per sport and market (moneyline/spread/totals).
 - Calibrates probabilities with isotonic calibration.
 - Computes no-vig market probability, edge, and expected value.
@@ -82,7 +82,7 @@ Required base fields:
 - labels for training historical: `home_win, home_cover, over_hit`
 - feature columns: defined per sport model in each `model.py`
 
-If files are missing, synthetic data is generated so pipeline remains runnable.
+If files are missing in live mode, the run fails fast. Synthetic data is only allowed when `TEST_MODE=true`.
 
 ## Configuration and tuning
 Edit `sports_betting/config/default.yaml`:
@@ -107,3 +107,12 @@ Edit `sports_betting/config/default.yaml`:
 - Current backtest summary uses EV-proxy result grading unless realized outcomes are provided.
 - Injury/lineup/goaltender certainty filters are scaffolded via features and flags; production requires robust live data integrations.
 - Closing line value tracking requires line snapshots over time (to add in next iteration).
+
+
+## Live Odds API requirements
+- Required GitHub secret: `ODDS_API_KEY`
+- Optional local env: `TEST_MODE=true` to explicitly enable synthetic demo fallback for development only
+- Live mode (`TEST_MODE=false`, default) will:
+  - fetch daily odds from The Odds API per sport (`nba`, `nfl`, `nhl`)
+  - fail if `ODDS_API_KEY` is missing
+  - fail if no usable live events/markets are returned
