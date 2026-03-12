@@ -150,6 +150,25 @@ def validate_historical_requirements(
         raise RuntimeError("\n".join(details))
 
 
+def validate_model_artifacts_exist(
+    sports: list[str] | tuple[str, ...] | None = None,
+) -> None:
+    sports_to_check = _normalize_sports(sports)
+    missing = [sport for sport in sports_to_check if not model_artifact_path(sport).exists()]
+    if not missing:
+        return
+
+    details = [
+        "Model artifact preflight failed.",
+        "Required trained model artifacts:",
+        *(f"- {sport.upper()}: {model_artifact_path(sport)}" for sport in sports_to_check),
+        "",
+        "Missing artifacts:",
+        *(f"- {sport.upper()}: {model_artifact_path(sport)}" for sport in missing),
+    ]
+    raise RuntimeError("\n".join(details))
+
+
 def _is_test_mode() -> bool:
     return os.getenv("TEST_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
 

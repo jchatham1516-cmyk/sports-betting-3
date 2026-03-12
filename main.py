@@ -17,6 +17,7 @@ from sports_betting.scripts.data_io import (
     load_historical_and_daily,
     model_artifact_path,
     validate_historical_requirements,
+    validate_model_artifacts_exist,
 )
 from sports_betting.sports.common.logging_utils import setup_logging
 from sports_betting.sports.common.reporting import render_daily_card, save_dataframe, save_recommendations_json
@@ -90,6 +91,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     live_mode = not is_test_mode()
     if live_mode:
         validate_historical_requirements(sports=sports_to_run, allow_model_artifacts=True, validate_schema=True)
+        validate_model_artifacts_exist(sports=sports_to_run)
 
     total_games_processed = 0
 
@@ -100,14 +102,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         total_games_processed += len(daily)
 
         artifact_path = model_artifact_path(sport_name)
-        if live_mode and artifact_path.exists():
+        if live_mode:
             model.load_artifact(artifact_path)
             logger.info("Loaded trained %s model artifact: %s", sport_name.upper(), artifact_path)
         else:
             model.train(historical)
-            if live_mode:
-                model.save_artifact(artifact_path)
-                logger.info("Trained and saved %s model artifact: %s", sport_name.upper(), artifact_path)
 
         preds = model.predict_daily(daily)
         logger.info("%s games processed for %s (%s predictions generated)", len(daily), sport_name, len(preds))

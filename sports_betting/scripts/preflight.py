@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from sports_betting.scripts.data_io import validate_historical_requirements
+from sports_betting.scripts.data_io import validate_historical_requirements, validate_model_artifacts_exist
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,6 +21,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Require historical CSV files even if trained model artifacts exist.",
     )
+    parser.add_argument(
+        "--require-model-artifacts",
+        action="store_true",
+        help="Require pre-trained .pkl model artifacts for all requested sports.",
+    )
     return parser.parse_args()
 
 
@@ -31,6 +36,8 @@ def main() -> None:
         allow_model_artifacts=not args.require_historical_csv,
         validate_schema=True,
     )
+    if args.require_model_artifacts:
+        validate_model_artifacts_exist(sports=args.sports)
     print("Preflight validation passed.")
 
 

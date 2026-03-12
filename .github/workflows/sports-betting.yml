@@ -106,9 +106,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ steps.run_cmd.outputs.sport_mode }}" = "all" ]; then
-            python -m sports_betting.scripts.preflight --sports nba nfl nhl
+            python -m sports_betting.scripts.preflight --sports nba nfl nhl --require-model-artifacts
           else
-            python -m sports_betting.scripts.preflight --sports "${{ steps.run_cmd.outputs.sport_mode }}"
+            python -m sports_betting.scripts.preflight --sports "${{ steps.run_cmd.outputs.sport_mode }}" --require-model-artifacts
           fi
 
       - name: Run betting algorithm
@@ -134,7 +134,7 @@ jobs:
           find data/outputs -type f | sort
 
       - name: Validate expected output files exist
-        if: always()
+        if: success()
         shell: bash
         run: |
           set -euo pipefail
@@ -161,7 +161,7 @@ jobs:
           fi
 
       - name: Upload output artifacts
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v6
         with:
           name: betting-outputs-${{ github.run_id }}-${{ steps.run_cmd.outputs.sport_mode || 'unknown' }}
