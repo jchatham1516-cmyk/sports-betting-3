@@ -49,3 +49,16 @@ def test_validate_historical_requirements_validates_schema(temp_data_root):
     with pytest.raises(RuntimeError) as exc:
         data_io.validate_historical_requirements(sports=["nba"], allow_model_artifacts=False)
     assert "missing columns: home_win" in str(exc.value)
+
+
+def test_validate_model_artifacts_exist_reports_missing(temp_data_root):
+    with pytest.raises(RuntimeError) as exc:
+        data_io.validate_model_artifacts_exist(sports=["nba"])
+    assert "Missing artifacts" in str(exc.value)
+
+
+def test_validate_model_artifacts_exist_accepts_present_artifact(temp_data_root):
+    artifact = data_io.model_artifact_path("nba")
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"placeholder")
+    data_io.validate_model_artifacts_exist(sports=["nba"])
