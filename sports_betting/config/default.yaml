@@ -38,3 +38,10 @@ backtest:
 apis:
   odds_provider_key: "YOUR_API_KEY"
   injury_provider_key: "YOUR_API_KEY"
+
+mode:
+  test_mode: false
+
+odds_api:
+  provider: the-odds-api
+  require_live_data: true

@@ -30,6 +30,7 @@ jobs:
       BETTING_API_KEY: ${{ secrets.BETTING_API_KEY }}
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
       MODEL_ENV: production
+      TEST_MODE: "false"
       OUTPUT_DIR: data/outputs
 
     steps:
@@ -42,6 +43,15 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: requirements.txt
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${ODDS_API_KEY:-}" ]; then
+            echo "ODDS_API_KEY is required for live odds ingestion."
+            exit 1
+          fi
 
       - name: Install dependencies
         shell: bash
