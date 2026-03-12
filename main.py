@@ -12,7 +12,12 @@ import pandas as pd
 
 from sports_betting.backtesting.engine import summarize_backtest
 from sports_betting.config.settings import load_config
-from sports_betting.scripts.data_io import load_historical_and_daily
+from sports_betting.scripts.data_io import (
+    is_test_mode,
+    load_historical_and_daily,
+    model_artifact_path,
+    validate_historical_requirements,
+)
 from sports_betting.sports.common.logging_utils import setup_logging
 from sports_betting.sports.common.reporting import render_daily_card, save_dataframe, save_recommendations_json
 from sports_betting.sports.common.risk import BankrollConfig
@@ -82,6 +87,10 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     logger.info("Sports selected for this run: %s", ", ".join(sports_to_run))
 
+    live_mode = not is_test_mode()
+    if live_mode:
+        validate_historical_requirements(sports=sports_to_run, allow_model_artifacts=True, validate_schema=True)
+
     total_games_processed = 0
 
     for sport_name in sports_to_run:
@@ -89,7 +98,17 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         model = choose_model(sport_name)
         historical, daily = load_historical_and_daily(sport_name)
         total_games_processed += len(daily)
-        model.train(historical)
+
+        artifact_path = model_artifact_path(sport_name)
+        if live_mode and historical.empty:
+            model.load_artifact(artifact_path)
+            logger.info("Loaded trained %s model artifact: %s", sport_name.upper(), artifact_path)
+        else:
+            model.train(historical)
+            if live_mode:
+                model.save_artifact(artifact_path)
+                logger.info("Trained and saved %s model artifact: %s", sport_name.upper(), artifact_path)
+
         preds = model.predict_daily(daily)
         logger.info("%s games processed for %s (%s predictions generated)", len(daily), sport_name, len(preds))
 

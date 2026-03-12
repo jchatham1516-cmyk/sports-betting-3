@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pickle
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
@@ -100,6 +103,41 @@ class NBAModel(SportModel):
             "total_brier": tt_brier,
             "total_logloss": tt_log,
         }
+
+    def save_artifact(self, path: Path) -> None:
+        payload = {
+            "sport": self.sport,
+            "win_features": self.WIN_FEATURES,
+            "spread_features": self.SPREAD_FEATURES,
+            "total_features": self.TOTAL_FEATURES,
+            "moneyline_model": self.moneyline_model,
+            "spread_model": self.spread_model,
+            "total_model": self.total_model,
+            "moneyline_cal": self.moneyline_cal,
+            "spread_cal": self.spread_cal,
+            "total_cal": self.total_cal,
+            "metrics": self.metrics,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as f:
+            pickle.dump(payload, f)
+
+    def load_artifact(self, path: Path) -> None:
+        with path.open("rb") as f:
+            payload = pickle.load(f)
+
+        if payload.get("sport") != self.sport:
+            raise ValueError(
+                f"Model artifact sport mismatch for {path}: expected {self.sport}, got {payload.get('sport')}"
+            )
+
+        self.moneyline_model = payload["moneyline_model"]
+        self.spread_model = payload["spread_model"]
+        self.total_model = payload["total_model"]
+        self.moneyline_cal = payload["moneyline_cal"]
+        self.spread_cal = payload["spread_cal"]
+        self.total_cal = payload["total_cal"]
+        self.metrics = payload.get("metrics", {})
 
     def _confidence(self, edge: float, quality: float, feature_completeness: float) -> float:
         conf = 0.50 + min(0.30, abs(edge) * 3.0) + 0.10 * quality + 0.10 * feature_completeness
