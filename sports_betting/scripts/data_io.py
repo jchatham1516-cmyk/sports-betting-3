@@ -165,6 +165,9 @@ def validate_model_artifacts_exist(
         "",
         "Missing artifacts:",
         *(f"- {sport.upper()}: {model_artifact_path(sport)}" for sport in missing),
+        "",
+        "Generate missing artifacts with:",
+        f"- python -m sports_betting.scripts.train_models --sports {' '.join(missing)}",
     ]
     raise RuntimeError("\n".join(details))
 
