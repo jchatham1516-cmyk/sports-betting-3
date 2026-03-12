@@ -59,6 +59,25 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          
+      - name: Create placeholder models
+        shell: bash
+        run: |
+        mkdir -p sports_betting/data/models
+
+        python - <<EOF
+        import pickle
+        from sklearn.linear_model import LogisticRegression
+
+        dummy_model = LogisticRegression()
+
+for sport in ["nba","nfl","nhl"]:
+    path = f"sports_betting/data/models/{sport}_model.pkl"
+    with open(path,"wb") as f:
+        pickle.dump(dummy_model,f)
+
+print("Placeholder models created")
+EOF
 
       - name: Ensure output folder exists
         shell: bash
