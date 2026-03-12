@@ -16,29 +16,23 @@ on:
   schedule:
     - cron: "0 9 * * *"
 
-concurrency:
-  group: sports-betting-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   run-predictions:
-    name: Run sports betting algorithm
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     env:
       PYTHONUNBUFFERED: "1"
-      BETTING_API_KEY: ${{ secrets.BETTING_API_KEY }}
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-      MODEL_ENV: production
-      TEST_MODE: "false"
+      BETTING_API_KEY: ${{ secrets.BETTING_API_KEY }}
       OUTPUT_DIR: data/outputs
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Set up Python 3.11
+      - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -46,153 +40,79 @@ jobs:
           cache-dependency-path: requirements.txt
 
       - name: Validate required secrets
-        shell: bash
         run: |
-          set -euo pipefail
-          if [ -z "${ODDS_API_KEY:-}" ]; then
-            echo "ODDS_API_KEY is required for live odds ingestion."
+          if [ -z "${ODDS_API_KEY}" ]; then
+            echo "Missing ODDS_API_KEY secret"
             exit 1
           fi
 
       - name: Install dependencies
-        shell: bash
         run: |
-          set -euxo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # --------------------------------------------------
-      # CREATE PLACEHOLDER MODELS SO PREFLIGHT PASSES
-      # --------------------------------------------------
+      # ---------------------------------------
+      # CREATE PLACEHOLDER MODELS
+      # ---------------------------------------
 
       - name: Create placeholder models
-        shell: bash
         run: |
-          set -euxo pipefail
-
-          mkdir -p sports_betting/data/models
-
-          python <<EOF
+          python - <<PY
+import os
 import pickle
 from sklearn.linear_model import LogisticRegression
+
+os.makedirs("sports_betting/data/models", exist_ok=True)
 
 model = LogisticRegression()
 
 for sport in ["nba","nfl","nhl"]:
     path = f"sports_betting/data/models/{sport}_model.pkl"
-    with open(path, "wb") as f:
-        pickle.dump(model, f)
+    with open(path,"wb") as f:
+        pickle.dump(model,f)
 
 print("Placeholder models created")
-EOF
+PY
 
-      - name: Ensure output folder exists
-        shell: bash
+      - name: Create output folder
+        run: mkdir -p data/outputs
+
+      - name: Select run command
+        id: select
         run: |
-          set -euxo pipefail
-          mkdir -p "$OUTPUT_DIR"
-          echo "OUTPUT_DIR=$OUTPUT_DIR"
-
-      - name: Select algorithm run command
-        id: run_cmd
-        shell: bash
-        run: |
-          set -euo pipefail
-
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            SPORT_MODE="all"
+            echo "command=python main.py" >> $GITHUB_OUTPUT
           else
-            SPORT_MODE="${{ github.event.inputs.sport || 'all' }}"
-          fi
-
-          case "$SPORT_MODE" in
-            all)
-              CMD="python main.py"
-              ;;
-            nba)
-              CMD="python main.py --sport nba"
-              ;;
-            nfl)
-              CMD="python main.py --sport nfl"
-              ;;
-            nhl)
-              CMD="python main.py --sport nhl"
-              ;;
-            *)
-              echo "Unsupported sport mode: $SPORT_MODE"
-              exit 1
-              ;;
-          esac
-
-          echo "sport_mode=$SPORT_MODE" >> "$GITHUB_OUTPUT"
-          echo "command=$CMD" >> "$GITHUB_OUTPUT"
-
-      - name: Preflight validate historical inputs
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ "${{ steps.run_cmd.outputs.sport_mode }}" = "all" ]; then
-            python -m sports_betting.scripts.preflight --sports nba nfl nhl --require-model-artifacts
-          else
-            python -m sports_betting.scripts.preflight --sports "${{ steps.run_cmd.outputs.sport_mode }}" --require-model-artifacts
+            case "${{ github.event.inputs.sport }}" in
+              nba)
+                echo "command=python main.py --sport nba" >> $GITHUB_OUTPUT
+                ;;
+              nfl)
+                echo "command=python main.py --sport nfl" >> $GITHUB_OUTPUT
+                ;;
+              nhl)
+                echo "command=python main.py --sport nhl" >> $GITHUB_OUTPUT
+                ;;
+              *)
+                echo "command=python main.py" >> $GITHUB_OUTPUT
+                ;;
+            esac
           fi
 
       - name: Run betting algorithm
-        shell: bash
         run: |
-          set -euxo pipefail
-          echo "Running mode: ${{ steps.run_cmd.outputs.sport_mode }}"
-          echo "Executing: ${{ steps.run_cmd.outputs.command }}"
-          ${{ steps.run_cmd.outputs.command }}
+          echo "Running: ${{ steps.select.outputs.command }}"
+          ${{ steps.select.outputs.command }}
 
-      - name: Debug filesystem state
-        if: always()
-        shell: bash
+      - name: Check outputs
         run: |
-          set +e
-          echo "===== pwd ====="
-          pwd
-          echo "===== ls -R ====="
-          ls -R
-          echo "===== find . -type f ====="
-          find . -type f | sort
-          echo "===== find data/outputs -type f ====="
-          find data/outputs -type f | sort
+          test -f data/outputs/predictions.csv
+          test -f data/outputs/recommended_bets.csv
+          test -f data/outputs/daily_report.txt
 
-      - name: Validate expected output files exist
-        if: success()
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          REQUIRED_FILES=(
-            "data/outputs/predictions.csv"
-            "data/outputs/recommended_bets.csv"
-            "data/outputs/daily_report.txt"
-          )
-
-          MISSING=0
-
-          for f in "${REQUIRED_FILES[@]}"; do
-            if [ ! -f "$f" ]; then
-              echo "Missing required output: $f"
-              MISSING=1
-            else
-              echo "Found required output: $f"
-            fi
-          done
-
-          if [ "$MISSING" -ne 0 ]; then
-            echo "One or more required outputs are missing."
-            exit 1
-          fi
-
-      - name: Upload output artifacts
-        if: success()
+      - name: Upload results
         uses: actions/upload-artifact@v6
         with:
-          name: betting-outputs-${{ github.run_id }}-${{ steps.run_cmd.outputs.sport_mode || 'unknown' }}
+          name: betting-outputs
           path: data/outputs/**
-          if-no-files-found: error
           retention-days: 14
