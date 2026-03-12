@@ -100,7 +100,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         total_games_processed += len(daily)
 
         artifact_path = model_artifact_path(sport_name)
-        if live_mode and historical.empty:
+        if live_mode and artifact_path.exists():
             model.load_artifact(artifact_path)
             logger.info("Loaded trained %s model artifact: %s", sport_name.upper(), artifact_path)
         else:

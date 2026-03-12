@@ -1,0 +1,100 @@
+name: Train Model Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      sport:
+        description: "Which training mode to execute"
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - nba
+          - nfl
+          - nhl
+
+jobs:
+  train-models:
+    name: Train and upload model artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Select training command
+        id: train_cmd
+        shell: bash
+        run: |
+          set -euo pipefail
+          SPORT_MODE="${{ github.event.inputs.sport || 'all' }}"
+
+          case "$SPORT_MODE" in
+            all)
+              CMD="python -m sports_betting.scripts.train_models --sports nba nfl nhl"
+              ;;
+            nba|nfl|nhl)
+              CMD="python -m sports_betting.scripts.train_models --sports $SPORT_MODE"
+              ;;
+            *)
+              echo "Unsupported sport mode: $SPORT_MODE"
+              exit 1
+              ;;
+          esac
+
+          echo "sport_mode=$SPORT_MODE" >> "$GITHUB_OUTPUT"
+          echo "command=$CMD" >> "$GITHUB_OUTPUT"
+
+      - name: Train model artifacts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ${{ steps.train_cmd.outputs.command }}
+
+      - name: Validate model files exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ steps.train_cmd.outputs.sport_mode }}" in
+            all)
+              SPORTS=(nba nfl nhl)
+              ;;
+            *)
+              SPORTS=("${{ steps.train_cmd.outputs.sport_mode }}")
+              ;;
+          esac
+
+          for sport in "${SPORTS[@]}"; do
+            FILE="sports_betting/data/models/${sport}_model.pkl"
+            if [ ! -f "$FILE" ]; then
+              echo "Missing artifact: $FILE"
+              exit 1
+            fi
+            echo "Found artifact: $FILE"
+          done
+
+      - name: Upload trained model artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: trained-models-${{ github.run_id }}-${{ steps.train_cmd.outputs.sport_mode }}
+          path: sports_betting/data/models/*.pkl
+          if-no-files-found: error
+          retention-days: 14
