@@ -26,9 +26,8 @@ def temp_data_root(tmp_path, monkeypatch):
     (root / "historical").mkdir(parents=True)
     (root / "models").mkdir(parents=True)
     monkeypatch.setattr(data_io, "ROOT", root)
-    monkeypatch.setattr(train_models, "historical_file_path", data_io.historical_file_path)
     monkeypatch.setattr(train_models, "model_artifact_path", data_io.model_artifact_path)
-    monkeypatch.setattr(train_models, "required_historical_columns", data_io.required_historical_columns)
+    monkeypatch.setitem(train_models.SPORT_DATASET_LOADERS, "nba", data_io.load_nba_historical_dataset)
     return root
 
 
