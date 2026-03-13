@@ -424,6 +424,10 @@ def _extract_market_prices(event: dict, market_key: str) -> dict[str, int | floa
                     "sportsbook": book.get("key", "unknown"),
                     "home_odds": int(home_outcome["price"]),
                     "away_odds": int(away_outcome["price"]),
+                    "sportsbook_event_home_team": str(raw_home or ""),
+                    "sportsbook_event_away_team": str(raw_away or ""),
+                    "sportsbook_home_outcome_name": str(home_outcome.get("name", "")),
+                    "sportsbook_away_outcome_name": str(away_outcome.get("name", "")),
                 }
 
             if market_key == "spreads":
@@ -502,12 +506,14 @@ def fetch_live_daily_odds(sport: str) -> pd.DataFrame:
         record["home_indicator"] = 1.0
 
         LOGGER.info(
-            "[%s] odds map | raw_away=%s raw_home=%s parsed_away=%s parsed_home=%s away_ml=%s home_ml=%s away_spread=%s@%s home_spread=%s@%s",
+            "[%s] odds map | raw_away=%s raw_home=%s parsed_away=%s parsed_home=%s sportsbook_event_away=%s sportsbook_event_home=%s away_ml=%s home_ml=%s away_spread=%s@%s home_spread=%s@%s",
             sport.upper(),
             event.get("away_team"),
             event.get("home_team"),
             _normalize_team_name(event.get("away_team")),
             _normalize_team_name(event.get("home_team")),
+            h2h.get("sportsbook_event_away_team"),
+            h2h.get("sportsbook_event_home_team"),
             record.get("away_odds"),
             record.get("home_odds"),
             record.get("away_spread_odds"),

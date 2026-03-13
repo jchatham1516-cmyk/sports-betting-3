@@ -62,3 +62,34 @@ def test_validate_model_artifacts_exist_accepts_present_artifact(temp_data_root)
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_bytes(b"placeholder")
     data_io.validate_model_artifacts_exist(sports=["nba"])
+
+
+def test_extract_market_prices_maps_home_and_away_to_matching_outcome_names():
+    event = {
+        "home_team": "Indiana Pacers",
+        "away_team": "New York Knicks",
+        "bookmakers": [
+            {
+                "key": "demo_book",
+                "markets": [
+                    {
+                        "key": "h2h",
+                        "outcomes": [
+                            {"name": "Indiana Pacers", "price": -847},
+                            {"name": "New York Knicks", "price": 570},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    prices = data_io._extract_market_prices(event, "h2h")
+
+    assert prices is not None
+    assert prices["home_odds"] == -847
+    assert prices["away_odds"] == 570
+    assert prices["sportsbook_event_home_team"] == "Indiana Pacers"
+    assert prices["sportsbook_event_away_team"] == "New York Knicks"
+    assert prices["sportsbook_home_outcome_name"] == "Indiana Pacers"
+    assert prices["sportsbook_away_outcome_name"] == "New York Knicks"

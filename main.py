@@ -67,13 +67,17 @@ def _validate_game_odds_mapping(game_id: str, game_row: dict, game: str) -> tupl
         return False, f"invalid normalized teams for {game}: home={home_team} away={away_team}"
 
     LOGGER.info(
-        "[ODDS_MAP] game_id=%s game=%s away_team=%s home_team=%s away_ml=%s home_ml=%s away_spread=%s@%s home_spread=%s@%s",
+        "[ODDS_MAP] game_id=%s game=%s away_team=%s home_team=%s away_ml=%s home_ml=%s sportsbook_event_away=%s sportsbook_event_home=%s sportsbook_away_outcome=%s sportsbook_home_outcome=%s away_spread=%s@%s home_spread=%s@%s",
         game_id,
         game,
         away_team,
         home_team,
         away_odds,
         home_odds,
+        game_row.get("sportsbook_event_away_team", ""),
+        game_row.get("sportsbook_event_home_team", ""),
+        game_row.get("sportsbook_away_outcome_name", ""),
+        game_row.get("sportsbook_home_outcome_name", ""),
         int(game_row["away_spread_odds"]),
         -float(game_row.get("spread_line", 0.0)),
         int(game_row["home_spread_odds"]),
@@ -187,6 +191,17 @@ def _validate_exported_bets_against_sportsbook(game_id: str, game_row: dict, bet
         if sportsbook_odds is None:
             return False, f"selection team not found in sportsbook mapping: {bet['selection']}"
         if int(bet["odds"]) != sportsbook_odds:
+            LOGGER.warning(
+                "[ODDS_EXPORT_MISMATCH] game_id=%s selection=%s exported_odds=%s sportsbook_odds=%s home_team=%s away_team=%s sportsbook_event_home=%s sportsbook_event_away=%s",
+                game_id,
+                bet["selection"],
+                int(bet["odds"]),
+                sportsbook_odds,
+                game_row["home_team"],
+                game_row["away_team"],
+                game_row.get("sportsbook_event_home_team", ""),
+                game_row.get("sportsbook_event_away_team", ""),
+            )
             return (
                 False,
                 f"odds mismatch for selection={bet['selection']} exported={bet['odds']} sportsbook={sportsbook_odds}",
@@ -244,6 +259,10 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 "total_line": game_row.get("total_line", 0.0),
                 "game": pred.metadata.get("game", pred.game_id),
                 "sport": sport_name,
+                "sportsbook_event_home_team": game_row.get("sportsbook_event_home_team", game_row.get("home_team", "")),
+                "sportsbook_event_away_team": game_row.get("sportsbook_event_away_team", game_row.get("away_team", "")),
+                "sportsbook_home_outcome_name": game_row.get("sportsbook_home_outcome_name", game_row.get("home_team", "")),
+                "sportsbook_away_outcome_name": game_row.get("sportsbook_away_outcome_name", game_row.get("away_team", "")),
             }
 
     out_dir = Path("data/outputs")
