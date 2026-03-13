@@ -16,6 +16,8 @@ import pandas as pd
 
 from sports_betting.sports.common.feature_engineering import SPORT_EFFICIENCY_FEATURES, add_elo_features, enrich_with_context_features
 
+from sports_betting.scripts.build_nba_historical_dataset import NBA_HISTORICAL_COLUMNS
+
 
 ROOT = Path("sports_betting/data")
 LOGGER = logging.getLogger(__name__)
@@ -105,6 +107,20 @@ FEATURE_COLUMNS_BY_SPORT = {
     "nhl": list(BASE_FEATURE_COLUMNS) + [f"{f}_diff" for f in SPORT_EFFICIENCY_FEATURES["nhl"]],
 }
 TARGET_COLUMNS = ["home_win", "home_cover", "over_hit"]
+NBA_CORE_REQUIRED_COLUMNS = [
+    "home_win",
+    "home_cover",
+    "over_hit",
+    "closing_moneyline_home",
+    "closing_spread_home",
+    "closing_total",
+    "elo_diff",
+    "rest_diff",
+    "injury_impact_diff",
+    "net_rating_diff",
+    "pace_diff",
+    "top_rotation_eff_diff",
+]
 
 
 def historical_file_path(sport: str) -> Path:
@@ -118,6 +134,8 @@ def model_artifact_path(sport: str) -> Path:
 def required_historical_columns(sport: str) -> list[str]:
     if sport not in FEATURE_COLUMNS_BY_SPORT:
         raise ValueError(f"Unsupported sport '{sport}'. Supported sports: {', '.join(sorted(FEATURE_COLUMNS_BY_SPORT))}")
+    if sport == "nba":
+        return sorted(set(NBA_HISTORICAL_COLUMNS + FEATURE_COLUMNS_BY_SPORT[sport] + ["spread_line", "total_line"]))
     core = ["date", "home_team", "away_team", "home_score", "away_score", "closing_moneyline_home", "closing_moneyline_away", "closing_spread_home", "closing_total"]
     return sorted(set(core + FEATURE_COLUMNS_BY_SPORT[sport] + ["spread_line", "total_line"] + TARGET_COLUMNS))
 
@@ -240,7 +258,31 @@ def load_historical_dataset(sport: str) -> pd.DataFrame:
 
 
 def load_nba_historical_dataset() -> pd.DataFrame:
-    return load_historical_dataset("nba")
+    hist_path = historical_file_path("nba")
+    if not hist_path.exists():
+        raise RuntimeError(f"[NBA] Historical CSV does not exist: {hist_path}")
+
+    df = pd.read_csv(hist_path)
+    missing_core = [c for c in NBA_CORE_REQUIRED_COLUMNS if c not in df.columns]
+    if missing_core:
+        raise RuntimeError(
+            "[NBA] Historical dataset missing core required columns: " + ", ".join(missing_core)
+        )
+
+    # Keep the full NBA schema stable even when optional sources are absent.
+    for col in NBA_HISTORICAL_COLUMNS:
+        if col not in df.columns:
+            df[col] = 0.0
+    for col in FEATURE_COLUMNS_BY_SPORT["nba"]:
+        if col not in df.columns:
+            df[col] = 0.0
+
+    standardized = _standardize_historical_features(df, "nba")
+    for col in NBA_HISTORICAL_COLUMNS:
+        if col in {"date", "season", "game_id", "home_team", "away_team"}:
+            continue
+        standardized[col] = pd.to_numeric(standardized.get(col, 0.0), errors="coerce").fillna(0.0)
+    return standardized
 
 
 def load_nfl_historical_dataset() -> pd.DataFrame:

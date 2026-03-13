@@ -93,3 +93,37 @@ def test_extract_market_prices_maps_home_and_away_to_matching_outcome_names():
     assert prices["sportsbook_event_away_team"] == "New York Knicks"
     assert prices["sportsbook_home_outcome_name"] == "Indiana Pacers"
     assert prices["sportsbook_away_outcome_name"] == "New York Knicks"
+
+
+def test_load_nba_historical_dataset_raises_for_missing_core_columns(temp_data_root):
+    historical = data_io.historical_file_path("nba")
+    pd.DataFrame({"date": ["2024-01-01"]}).to_csv(historical, index=False)
+
+    with pytest.raises(RuntimeError) as exc:
+        data_io.load_nba_historical_dataset()
+    assert "missing core required columns" in str(exc.value)
+
+
+def test_load_nba_historical_dataset_fills_optional_columns(temp_data_root):
+    historical = data_io.historical_file_path("nba")
+    base = {
+        "home_win": [1],
+        "home_cover": [0],
+        "over_hit": [1],
+        "closing_moneyline_home": [-120],
+        "closing_spread_home": [-2.5],
+        "closing_total": [228.5],
+        "elo_diff": [45],
+        "rest_diff": [1],
+        "injury_impact_diff": [0.2],
+        "net_rating_diff": [3.2],
+        "pace_diff": [1.5],
+        "top_rotation_eff_diff": [0.3],
+    }
+    pd.DataFrame(base).to_csv(historical, index=False)
+
+    df = data_io.load_nba_historical_dataset()
+
+    assert "travel_fatigue_diff" in df.columns
+    assert float(df.loc[0, "travel_fatigue_diff"]) == 0.0
+    assert float(df.loc[0, "closing_spread_home"]) == -2.5
