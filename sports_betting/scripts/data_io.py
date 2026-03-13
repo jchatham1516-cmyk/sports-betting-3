@@ -311,10 +311,8 @@ def fetch_live_daily_odds(sport: str) -> pd.DataFrame:
 
     daily = pd.DataFrame(records)
     if daily.empty:
-        raise RuntimeError(
-            f"[{sport.upper()}] Odds API returned {len(payload)} events but none had full h2h/spread/total markets. "
-            "No synthetic fallback was used."
-        )
+        print(f"[{sport.upper()}] No games available today — skipping.")
+        return None
 
     daily["event_date"] = pd.to_datetime(daily["event_date"], utc=True, errors="coerce")
     if daily["event_date"].isna().any():
