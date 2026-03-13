@@ -44,10 +44,7 @@ PREDICTION_COLUMNS = [
     "metadata",
 ]
 
-MIN_EDGE = 0.01
-MIN_EV = -0.005
-MIN_CONFIDENCE = 0.55
-MAX_BETS = 8
+TOP_BETS_DAILY = 5
 
 RECOMMENDATION_COLUMNS = [
     "event_date",
@@ -104,14 +101,6 @@ def _best_market_sides(bets: list) -> list:
         ):
             best[key] = bet
     return list(best.values())
-
-
-def _bet_metrics(bet) -> dict[str, float]:
-    return {
-        "edge": bet.edge,
-        "ev": bet.expected_value,
-        "confidence": bet.confidence_score,
-    }
 
 
 def run_daily_pipeline(config_path: str | None = None, sport: str | None = None) -> None:
@@ -182,65 +171,18 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     # Remove duplicate sides first: keep one bet per game + market.
     bets = _best_market_sides(candidate_pool)
 
-    qualified = [
-        b
-        for b in bets
-        if _bet_metrics(b).get("edge", 0) >= MIN_EDGE
-        and _bet_metrics(b).get("ev", 0) >= MIN_EV
-        and _bet_metrics(b).get("confidence", 0) >= MIN_CONFIDENCE
-    ]
+    ranked_bets = sorted(
+        bets,
+        key=lambda x: (x.expected_value, x.edge, x.confidence_score),
+        reverse=True,
+    )
 
-    filtered_out = len(bets) - len(qualified)
-    if filtered_out > 0:
-        qualified_ids = {id(q) for q in qualified}
-        for b in bets:
-            if id(b) in qualified_ids:
-                continue
-            all_passes.append(
-                f"{b.game} ({b.sport.upper()} {b.market} {b.side}): filtered by edge/EV/confidence."
-            )
-
-    used_fallback = False
-    if not qualified:
-        fallback = sorted(
-            bets,
-            key=lambda x: (x.expected_value, x.edge, x.confidence_score),
-            reverse=True,
-        )
-
-        qualified = fallback[:5]
-
-        for b in qualified:
-            b.fallback_pick = True
-
-        used_fallback = bool(qualified)
-
-    # Ensure at least 3-5 bets whenever games exist.
-    if total_games_processed > 0 and len(qualified) < 3:
-        selected = {
-            (b.sport, b.game, b.market, b.side, b.odds, b.line)
-            for b in qualified
-        }
-        remainder = sorted(
-            bets,
-            key=lambda x: (x.expected_value, x.edge, x.confidence_score),
-            reverse=True,
-        )
-        for b in remainder:
-            rec_key = (b.sport, b.game, b.market, b.side, b.odds, b.line)
-            if rec_key in selected:
-                continue
-            b.fallback_pick = True
-            qualified.append(b)
-            selected.add(rec_key)
-            if len(qualified) >= 3:
-                break
-
-    qualified.sort(key=lambda x: (x.rank_score, x.expected_value), reverse=True)
-    top_n = min(int(cfg["output"].get("top_n", MAX_BETS)), MAX_BETS)
     if total_games_processed > 0:
-        top_n = max(top_n, 3)
-    trimmed_recs = qualified[:top_n] if top_n > 0 else qualified
+        trimmed_recs = ranked_bets[:TOP_BETS_DAILY]
+        if not trimmed_recs:
+            all_passes.append("Games exist, but no valid bet candidates were produced.")
+    else:
+        trimmed_recs = []
 
     recs_by_sport = defaultdict(list)
     for rec in trimmed_recs:
@@ -251,7 +193,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     logger.info("Writing outputs to: %s", out_dir.resolve())
     logger.info("Total games processed: %s", total_games_processed)
-    logger.info("Total qualified bets: %s", len(trimmed_recs))
+    logger.info("Total bets exported: %s", len(trimmed_recs))
 
     predictions_df = pd.DataFrame(all_predictions)
     predictions_df = predictions_df.reindex(columns=PREDICTION_COLUMNS)
@@ -276,16 +218,14 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     report_lines = [
         f"Output directory: {out_dir.resolve()}",
         f"Games processed: {total_games_processed}",
-        f"Total recommendations qualified: {len(qualified)}",
-        f"Total recommendations exported (after top_n): {len(trimmed_recs)}",
+        f"Total ranked recommendations available: {len(ranked_bets)}",
+        f"Total recommendations exported (top {TOP_BETS_DAILY}): {len(trimmed_recs)}",
         "",
     ]
-    if trimmed_recs and used_fallback:
-        report_lines.append("No bets met thresholds — exporting fallback picks.")
-    elif trimmed_recs:
-        report_lines.append("Qualifying bets were found.")
+    if trimmed_recs:
+        report_lines.append("Top model bets exported (no strict filtering applied).")
     else:
-        report_lines.append("No qualifying bets today")
+        report_lines.append("No bets exported today")
 
     report_lines.extend(["", card])
     (out_dir / "daily_report.txt").write_text("\n".join(report_lines), encoding="utf-8")
