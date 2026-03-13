@@ -37,14 +37,20 @@ def qualify_prediction(
     bankroll_cfg: BankrollConfig,
     stake_mode: str,
 ) -> BetRecommendation | None:
-    if pred.edge < thresholds["min_edge"]:
+    if pred.model_probability < 0.52:
+        return None
+    if odds > 2000:
+        return None
+    if pred.edge < max(0.03, thresholds["min_edge"]):
         return None
     if pred.expected_value < thresholds["min_ev"]:
         return None
     if pred.confidence < thresholds["min_confidence"]:
         return None
 
-    stake = recommend_units(pred.model_probability, odds, pred.confidence, bankroll_cfg, mode=stake_mode)
+    stake = recommend_units(
+        pred.model_probability, odds, pred.confidence, bankroll_cfg, mode=stake_mode, edge=pred.edge
+    )
     if stake <= 0:
         return None
 
