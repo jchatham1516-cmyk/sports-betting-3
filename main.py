@@ -103,13 +103,51 @@ def _best_market_sides(bets: list) -> list:
     return list(best.values())
 
 
-def _american_payout(odds: int) -> float:
-    """Return net payout per 1 unit stake for American odds."""
+
+def _american_to_decimal(odds: int) -> float:
+    """Convert American odds to decimal odds."""
     if odds >= 100:
-        return odds / 100.0
+        return 1 + (odds / 100.0)
     if odds <= -100:
-        return 100.0 / abs(odds)
+        return 1 + (100.0 / abs(odds))
     return 0.0
+
+
+def _candidate_from_prediction(pred, game_row: pd.Series, game: str) -> dict | None:
+    """Build a candidate-bet object directly from a model prediction row."""
+    market = "totals" if pred.market in {"total", "totals"} else pred.market
+    odds_col_map = {
+        "moneyline": "home_odds" if pred.side == game_row["home_team"] else "away_odds",
+        "spread": "home_spread_odds" if str(pred.side).startswith(game_row["home_team"]) else "away_spread_odds",
+        "totals": "over_odds" if str(pred.side).startswith("Over") else "under_odds",
+    }
+
+    odds_col = odds_col_map.get(market)
+    if not odds_col or odds_col not in game_row:
+        return None
+
+    american_odds = int(game_row[odds_col])
+    decimal_odds = _american_to_decimal(american_odds)
+    if decimal_odds <= 1:
+        return None
+
+    model_probability = float(pred.model_probability)
+    market_probability = 1 / decimal_odds
+    edge = model_probability - market_probability
+    expected_value = (model_probability * (decimal_odds - 1)) - (1 - model_probability)
+
+    return {
+        "sport": pred.sport,
+        "game": game,
+        "market": market,
+        "selection": pred.side,
+        "odds": american_odds,
+        "model_probability": model_probability,
+        "market_probability": market_probability,
+        "edge": edge,
+        "expected_value": expected_value,
+        "confidence": model_probability,
+    }
 
 
 def run_daily_pipeline(config_path: str | None = None, sport: str | None = None) -> None:
@@ -167,23 +205,24 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             }[pred.market]
             line_col = {"moneyline": None, "spread": "spread_line", "total": "total_line"}[pred.market]
             odds = int(game_row[odds_col])
-            market_probability = float(pred.market_implied_probability)
-            model_probability = float(pred.model_probability)
-            edge = model_probability - market_probability
-            payout = _american_payout(odds)
-            expected_value = (model_probability * payout) - (1 - model_probability)
-            candidate_bet = {
-                "game": game,
-                "sport": pred.sport,
-                "market": pred.market,
-                "selection": pred.side,
-                "odds": odds,
-                "model_probability": model_probability,
-                "market_probability": market_probability,
-                "edge": edge,
-                "expected_value": expected_value,
-                "confidence": float(pred.confidence),
-            }
+            candidate_bet = _candidate_from_prediction(pred, game_row, game)
+            if candidate_bet is None:
+                fallback_market = "totals" if pred.market in {"total", "totals"} else pred.market
+                model_probability = float(pred.model_probability)
+                market_probability = float(pred.market_implied_probability)
+                expected_value = float(pred.expected_value)
+                candidate_bet = {
+                    "sport": pred.sport,
+                    "game": game,
+                    "market": fallback_market,
+                    "selection": pred.side,
+                    "odds": odds,
+                    "model_probability": model_probability,
+                    "market_probability": market_probability,
+                    "edge": model_probability - market_probability,
+                    "expected_value": expected_value,
+                    "confidence": model_probability,
+                }
             bets.append(candidate_bet)
 
             rec = candidate_prediction(
