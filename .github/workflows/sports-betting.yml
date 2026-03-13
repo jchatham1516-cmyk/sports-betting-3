@@ -31,7 +31,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Create runtime-only placeholder model artifacts
-        run: python sports_betting/scripts/create_placeholder_models.py
+        run: python -m sports_betting.scripts.create_placeholder_models
 
       - name: Run predictions
         run: python main.py
