@@ -113,41 +113,68 @@ def _american_to_decimal(odds: int) -> float:
     return 0.0
 
 
-def _candidate_from_prediction(pred, game_row: pd.Series, game: str) -> dict | None:
-    """Build a candidate-bet object directly from a model prediction row."""
-    market = "totals" if pred.market in {"total", "totals"} else pred.market
-    odds_col_map = {
-        "moneyline": "home_odds" if pred.side == game_row["home_team"] else "away_odds",
-        "spread": "home_spread_odds" if str(pred.side).startswith(game_row["home_team"]) else "away_spread_odds",
-        "totals": "over_odds" if str(pred.side).startswith("Over") else "under_odds",
-    }
+def _build_game_candidate_bets(predictions: list, game_row: pd.Series, sport_name: str, game: str) -> list[dict]:
+    """Create all six candidate bet types for a game from available prediction rows."""
+    prediction_map: dict[tuple[str, str], float] = {}
+    home_team = str(game_row["home_team"])
+    away_team = str(game_row["away_team"])
+    total_line = float(game_row.get("total_line", 0.0))
 
-    odds_col = odds_col_map.get(market)
-    if not odds_col or odds_col not in game_row:
-        return None
+    for pred in predictions:
+        market = "totals" if pred.market in {"total", "totals"} else pred.market
+        side = str(pred.side)
+        key = None
+        if market == "moneyline":
+            key = (market, "moneyline_home" if side == home_team else "moneyline_away")
+        elif market == "spread":
+            key = (market, "spread_home" if side.startswith(home_team) else "spread_away")
+        elif market == "totals":
+            key = (market, "over" if side.startswith("Over") else "under")
+        if key:
+            prediction_map[key] = float(pred.model_probability)
 
-    american_odds = int(game_row[odds_col])
-    decimal_odds = _american_to_decimal(american_odds)
-    if decimal_odds <= 1:
-        return None
+    candidate_specs = [
+        ("moneyline", "moneyline_home", int(game_row["home_odds"])),
+        ("moneyline", "moneyline_away", int(game_row["away_odds"])),
+        ("spread", "spread_home", int(game_row["home_spread_odds"])),
+        ("spread", "spread_away", int(game_row["away_spread_odds"])),
+        ("totals", "over", int(game_row["over_odds"])),
+        ("totals", "under", int(game_row["under_odds"])),
+    ]
 
-    model_probability = float(pred.model_probability)
-    market_probability = 1 / decimal_odds
-    edge = model_probability - market_probability
-    expected_value = (model_probability * (decimal_odds - 1)) - (1 - model_probability)
+    bets: list[dict] = []
+    for market, selection, american_odds in candidate_specs:
+        decimal_odds = _american_to_decimal(american_odds)
+        if decimal_odds <= 1:
+            continue
 
-    return {
-        "sport": pred.sport,
-        "game": game,
-        "market": market,
-        "selection": pred.side,
-        "odds": american_odds,
-        "model_probability": model_probability,
-        "market_probability": market_probability,
-        "edge": edge,
-        "expected_value": expected_value,
-        "confidence": model_probability,
-    }
+        model_probability = prediction_map.get((market, selection), 0.5)
+        market_probability = 1 / decimal_odds
+        edge = model_probability - market_probability
+        expected_value = (model_probability * (decimal_odds - 1)) - (1 - model_probability)
+        if market == "spread":
+            selection_label = home_team if selection == "spread_home" else away_team
+        elif market == "moneyline":
+            selection_label = home_team if selection == "moneyline_home" else away_team
+        else:
+            selection_label = f"Over {total_line:.1f}" if selection == "over" else f"Under {total_line:.1f}"
+
+        bets.append(
+            {
+                "sport": sport_name,
+                "game": game,
+                "market": market,
+                "selection": selection_label,
+                "odds": american_odds,
+                "model_probability": model_probability,
+                "market_probability": market_probability,
+                "edge": edge,
+                "expected_value": expected_value,
+                "confidence": model_probability,
+            }
+        )
+
+    return bets
 
 
 def run_daily_pipeline(config_path: str | None = None, sport: str | None = None) -> None:
@@ -194,8 +221,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         preds = model.predict_daily(daily)
         logger.info("%s games processed for %s (%s predictions generated)", len(daily), sport_name, len(preds))
 
+        predictions_by_game_id: dict[str, list] = defaultdict(list)
         for pred in preds:
             all_predictions.append(asdict(pred))
+            predictions_by_game_id[pred.game_id].append(pred)
+
             game = pred.metadata.get("game", pred.game_id)
             game_row = daily[daily["game_id"] == pred.game_id].iloc[0]
             odds_col = {
@@ -205,26 +235,6 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             }[pred.market]
             line_col = {"moneyline": None, "spread": "spread_line", "total": "total_line"}[pred.market]
             odds = int(game_row[odds_col])
-            candidate_bet = _candidate_from_prediction(pred, game_row, game)
-            if candidate_bet is None:
-                fallback_market = "totals" if pred.market in {"total", "totals"} else pred.market
-                model_probability = float(pred.model_probability)
-                market_probability = float(pred.market_implied_probability)
-                expected_value = float(pred.expected_value)
-                candidate_bet = {
-                    "sport": pred.sport,
-                    "game": game,
-                    "market": fallback_market,
-                    "selection": pred.side,
-                    "odds": odds,
-                    "model_probability": model_probability,
-                    "market_probability": market_probability,
-                    "edge": model_probability - market_probability,
-                    "expected_value": expected_value,
-                    "confidence": model_probability,
-                }
-            bets.append(candidate_bet)
-
             rec = candidate_prediction(
                 pred=pred,
                 game_text=game,
@@ -236,6 +246,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             )
             if rec:
                 candidate_pool.append(rec)
+
+        for game_id, game_predictions in predictions_by_game_id.items():
+            game_row = daily[daily["game_id"] == game_id].iloc[0]
+            game = game_predictions[0].metadata.get("game", game_id)
+            bets.extend(_build_game_candidate_bets(game_predictions, game_row, sport_name, game))
 
     print("Candidate bets generated:", len(bets))
 
