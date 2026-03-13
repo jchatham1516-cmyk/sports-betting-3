@@ -19,12 +19,12 @@ def confidence_tier(score: float) -> str:
 
 
 def rank_score(pred: Prediction, model_quality_weight: float = 0.65) -> float:
-    return (
-        0.40 * pred.expected_value
-        + 0.30 * pred.edge
-        + 0.20 * pred.confidence
-        + 0.10 * model_quality_weight
-    )
+    return 0.40 * pred.expected_value + 0.30 * pred.edge + 0.20 * pred.confidence + 0.10 * model_quality_weight
+
+
+def _has_severe_data_issue(pred: Prediction) -> bool:
+    severe_flags = {"stale_injury_data", "missing_key_features", "suspicious_placeholder", "extreme_probability_without_support"}
+    return bool(severe_flags.intersection(set(pred.flags)))
 
 
 def qualify_prediction(
@@ -37,20 +37,20 @@ def qualify_prediction(
     bankroll_cfg: BankrollConfig,
     stake_mode: str,
 ) -> BetRecommendation | None:
+    if _has_severe_data_issue(pred):
+        return None
     if pred.model_probability < 0.52:
         return None
     if odds > 2000:
         return None
     if pred.edge < max(0.03, thresholds["min_edge"]):
         return None
-    if pred.expected_value < thresholds["min_ev"]:
+    if pred.expected_value <= 0 or pred.expected_value < thresholds["min_ev"]:
         return None
     if pred.confidence < thresholds["min_confidence"]:
         return None
 
-    stake = recommend_units(
-        pred.model_probability, odds, pred.confidence, bankroll_cfg, mode=stake_mode, edge=pred.edge
-    )
+    stake = recommend_units(pred.model_probability, odds, pred.confidence, bankroll_cfg, mode=stake_mode, edge=pred.edge)
     if stake <= 0:
         return None
 
@@ -73,4 +73,9 @@ def qualify_prediction(
         reason_summary=pred.reason_summary,
         flags=pred.flags,
         rank_score=score,
+        market_prob=pred.market_implied_probability,
+        model_prob=pred.model_probability,
+        line_movement=float(pred.metadata.get("line_movement", 0.0)),
+        clv_placeholder=float(pred.metadata.get("clv_placeholder", 0.0)),
+        injury_confidence_score=float(pred.metadata.get("injury_confidence_score", 0.0)),
     )

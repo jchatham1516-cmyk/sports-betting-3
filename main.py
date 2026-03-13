@@ -40,6 +40,7 @@ PREDICTION_COLUMNS = [
     "confidence",
     "reason_summary",
     "flags",
+    "market_prob",
     "metadata",
 ]
 
@@ -61,6 +62,11 @@ RECOMMENDATION_COLUMNS = [
     "reason_summary",
     "flags",
     "rank_score",
+    "market_prob",
+    "model_prob",
+    "line_movement",
+    "clv_placeholder",
+    "injury_confidence_score",
 ]
 
 

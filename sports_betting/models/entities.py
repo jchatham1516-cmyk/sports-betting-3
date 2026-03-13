@@ -38,6 +38,7 @@ class Prediction:
     confidence: float
     reason_summary: str
     flags: list[str] = field(default_factory=list)
+    market_prob: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -62,3 +63,8 @@ class BetRecommendation:
     reason_summary: str
     flags: list[str]
     rank_score: float
+    market_prob: float = 0.0
+    model_prob: float = 0.0
+    line_movement: float = 0.0
+    clv_placeholder: float = 0.0
+    injury_confidence_score: float = 0.0

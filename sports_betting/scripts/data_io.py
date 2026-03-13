@@ -46,6 +46,21 @@ BASE_FEATURE_COLUMNS = [
     "qb_out_flag_away",
     "offensive_injury_weight_diff",
     "defensive_injury_weight_diff",
+    "offensive_injury_weight_home",
+    "offensive_injury_weight_away",
+    "defensive_injury_weight_home",
+    "defensive_injury_weight_away",
+    "injury_confidence_score",
+    "injury_data_stale_flag",
+    "market_prob",
+    "model_prob",
+    "edge",
+    "expected_value",
+    "line_movement",
+    "clv_placeholder",
+    "public_favorite_bias_flag",
+    "favorite_inflation_flag",
+    "underdog_inflation_flag",
     "rest_days_home",
     "rest_days_away",
     "back_to_back_home",
@@ -131,6 +146,21 @@ def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFra
     out["qb_out_flag_away"] = _coalesce_numeric(out, ["qb_out_flag_away"])
     out["offensive_injury_weight_diff"] = _coalesce_numeric(out, ["offensive_injury_weight_diff"])
     out["defensive_injury_weight_diff"] = _coalesce_numeric(out, ["defensive_injury_weight_diff"])
+    out["offensive_injury_weight_home"] = _coalesce_numeric(out, ["offensive_injury_weight_home"])
+    out["offensive_injury_weight_away"] = _coalesce_numeric(out, ["offensive_injury_weight_away"])
+    out["defensive_injury_weight_home"] = _coalesce_numeric(out, ["defensive_injury_weight_home"])
+    out["defensive_injury_weight_away"] = _coalesce_numeric(out, ["defensive_injury_weight_away"])
+    out["injury_confidence_score"] = _coalesce_numeric(out, ["injury_confidence_score"], default=0.5)
+    out["injury_data_stale_flag"] = _coalesce_numeric(out, ["injury_data_stale_flag"])
+    out["market_prob"] = _coalesce_numeric(out, ["market_prob"])
+    out["model_prob"] = _coalesce_numeric(out, ["model_prob"])
+    out["edge"] = _coalesce_numeric(out, ["edge"])
+    out["expected_value"] = _coalesce_numeric(out, ["expected_value"])
+    out["line_movement"] = _coalesce_numeric(out, ["line_movement"])
+    out["clv_placeholder"] = _coalesce_numeric(out, ["clv_placeholder"])
+    out["public_favorite_bias_flag"] = _coalesce_numeric(out, ["public_favorite_bias_flag"])
+    out["favorite_inflation_flag"] = _coalesce_numeric(out, ["favorite_inflation_flag"])
+    out["underdog_inflation_flag"] = _coalesce_numeric(out, ["underdog_inflation_flag"])
     out["rest_days_home"] = _coalesce_numeric(out, ["rest_days_home"])
     out["rest_days_away"] = _coalesce_numeric(out, ["rest_days_away"])
     out["back_to_back_home"] = _coalesce_numeric(out, ["back_to_back_home"])
