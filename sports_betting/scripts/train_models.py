@@ -7,6 +7,7 @@ from pathlib import Path
 
 from main import choose_model
 from sports_betting.scripts.build_historical_dataset import build_historical_dataset
+from sports_betting.scripts.build_nba_historical_dataset import build_nba_historical_dataset
 from sports_betting.scripts.data_io import (
     load_historical_dataset,
     load_nba_historical_dataset,
@@ -41,7 +42,10 @@ def parse_args() -> argparse.Namespace:
 
 def train_sport_model(sport: str, build_historical: bool = False) -> None:
     if build_historical:
-        build_historical_dataset(sport, Path("sports_betting/data/raw"))
+        if sport == "nba":
+            build_nba_historical_dataset(Path("sports_betting/data/raw"))
+        else:
+            build_historical_dataset(sport, Path("sports_betting/data/raw"))
     artifact_path = model_artifact_path(sport)
     loader = SPORT_DATASET_LOADERS.get(sport, lambda: load_historical_dataset(sport))
     historical = loader()
