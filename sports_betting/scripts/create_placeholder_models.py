@@ -1,18 +1,16 @@
 """Create fitted placeholder model artifacts at workflow runtime only."""
 
-from __future__ import annotations
-
+import os
 import pickle
-from pathlib import Path
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 
-from sports_betting.sports.nba.model import EnsembleProbabilityCalibrator, NBAModel
+from sports_betting.sports.nba.model import NBAModel
 from sports_betting.sports.nfl.model import NFLModel
 from sports_betting.sports.nhl.model import NHLModel
 
-MODEL_DIR = Path("sports_betting/data/models")
+MODEL_DIR = "sports_betting/data/models"
 MODEL_CLASSES = {
     "nba": NBAModel,
     "nfl": NFLModel,
@@ -43,19 +41,19 @@ def build_payload(sport: str, model_cls: type[NBAModel]) -> dict:
         "moneyline_models": [fitted_model(len(win_features))],
         "spread_models": [fitted_model(len(spread_features))],
         "total_models": [fitted_model(len(total_features))],
-        "moneyline_cal": EnsembleProbabilityCalibrator(),
-        "spread_cal": EnsembleProbabilityCalibrator(),
-        "total_cal": EnsembleProbabilityCalibrator(),
+        "moneyline_cal": None,
+        "spread_cal": None,
+        "total_cal": None,
         "metrics": {},
     }
 
 
 def main() -> None:
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    os.makedirs(MODEL_DIR, exist_ok=True)
 
     for sport, model_cls in MODEL_CLASSES.items():
-        path = MODEL_DIR / f"{sport}_model.pkl"
-        with path.open("wb") as file_obj:
+        path = os.path.join(MODEL_DIR, f"{sport}_model.pkl")
+        with open(path, "wb") as file_obj:
             pickle.dump(build_payload(sport, model_cls), file_obj)
 
     print("Placeholder model artifacts created successfully at runtime.")
