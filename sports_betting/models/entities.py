@@ -68,3 +68,8 @@ class BetRecommendation:
     line_movement: float = 0.0
     clv_placeholder: float = 0.0
     injury_confidence_score: float = 0.0
+    opening_line: float = 0.0
+    bet_line: float = 0.0
+    current_line: float = 0.0
+    closing_line: float = 0.0
+    clv_diff: float = 0.0

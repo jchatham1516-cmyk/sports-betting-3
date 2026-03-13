@@ -23,7 +23,9 @@ SPORT_EFFICIENCY_FEATURES: dict[str, list[str]] = {
         "free_throw_rate",
         "top_3_player_impact_sum",
         "top_5_rotation_impact_sum",
+        "top_rotation_efficiency_sum",
         "on_off_impact_sum",
+        "on_off_proxy",
     ],
     "nfl": [
         "epa_per_play",
@@ -37,6 +39,8 @@ SPORT_EFFICIENCY_FEATURES: dict[str, list[str]] = {
         "offensive_line_grade_proxy",
         "defensive_efficiency",
         "special_teams_impact",
+        "weather_total_impact",
+        "qb_impact",
     ],
     "nhl": [
         "xgf",
@@ -48,6 +52,8 @@ SPORT_EFFICIENCY_FEATURES: dict[str, list[str]] = {
         "goalie_xgsaved_proxy",
         "top_line_impact",
         "defensive_pair_impact",
+        "goalie_strength",
+        "special_teams_diff_proxy",
     ],
 }
 
@@ -154,6 +160,7 @@ def _team_loc(team: str, locs: pd.DataFrame) -> tuple[float, float, float]:
 def add_travel_fatigue_features(games_df: pd.DataFrame, sport: str, data_root: Path) -> pd.DataFrame:
     out = games_df.copy()
     out["event_date"] = pd.to_datetime(out.get("event_date"), errors="coerce", utc=True)
+    out["elo_diff"] = pd.to_numeric(out.get("elo_diff", pd.Series(0.0, index=out.index)), errors="coerce").fillna(0.0).astype(float)
     locs = _load_team_locations(data_root, sport)
 
     states: dict[str, TeamTravelState] = {}
@@ -234,8 +241,60 @@ def add_efficiency_features(games_df: pd.DataFrame, sport: str, data_root: Path)
     out["defensive_rating_diff"] = out.get("defensive_rating_diff", out.get("defensive_efficiency_diff", out.get("xga_diff", 0.0)))
     out["net_rating_diff"] = out.get("net_rating_diff", out.get("success_rate_diff", out.get("xgf_pct_diff", 0.0)))
     out["pace"] = out.get("pace_home", 0.0) + out.get("pace_away", 0.0)
+    out["off_rating_home"] = out.get("offensive_rating_home", 0.0)
+    out["off_rating_away"] = out.get("offensive_rating_away", 0.0)
+    out["def_rating_home"] = out.get("defensive_rating_home", 0.0)
+    out["def_rating_away"] = out.get("defensive_rating_away", 0.0)
+    out["pace_diff"] = out.get("pace_away", 0.0) - out.get("pace_home", 0.0)
+    out["top_rotation_eff_diff"] = out.get("top_rotation_efficiency_sum_diff", out.get("top_5_rotation_impact_sum_diff", 0.0))
+    out["qb_impact_home"] = out.get("qb_impact_home", out.get("qb_efficiency_metric_home", 0.0))
+    out["qb_impact_away"] = out.get("qb_impact_away", out.get("qb_efficiency_metric_away", 0.0))
+    out["goalie_strength_home"] = out.get("goalie_strength_home", out.get("goalie_save_strength_home", 0.0))
+    out["goalie_strength_away"] = out.get("goalie_strength_away", out.get("goalie_save_strength_away", 0.0))
+    out["goalie_strength_diff"] = out.get("goalie_strength_away", 0.0) - out.get("goalie_strength_home", 0.0)
+    out["special_teams_diff"] = out.get("special_teams_efficiency_diff", out.get("special_teams_impact_diff", 0.0))
+    out["xgf_diff"] = out.get("xgf_diff", 0.0)
+    out["xga_diff"] = out.get("xga_diff", 0.0)
     return out
 
+
+
+def add_elo_features(games_df: pd.DataFrame, sport: str) -> pd.DataFrame:
+    """Compute preseason-initialized Elo values game-by-game with context adjustments."""
+    out = games_df.copy()
+    out["event_date"] = pd.to_datetime(out.get("event_date"), errors="coerce", utc=True)
+    out["elo_diff"] = pd.to_numeric(out.get("elo_diff", pd.Series(0.0, index=out.index)), errors="coerce").fillna(0.0).astype(float)
+    preseason = {"nba": 1505.0, "nfl": 1510.0, "nhl": 1500.0}.get(sport, 1500.0)
+    hfa = {"nba": 65.0, "nfl": 45.0, "nhl": 35.0}.get(sport, 45.0)
+    k = {"nba": 18.0, "nfl": 22.0, "nhl": 16.0}.get(sport, 18.0)
+    ratings: dict[str, float] = {}
+
+    for idx in out.sort_values("event_date").index:
+        row = out.loc[idx]
+        home = str(row.get("home_team", ""))
+        away = str(row.get("away_team", ""))
+        home_elo = ratings.get(home, preseason)
+        away_elo = ratings.get(away, preseason)
+
+        injury_adj = 9.0 * float(row.get("injury_impact_diff", 0.0))
+        rest_adj = 4.0 * float(row.get("rest_diff", 0.0))
+        travel_adj = -0.004 * float(row.get("travel_distance_away", row.get("travel_distance", 0.0)))
+        out.loc[idx, "elo_home"] = home_elo
+        out.loc[idx, "elo_away"] = away_elo
+        out.loc[idx, "elo_diff"] = (home_elo - away_elo) + hfa + injury_adj + rest_adj + travel_adj
+
+        if "home_score" in out.columns and "away_score" in out.columns:
+            hs = float(row.get("home_score", 0.0))
+            aw = float(row.get("away_score", 0.0))
+            if hs != 0.0 or aw != 0.0:
+                actual = 1.0 if hs > aw else 0.0
+                exp_home = 1.0 / (1.0 + 10 ** (-(home_elo + hfa - away_elo) / 400.0))
+                margin = max(1.0, abs(hs - aw))
+                mov_mult = math.log(margin + 1.0)
+                ratings[home] = home_elo + k * mov_mult * (actual - exp_home)
+                ratings[away] = away_elo + k * mov_mult * ((1.0 - actual) - (1.0 - exp_home))
+
+    return out.fillna(0.0)
 
 def add_market_context_features(games_df: pd.DataFrame) -> pd.DataFrame:
     out = games_df.copy()
@@ -255,13 +314,18 @@ def add_market_context_features(games_df: pd.DataFrame) -> pd.DataFrame:
     out["public_favorite_bias_flag"] = (_series("home_odds") < -140).astype(float)
     out["favorite_inflation_flag"] = (out["line_movement"].abs() >= 1.5).astype(float)
     out["underdog_inflation_flag"] = (out["line_movement"] <= -1.5).astype(float)
-    out["clv_placeholder"] = _series("clv_placeholder")
+    out["bet_line"] = _series("bet_line") if "bet_line" in out.columns else out["current_line"]
+    out["closing_line"] = _series("closing_line") if "closing_line" in out.columns else out["current_line"]
+    out["clv_diff"] = out["closing_line"] - out["bet_line"]
+    out["clv_placeholder"] = _series("clv_placeholder") if "clv_placeholder" in out.columns else out["clv_diff"]
+    out["opening_line"] = out["open_line"]
     return out
 
 
 def enrich_with_context_features(games_df: pd.DataFrame, sport: str, data_root: Path) -> pd.DataFrame:
     out = add_injury_features(games_df, sport, data_root)
     out = add_travel_fatigue_features(out, sport, data_root)
+    out = add_elo_features(out, sport)
     out = add_efficiency_features(out, sport, data_root)
     out = add_market_context_features(out)
     out["injury_impact"] = out.get("injury_impact_diff", 0.0)

@@ -10,15 +10,23 @@ class NHLModel(NBAModel):
 
     sport = "nhl"
     BASE_FEATURES = NBAModel.BASE_FEATURES + [
+        "xgf_home",
+        "xgf_away",
+        "xga_home",
+        "xga_away",
         "xgf_diff",
         "xga_diff",
         "xgf_pct_diff",
         "shot_share_diff",
         "special_teams_efficiency_diff",
+        "goalie_strength_home",
+        "goalie_strength_away",
+        "goalie_strength_diff",
         "goalie_save_strength_diff",
         "goalie_xgsaved_proxy_diff",
         "top_line_impact_diff",
         "defensive_pair_impact_diff",
+        "special_teams_diff",
     ]
     WIN_FEATURES = BASE_FEATURES
     SPREAD_FEATURES = BASE_FEATURES + ["spread_line"]
