@@ -70,8 +70,8 @@ BASE_FEATURE_COLUMNS = [
     "rest_days_away",
     "back_to_back_home",
     "back_to_back_away",
-    "three_in_four_home",
-    "three_in_four_away",
+    "three_games_in_four_home",
+    "three_games_in_four_away",
     "road_trip_length_home",
     "road_trip_length_away",
     "timezone_shift_home",
@@ -83,6 +83,19 @@ BASE_FEATURE_COLUMNS = [
     "net_rating_diff",
     "pace",
     "home_indicator",
+    "rest_days",
+    "back_to_back",
+    "three_games_in_four",
+    "time_zone_shift",
+    "starter_out_count",
+    "star_player_out_flag",
+    "qb_out_flag",
+    "starting_goalie_out_flag",
+    "public_bias_flag",
+    "last5_net_rating_diff",
+    "last10_net_rating_diff",
+    "recent_goal_diff",
+    "recent_epa_diff",
 ]
 
 FEATURE_COLUMNS_BY_SPORT = {
@@ -129,7 +142,7 @@ def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFra
     out["rest_diff"] = _coalesce_numeric(out, ["rest_diff"])
     out["travel_distance"] = _coalesce_numeric(out, ["travel_distance", "travel_fatigue_diff", "travel_diff"])
     out["offensive_rating_diff"] = _coalesce_numeric(
-        out, ["offensive_rating_diff", "off_rating_diff", "epa_per_play_diff", "xgf_diff"]
+        out, ["offensive_rating_diff", "off_rating_diff", "epa_per_play_diff", "xgf_diff", "off_rating_diff"]
     )
     out["defensive_rating_diff"] = _coalesce_numeric(
         out, ["defensive_rating_diff", "def_rating_diff", "xga_diff", "pressure_rate_diff"]
@@ -164,21 +177,34 @@ def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFra
     out["expected_value"] = _coalesce_numeric(out, ["expected_value"])
     out["line_movement"] = _coalesce_numeric(out, ["line_movement"])
     out["clv_placeholder"] = _coalesce_numeric(out, ["clv_placeholder"])
-    out["public_favorite_bias_flag"] = _coalesce_numeric(out, ["public_favorite_bias_flag"])
+    out["public_favorite_bias_flag"] = _coalesce_numeric(out, ["public_favorite_bias_flag", "public_bias_flag"])
+    out["public_bias_flag"] = _coalesce_numeric(out, ["public_bias_flag", "public_favorite_bias_flag"])
     out["favorite_inflation_flag"] = _coalesce_numeric(out, ["favorite_inflation_flag"])
     out["underdog_inflation_flag"] = _coalesce_numeric(out, ["underdog_inflation_flag"])
     out["rest_days_home"] = _coalesce_numeric(out, ["rest_days_home"])
     out["rest_days_away"] = _coalesce_numeric(out, ["rest_days_away"])
     out["back_to_back_home"] = _coalesce_numeric(out, ["back_to_back_home"])
     out["back_to_back_away"] = _coalesce_numeric(out, ["back_to_back_away"])
-    out["three_in_four_home"] = _coalesce_numeric(out, ["three_in_four_home"])
-    out["three_in_four_away"] = _coalesce_numeric(out, ["three_in_four_away"])
+    out["three_games_in_four_home"] = _coalesce_numeric(out, ["three_games_in_four_home", "three_in_four_home"])
+    out["three_games_in_four_away"] = _coalesce_numeric(out, ["three_games_in_four_away", "three_in_four_away"])
+    out["three_games_in_four"] = _coalesce_numeric(out, ["three_games_in_four", "three_in_four"])
     out["road_trip_length_home"] = _coalesce_numeric(out, ["road_trip_length_home"])
     out["road_trip_length_away"] = _coalesce_numeric(out, ["road_trip_length_away"])
     out["timezone_shift_home"] = _coalesce_numeric(out, ["timezone_shift_home"])
     out["timezone_shift_away"] = _coalesce_numeric(out, ["timezone_shift_away"])
+    out["time_zone_shift"] = _coalesce_numeric(out, ["time_zone_shift", "timezone_shift_away"])
     out["travel_distance_home"] = _coalesce_numeric(out, ["travel_distance_home"])
     out["travel_distance_away"] = _coalesce_numeric(out, ["travel_distance_away"])
+    out["rest_days"] = _coalesce_numeric(out, ["rest_days", "rest_days_away"])
+    out["back_to_back"] = _coalesce_numeric(out, ["back_to_back", "back_to_back_away"])
+    out["starter_out_count"] = _coalesce_numeric(out, ["starter_out_count", "starter_out_count_away"])
+    out["star_player_out_flag"] = _coalesce_numeric(out, ["star_player_out_flag", "star_player_out_flag_away"])
+    out["qb_out_flag"] = _coalesce_numeric(out, ["qb_out_flag", "qb_out_flag_away"])
+    out["starting_goalie_out_flag"] = _coalesce_numeric(out, ["starting_goalie_out_flag", "starting_goalie_out_flag_away"])
+    out["last5_net_rating_diff"] = _coalesce_numeric(out, ["last5_net_rating_diff"])
+    out["last10_net_rating_diff"] = _coalesce_numeric(out, ["last10_net_rating_diff"])
+    out["recent_goal_diff"] = _coalesce_numeric(out, ["recent_goal_diff"])
+    out["recent_epa_diff"] = _coalesce_numeric(out, ["recent_epa_diff"])
     out["spread_line"] = _coalesce_numeric(out, ["spread_line", "closing_spread_home"])
     out["total_line"] = _coalesce_numeric(out, ["total_line", "closing_total"])
     out["home_score"] = _coalesce_numeric(out, ["home_score"])
