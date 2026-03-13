@@ -149,9 +149,12 @@ class NBAModel(SportModel):
             game_id = row["game_id"]
             away_team, home_team = row["away_team"], row["home_team"]
             game_txt = f"{away_team} @ {home_team}"
-            completeness = 1 - row[self.WIN_FEATURES].isna().mean()
+            win_features = row.reindex(self.WIN_FEATURES, fill_value=0.0).fillna(0.0)
+            spread_features = row.reindex(self.SPREAD_FEATURES, fill_value=0.0).fillna(0.0)
+            total_features = row.reindex(self.TOTAL_FEATURES, fill_value=0.0).fillna(0.0)
+            completeness = 1 - win_features.isna().mean()
 
-            ml_raw = self.moneyline_model.predict_proba(pd.DataFrame([row[self.WIN_FEATURES].fillna(0.0)]))[:, 1]
+            ml_raw = self.moneyline_model.predict_proba(pd.DataFrame([win_features]))[:, 1]
             p_home_ml = float(self.moneyline_cal.predict(ml_raw)[0])
             p_away_ml = 1 - p_home_ml
             market_home = american_to_implied_probability(int(row["home_odds"]))
@@ -166,14 +169,14 @@ class NBAModel(SportModel):
                 ev = expected_value(p_model, odds)
                 conf = self._confidence(edge, 1 - self.metrics.get("moneyline_brier", 0.25), completeness)
                 reason = (
-                    f"Net rating diff {row['net_rating_diff']:.2f}, rest diff {row['rest_diff']:.1f}, "
-                    f"injury diff {row['injury_impact_diff']:.2f}, market-model gap {edge:.1%}."
+                    f"Net rating diff {row.get('net_rating_diff', 0.0):.2f}, rest diff {row.get('rest_diff', 0.0):.1f}, "
+                    f"injury diff {row.get('injury_impact_diff', 0.0):.2f}, market-model gap {edge:.1%}."
                 )
                 preds.append(
                     Prediction(game_id, self.sport, "moneyline", side, p_model, p_market, edge, ev, conf, reason, metadata={"game": game_txt})
                 )
 
-            sp_raw = self.spread_model.predict_proba(pd.DataFrame([row[self.SPREAD_FEATURES].fillna(0.0)]))[:, 1]
+            sp_raw = self.spread_model.predict_proba(pd.DataFrame([spread_features]))[:, 1]
             p_home_cover = float(self.spread_cal.predict(sp_raw)[0])
             p_away_cover = 1 - p_home_cover
             mk_away = american_to_implied_probability(int(row["away_spread_odds"]))
@@ -181,24 +184,24 @@ class NBAModel(SportModel):
             nv_away, nv_home = remove_vig_two_way(mk_away, mk_home)
 
             for side, p_model, p_market, odds in [
-                (f"{home_team} {row['spread_line']:+.1f}", p_home_cover, nv_home, int(row["home_spread_odds"])),
-                (f"{away_team} {(-row['spread_line']):+.1f}", p_away_cover, nv_away, int(row["away_spread_odds"])),
+                (f"{home_team} {row.get('spread_line', 0.0):+.1f}", p_home_cover, nv_home, int(row["home_spread_odds"])),
+                (f"{away_team} {(-row.get('spread_line', 0.0)):+.1f}", p_away_cover, nv_away, int(row["away_spread_odds"])),
             ]:
                 edge = p_model - p_market
                 ev = expected_value(p_model, odds)
                 conf = self._confidence(edge, 1 - self.metrics.get("spread_brier", 0.25), completeness)
-                reason = f"Spread model favored by rating + rest blend; line {row['spread_line']:+.1f}; gap {edge:.1%}."
+                reason = f"Spread model favored by rating + rest blend; line {row.get('spread_line', 0.0):+.1f}; gap {edge:.1%}."
                 preds.append(Prediction(game_id, self.sport, "spread", side, p_model, p_market, edge, ev, conf, reason, metadata={"game": game_txt}))
 
-            tt_raw = self.total_model.predict_proba(pd.DataFrame([row[self.TOTAL_FEATURES].fillna(0.0)]))[:, 1]
+            tt_raw = self.total_model.predict_proba(pd.DataFrame([total_features]))[:, 1]
             p_over = float(self.total_cal.predict(tt_raw)[0])
             p_under = 1 - p_over
             mk_over = american_to_implied_probability(int(row["over_odds"]))
             mk_under = american_to_implied_probability(int(row["under_odds"]))
             nv_over, nv_under = remove_vig_two_way(mk_over, mk_under)
             for side, p_model, p_market, odds in [
-                (f"Over {row['total_line']:.1f}", p_over, nv_over, int(row["over_odds"])),
-                (f"Under {row['total_line']:.1f}", p_under, nv_under, int(row["under_odds"])),
+                (f"Over {row.get('total_line', 0.0):.1f}", p_over, nv_over, int(row["over_odds"])),
+                (f"Under {row.get('total_line', 0.0):.1f}", p_under, nv_under, int(row["under_odds"])),
             ]:
                 edge = p_model - p_market
                 ev = expected_value(p_model, odds)
