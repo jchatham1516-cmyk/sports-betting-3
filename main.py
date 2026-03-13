@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+import logging
 from dataclasses import asdict
 from pathlib import Path
 
@@ -42,6 +43,44 @@ PREDICTION_COLUMNS = [
 ]
 
 TOP_BETS_DAILY = 5
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _normalize_team_name(name: str | None) -> str:
+    if not name:
+        return ""
+    return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in str(name)).split())
+
+
+
+def _validate_game_odds_mapping(game_id: str, game_row: dict, game: str) -> tuple[bool, str | None]:
+    home_team = str(game_row["home_team"])
+    away_team = str(game_row["away_team"])
+    home_odds = int(game_row["home_odds"])
+    away_odds = int(game_row["away_odds"])
+
+    normalized_home = _normalize_team_name(home_team)
+    normalized_away = _normalize_team_name(away_team)
+    if not normalized_home or not normalized_away or normalized_home == normalized_away:
+        return False, f"invalid normalized teams for {game}: home={home_team} away={away_team}"
+
+    LOGGER.info(
+        "[ODDS_MAP] game_id=%s game=%s away_team=%s home_team=%s away_ml=%s home_ml=%s away_spread=%s@%s home_spread=%s@%s",
+        game_id,
+        game,
+        away_team,
+        home_team,
+        away_odds,
+        home_odds,
+        int(game_row["away_spread_odds"]),
+        -float(game_row.get("spread_line", 0.0)),
+        int(game_row["home_spread_odds"]),
+        float(game_row.get("spread_line", 0.0)),
+    )
+    return True, None
+
 
 RECOMMENDATION_COLUMNS = [
     "sport",
@@ -134,6 +173,26 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
     return bets
 
 
+
+def _validate_exported_bets_against_sportsbook(game_id: str, game_row: dict, bets: list[dict]) -> tuple[bool, str | None]:
+    team_moneyline = {
+        _normalize_team_name(str(game_row["home_team"])): int(game_row["home_odds"]),
+        _normalize_team_name(str(game_row["away_team"])): int(game_row["away_odds"]),
+    }
+    for bet in bets:
+        if bet["market"] != "moneyline":
+            continue
+        team_key = _normalize_team_name(str(bet["selection"]))
+        sportsbook_odds = team_moneyline.get(team_key)
+        if sportsbook_odds is None:
+            return False, f"selection team not found in sportsbook mapping: {bet['selection']}"
+        if int(bet["odds"]) != sportsbook_odds:
+            return (
+                False,
+                f"odds mismatch for selection={bet['selection']} exported={bet['odds']} sportsbook={sportsbook_odds}",
+            )
+    return True, None
+
 def run_daily_pipeline(config_path: str | None = None, sport: str | None = None) -> None:
     cfg = load_config(config_path)
     logger = setup_logging(cfg["logging"]["level"])
@@ -203,14 +262,21 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         game_context = game_rows_by_id.get(game_id)
         if game_context is None:
             continue
-        bets.extend(
-            _build_game_candidate_bets(
-                predictions=game_predictions.to_dict("records"),
-                game_row=game_context,
-                sport_name=game_context["sport"],
-                game=game_context["game"],
-            )
+        is_valid, warning = _validate_game_odds_mapping(game_id, game_context, game_context["game"])
+        if not is_valid:
+            logger.warning("[ODDS_SANITY_SKIP] game_id=%s game=%s reason=%s", game_id, game_context["game"], warning)
+            continue
+        game_bets = _build_game_candidate_bets(
+            predictions=game_predictions.to_dict("records"),
+            game_row=game_context,
+            sport_name=game_context["sport"],
+            game=game_context["game"],
         )
+        exports_valid, export_warning = _validate_exported_bets_against_sportsbook(game_id, game_context, game_bets)
+        if not exports_valid:
+            logger.warning("[ODDS_SANITY_SKIP] game_id=%s game=%s reason=%s", game_id, game_context["game"], export_warning)
+            continue
+        bets.extend(game_bets)
 
     ranked_bets = sorted(
         bets,
