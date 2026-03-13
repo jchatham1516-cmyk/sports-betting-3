@@ -22,7 +22,7 @@ from sports_betting.scripts.data_io import (
 from sports_betting.sports.common.logging_utils import setup_logging
 from sports_betting.sports.common.reporting import render_daily_card, save_dataframe, save_recommendations_json
 from sports_betting.sports.common.risk import BankrollConfig
-from sports_betting.sports.common.selection import qualify_prediction
+from sports_betting.sports.common.selection import fallback_prediction, qualify_prediction
 from sports_betting.sports.nba.model import NBAModel
 from sports_betting.sports.nfl.model import NFLModel
 from sports_betting.sports.nhl.model import NHLModel
@@ -79,12 +79,28 @@ def choose_model(sport: str):
     return {"nba": NBAModel, "nfl": NFLModel, "nhl": NHLModel}[sport]()
 
 
+def _best_market_sides(recommendations: list) -> list:
+    """Keep only the best side per sport/game/market based on EV then rank."""
+    best = {}
+    for rec in recommendations:
+        key = (rec.sport, rec.game, rec.market)
+        current = best.get(key)
+        if current is None or (rec.expected_value, rec.rank_score, rec.confidence_score) > (
+            current.expected_value,
+            current.rank_score,
+            current.confidence_score,
+        ):
+            best[key] = rec
+    return list(best.values())
+
+
 def run_daily_pipeline(config_path: str | None = None, sport: str | None = None) -> None:
     cfg = load_config(config_path)
     logger = setup_logging(cfg["logging"]["level"])
 
     all_predictions: list[dict] = []
     all_recs = []
+    fallback_pool = []
     all_passes: list[str] = []
     recs_by_sport = defaultdict(list)
 
@@ -144,15 +160,39 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             )
             if rec:
                 all_recs.append(rec)
-                recs_by_sport[sport_name].append(rec)
             else:
                 all_passes.append(
                     f"{game} ({sport_name.upper()} {pred.market} {pred.side}): filtered by edge/EV/confidence."
                 )
 
-    all_recs.sort(key=lambda x: x.rank_score, reverse=True)
-    top_n = cfg["output"]["top_n"]
+            fallback_rec = fallback_prediction(
+                pred=pred,
+                game_text=game,
+                event_date=pd.to_datetime(game_row["event_date"]).date(),
+                odds=int(game_row[odds_col]),
+                line=float(game_row[line_col]) if line_col else None,
+                bankroll_cfg=bankroll_cfg,
+                stake_mode=cfg["bankroll"]["stake_mode"],
+            )
+            if fallback_rec:
+                fallback_pool.append(fallback_rec)
+
+    all_recs = _best_market_sides(all_recs)
+    used_fallback = False
+
+    if not all_recs:
+        fallback_pool = _best_market_sides(fallback_pool)
+        fallback_pool.sort(key=lambda x: (x.expected_value, x.rank_score), reverse=True)
+        all_recs = fallback_pool[:5]
+        used_fallback = bool(all_recs)
+
+    all_recs.sort(key=lambda x: (x.rank_score, x.expected_value), reverse=True)
+    top_n = min(int(cfg["output"].get("top_n", 10)), 10)
     trimmed_recs = all_recs[:top_n] if top_n > 0 else all_recs
+
+    recs_by_sport = defaultdict(list)
+    for rec in trimmed_recs:
+        recs_by_sport[rec.sport].append(rec)
 
     out_dir = Path("data/outputs")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -188,7 +228,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         f"Total recommendations exported (after top_n): {len(trimmed_recs)}",
         "",
     ]
-    if trimmed_recs:
+    if trimmed_recs and used_fallback:
+        report_lines.append("No bets met standard thresholds; fallback picks were used (top 5 by EV).")
+    elif trimmed_recs:
         report_lines.append("Qualifying bets were found.")
     else:
         report_lines.append("No qualifying bets today")
