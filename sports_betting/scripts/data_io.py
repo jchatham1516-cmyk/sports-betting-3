@@ -24,51 +24,20 @@ SPORT_TO_ODDS_API_KEY = {
     "nhl": "icehockey_nhl",
 }
 
-FEATURE_COLUMNS_BY_SPORT = {
-    "nba": [
-        "elo_diff",
-        "offensive_rating_diff",
-        "defensive_rating_diff",
-        "net_rating_diff",
-        "pace_diff",
-        "rest_diff",
-        "travel_fatigue_diff",
-        "recent_form_diff",
-        "injury_impact_diff",
-        "market_spread",
-        "market_total",
-    ],
-    "nfl": [
-        "elo_diff",
-        "epa_per_play_diff",
-        "success_rate_diff",
-        "yards_per_play_diff",
-        "turnover_margin_diff",
-        "pressure_rate_diff",
-        "qb_impact_diff",
-        "weather_total_impact",
-        "rest_diff",
-        "travel_fatigue_diff",
-        "market_spread",
-        "market_total",
-    ],
-    "nhl": [
-        "elo_diff",
-        "xgf_diff",
-        "xga_diff",
-        "xg_total",
-        "goalie_strength_diff",
-        "special_teams_diff",
-        "rest_diff",
-        "travel_fatigue_diff",
-        "recent_form_diff",
-        "shooting_regression_signal",
-        "save_regression_signal",
-        "market_spread",
-        "market_total",
-    ],
-}
+# Shared training feature space used by all sports models.
+BASE_FEATURE_COLUMNS = [
+    "elo_diff",
+    "rest_diff",
+    "travel_distance",
+    "offensive_rating_diff",
+    "defensive_rating_diff",
+    "net_rating_diff",
+    "injury_impact",
+    "pace",
+    "home_indicator",
+]
 
+FEATURE_COLUMNS_BY_SPORT = {sport: list(BASE_FEATURE_COLUMNS) for sport in SUPPORTED_SPORTS}
 TARGET_COLUMNS = ["home_win", "home_cover", "over_hit"]
 
 
@@ -94,6 +63,59 @@ def _normalize_sports(sports: list[str] | tuple[str, ...] | None) -> list[str]:
     return normalized
 
 
+def _coalesce_numeric(df: pd.DataFrame, candidates: list[str], default: float = 0.0) -> pd.Series:
+    for col in candidates:
+        if col in df.columns:
+            return pd.to_numeric(df[col], errors="coerce").fillna(default)
+    return pd.Series(default, index=df.index, dtype="float64")
+
+
+def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFrame:
+    out = df.copy()
+    out["elo_diff"] = _coalesce_numeric(out, ["elo_diff"])
+    out["rest_diff"] = _coalesce_numeric(out, ["rest_diff"])
+    out["travel_distance"] = _coalesce_numeric(out, ["travel_distance", "travel_fatigue_diff", "travel_diff"])
+    out["offensive_rating_diff"] = _coalesce_numeric(
+        out, ["offensive_rating_diff", "off_rating_diff", "epa_per_play_diff", "xgf_diff"]
+    )
+    out["defensive_rating_diff"] = _coalesce_numeric(
+        out, ["defensive_rating_diff", "def_rating_diff", "xga_diff", "pressure_rate_diff"]
+    )
+    out["net_rating_diff"] = _coalesce_numeric(out, ["net_rating_diff", "success_rate_diff", "special_teams_diff"])
+    out["injury_impact"] = _coalesce_numeric(out, ["injury_impact", "injury_impact_diff", "qb_impact_diff", "goalie_strength_diff"])
+    out["pace"] = _coalesce_numeric(out, ["pace", "pace_diff", "xg_total", "weather_total_impact"])
+    out["home_indicator"] = _coalesce_numeric(out, ["home_indicator"], default=1.0).clip(0, 1)
+    out["spread_line"] = _coalesce_numeric(out, ["spread_line"])
+    out["total_line"] = _coalesce_numeric(out, ["total_line"])
+
+    # Labels.
+    out["home_win"] = _coalesce_numeric(out, ["home_win"]).round().clip(0, 1).astype(int)
+    out["home_cover"] = _coalesce_numeric(out, ["home_cover"]).round().clip(0, 1).astype(int)
+    out["over_hit"] = _coalesce_numeric(out, ["over_hit"]).round().clip(0, 1).astype(int)
+
+    LOGGER.info("[%s] Standardized historical feature columns for training.", sport.upper())
+    return out
+
+
+def load_historical_dataset(sport: str) -> pd.DataFrame:
+    hist_path = historical_file_path(sport)
+    if not hist_path.exists():
+        raise RuntimeError(f"[{sport.upper()}] Historical CSV does not exist: {hist_path}")
+    return _standardize_historical_features(pd.read_csv(hist_path), sport)
+
+
+def load_nba_historical_dataset() -> pd.DataFrame:
+    return load_historical_dataset("nba")
+
+
+def load_nfl_historical_dataset() -> pd.DataFrame:
+    return load_historical_dataset("nfl")
+
+
+def load_nhl_historical_dataset() -> pd.DataFrame:
+    return load_historical_dataset("nhl")
+
+
 def validate_historical_requirements(
     sports: list[str] | tuple[str, ...] | None = None,
     allow_model_artifacts: bool = True,
@@ -116,12 +138,15 @@ def validate_historical_requirements(
             continue
 
         if validate_schema and hist_exists:
-            df = pd.read_csv(hist_path, nrows=5)
+            raw_df = pd.read_csv(hist_path, nrows=5)
+            required_raw = ["home_win", "home_cover", "over_hit", "spread_line", "total_line"]
+            missing_raw = [col for col in required_raw if col not in raw_df.columns]
+            df = _standardize_historical_features(raw_df, sport)
             required_cols = required_historical_columns(sport)
             missing_cols = [col for col in required_cols if col not in df.columns]
-            if missing_cols:
+            if missing_raw or missing_cols:
                 schema_messages.append(
-                    f"- {sport.upper()}: {hist_path} is missing columns: {', '.join(missing_cols)}"
+                    f"- {sport.upper()}: {hist_path} is missing columns: {', '.join(sorted(set(missing_raw + missing_cols)))}"
                 )
 
     if missing_messages or schema_messages:
@@ -198,21 +223,20 @@ def generate_sample_data(sport: str, rows: int = 300) -> pd.DataFrame:
             "over_odds": rng.choice([-112, -110, -108, 100], rows),
             "under_odds": rng.choice([-112, -110, -108, 100], rows),
             "sportsbook": ["synthetic"] * rows,
+            "home_indicator": np.ones(rows),
         }
     )
-    for c in [
-        "elo_diff", "net_rating_diff", "off_rating_diff", "def_rating_diff", "pace_diff", "rest_diff", "injury_impact_diff",
-        "travel_fatigue_diff", "recent_form_diff", "pace_sum", "off_rating_sum", "def_rating_sum", "recent_total_trend",
-        "injury_total_impact", "epa_per_play_diff", "success_rate_diff", "yards_per_play_diff", "qb_impact_diff",
-        "pressure_rate_diff", "turnover_margin_diff", "off_efficiency_sum", "def_efficiency_sum", "weather_total_impact",
-        "red_zone_efficiency_sum", "xgf_diff", "xga_diff", "special_teams_diff", "goalie_strength_diff", "xg_total",
-        "goalie_total_impact", "shooting_regression_signal", "save_regression_signal"
-    ]:
+    for c in BASE_FEATURE_COLUMNS:
+        if c == "home_indicator":
+            continue
         base[c] = rng.normal(0, 1, rows)
 
-    base["home_win"] = (0.08 * base["elo_diff"] + 0.12 * base["rest_diff"] + rng.normal(0, 1, rows) > 0).astype(int)
-    base["home_cover"] = (0.1 * base["spread_line"] + 0.08 * base["recent_form_diff"] + rng.normal(0, 1, rows) > 0).astype(int)
-    base["over_hit"] = (0.08 * base["pace_sum"] + 0.1 * base["recent_total_trend"] + rng.normal(0, 1, rows) > 0).astype(int)
+    win_score = 0.25 * base["elo_diff"] + 0.2 * base["net_rating_diff"] + 0.1 * base["rest_diff"] - 0.08 * base["travel_distance"]
+    spread_score = 0.18 * base["net_rating_diff"] + 0.08 * base["rest_diff"] - 0.15 * base["spread_line"]
+    total_score = 0.22 * base["pace"] + 0.16 * base["offensive_rating_diff"] - 0.12 * base["defensive_rating_diff"]
+    base["home_win"] = (win_score + rng.normal(0, 0.8, rows) > 0).astype(int)
+    base["home_cover"] = (spread_score + rng.normal(0, 0.8, rows) > 0).astype(int)
+    base["over_hit"] = (total_score + rng.normal(0, 0.8, rows) > 0).astype(int)
     return base
 
 
@@ -299,8 +323,7 @@ def fetch_live_daily_odds(sport: str) -> pd.DataFrame:
         record.update(h2h)
         record.update(spreads)
         record.update(totals)
-        record["market_spread"] = float(record.get("spread_line", 0.0))
-        record["market_total"] = float(record.get("total_line", 0.0))
+        record["home_indicator"] = 1.0
         for feature_name in FEATURE_COLUMNS_BY_SPORT[sport]:
             record.setdefault(feature_name, 0.0)
         records.append(record)
@@ -316,14 +339,6 @@ def fetch_live_daily_odds(sport: str) -> pd.DataFrame:
         raise RuntimeError(f"[{sport.upper()}] Failed to parse event_date for {bad_count} events from Odds API.")
 
     LOGGER.info("[%s] Odds API events returned: %s (usable with full markets: %s)", sport.upper(), len(payload), len(daily))
-    LOGGER.info("[%s] First teams: %s", sport.upper(), "; ".join((daily["away_team"] + " @ " + daily["home_team"]).head(3).tolist()))
-    LOGGER.info("[%s] Sportsbook sources (first 5): %s", sport.upper(), ", ".join(daily["sportsbook"].head(5).tolist()))
-    LOGGER.info(
-        "[%s] Event dates parsed (first 5): %s",
-        sport.upper(),
-        ", ".join(daily["event_date"].dt.strftime("%Y-%m-%d %H:%M:%SZ").head(5).tolist()),
-    )
-
     return daily
 
 
@@ -332,6 +347,8 @@ def load_historical_and_daily(sport: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     daily_path = ROOT / "raw" / f"{sport}_daily.csv"
 
     historical = load_csv_or_empty(hist_path)
+    if not historical.empty:
+        historical = _standardize_historical_features(historical, sport)
 
     if _is_test_mode():
         LOGGER.warning("[%s] TEST_MODE=true -> synthetic fallback is enabled.", sport.upper())

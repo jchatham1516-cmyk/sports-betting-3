@@ -1,16 +1,17 @@
-"""NBA model implementation with boosted ensembles and calibrated probabilities."""
+"""NBA model implementation with Gradient Boosting + CV calibration."""
 
 from __future__ import annotations
 
+import logging
 import pickle
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import brier_score_loss, log_loss
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 from sports_betting.models.entities import Prediction
 from sports_betting.sports.common.base import SportModel
@@ -20,178 +21,94 @@ from sports_betting.sports.common.odds import (
     remove_vig_two_way,
 )
 
-
-class EnsembleProbabilityCalibrator:
-    """Hybrid Platt + isotonic probability calibrator."""
-
-    def __init__(self, lower: float = 0.08, upper: float = 0.92) -> None:
-        self.lower = lower
-        self.upper = upper
-        self._platt = LogisticRegression(max_iter=500)
-        self._isotonic = None
-        self._platt_fitted = False
-        self._isotonic_fitted = False
-
-    def fit(self, probs: np.ndarray, y_true: np.ndarray) -> None:
-        clipped = np.clip(probs, 1e-4, 1 - 1e-4)
-        logits = np.log(clipped / (1 - clipped)).reshape(-1, 1)
-
-        # Platt scaling
-        self._platt.fit(logits, y_true)
-        self._platt_fitted = True
-
-        # Isotonic scaling
-        from sklearn.isotonic import IsotonicRegression
-
-        self._isotonic = IsotonicRegression(out_of_bounds="clip")
-        self._isotonic.fit(clipped, y_true)
-        self._isotonic_fitted = True
-
-    def predict(self, probs: np.ndarray) -> np.ndarray:
-        clipped = np.clip(probs, 1e-4, 1 - 1e-4)
-        pred_parts = []
-
-        if self._platt_fitted:
-            logits = np.log(clipped / (1 - clipped)).reshape(-1, 1)
-            pred_parts.append(self._platt.predict_proba(logits)[:, 1])
-
-        if self._isotonic_fitted and self._isotonic is not None:
-            pred_parts.append(self._isotonic.predict(clipped))
-
-        if not pred_parts:
-            pred_parts.append(clipped)
-
-        blended = np.mean(np.vstack(pred_parts), axis=0)
-        return np.clip(blended, self.lower, self.upper)
+LOGGER = logging.getLogger(__name__)
 
 
 class NBAModel(SportModel):
     sport = "nba"
 
-    WIN_FEATURES = [
+    BASE_FEATURES = [
         "elo_diff",
-        "offensive_rating_diff",
-        "defensive_rating_diff",
-        "net_rating_diff",
-        "pace_diff",
         "rest_diff",
-        "travel_fatigue_diff",
-        "recent_form_diff",
-        "injury_impact_diff",
-        "market_spread",
-        "market_total",
-    ]
-
-    SPREAD_FEATURES = WIN_FEATURES + ["spread_line"]
-    TOTAL_FEATURES = [
-        "pace_diff",
+        "travel_distance",
         "offensive_rating_diff",
         "defensive_rating_diff",
         "net_rating_diff",
-        "recent_form_diff",
-        "injury_impact_diff",
-        "market_spread",
-        "market_total",
-        "total_line",
+        "injury_impact",
+        "pace",
+        "home_indicator",
     ]
+    WIN_FEATURES = BASE_FEATURES
+    SPREAD_FEATURES = BASE_FEATURES + ["spread_line"]
+    TOTAL_FEATURES = BASE_FEATURES + ["total_line"]
 
     def __init__(self) -> None:
-        self.moneyline_models = self._build_ensemble_models()
-        self.spread_models = self._build_ensemble_models()
-        self.total_models = self._build_ensemble_models()
-        self.moneyline_cal = EnsembleProbabilityCalibrator()
-        self.spread_cal = EnsembleProbabilityCalibrator()
-        self.total_cal = EnsembleProbabilityCalibrator()
+        self.moneyline_model: CalibratedClassifierCV | None = None
+        self.spread_model: CalibratedClassifierCV | None = None
+        self.total_model: CalibratedClassifierCV | None = None
         self.metrics: dict[str, float] = {}
+        self.feature_importance: dict[str, dict[str, float]] = {}
 
-    def _build_ensemble_models(self) -> list:
-        models = [RandomForestClassifier(n_estimators=400, min_samples_leaf=8, random_state=42)]
-        try:
-            from xgboost import XGBClassifier
-
-            models.append(
-                XGBClassifier(
-                    n_estimators=350,
-                    max_depth=4,
-                    learning_rate=0.04,
-                    subsample=0.9,
-                    colsample_bytree=0.9,
-                    objective="binary:logistic",
-                    eval_metric="logloss",
-                    random_state=42,
-                )
-            )
-        except Exception:
-            try:
-                from lightgbm import LGBMClassifier
-
-                models.append(
-                    LGBMClassifier(
-                        n_estimators=350,
-                        learning_rate=0.04,
-                        num_leaves=31,
-                        subsample=0.9,
-                        colsample_bytree=0.9,
-                        random_state=42,
-                        verbosity=-1,
-                    )
-                )
-            except Exception:
-                pass
-        return models
+    def _base_estimator(self) -> GradientBoostingClassifier:
+        return GradientBoostingClassifier(
+            n_estimators=300,
+            learning_rate=0.03,
+            max_depth=3,
+            min_samples_leaf=12,
+            random_state=42,
+        )
 
     def _build_features(self, df: pd.DataFrame, features: list[str]) -> pd.DataFrame:
-        return pd.DataFrame([{feature: row.get(feature, 0.0) for feature in features} for _, row in df.iterrows()]).fillna(0.0)
+        return df.reindex(columns=features, fill_value=0.0).fillna(0.0)
 
-    def _ensemble_predict(self, models: list, x: pd.DataFrame) -> np.ndarray:
-        probs = [model.predict_proba(x)[:, 1] for model in models]
-        return np.mean(np.vstack(probs), axis=0)
-
-    def _fit_market(self, df: pd.DataFrame, features: list[str], target_col: str, models: list, calibrator: EnsembleProbabilityCalibrator) -> tuple[float, float]:
+    def _fit_market(self, df: pd.DataFrame, features: list[str], target_col: str, market: str) -> tuple[CalibratedClassifierCV, dict[str, float], dict[str, float]]:
         x = self._build_features(df, features)
         y = df[target_col].astype(int)
-        x_train, x_cal, y_train, y_cal = train_test_split(x, y, test_size=0.25, random_state=42, stratify=y)
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
-        for model in models:
-            model.fit(x_train, y_train)
+        # Cross-validated raw predictions (before calibration) for diagnostics.
+        cv_probs = cross_val_predict(self._base_estimator(), x, y, cv=cv, method="predict_proba")[:, 1]
+        cv_probs = np.clip(cv_probs, 0.01, 0.99)
+        diagnostics = {
+            f"{market}_cv_brier": float(brier_score_loss(y, cv_probs)),
+            f"{market}_cv_log_loss": float(log_loss(y, cv_probs)),
+        }
 
-        raw_cal_probs = self._ensemble_predict(models, x_cal)
-        calibrator.fit(raw_cal_probs, y_cal.values)
+        calibrated = CalibratedClassifierCV(self._base_estimator(), method="isotonic", cv=cv)
+        calibrated.fit(x, y)
 
-        raw_probs = self._ensemble_predict(models, x)
-        probs = calibrator.predict(raw_probs)
-        return brier_score_loss(y, probs), log_loss(y, probs)
+        fitted_estimator = calibrated.calibrated_classifiers_[0].estimator
+        importances = {
+            name: float(score)
+            for name, score in zip(features, getattr(fitted_estimator, "feature_importances_", np.zeros(len(features))), strict=True)
+        }
+        top = sorted(importances.items(), key=lambda item: item[1], reverse=True)[:5]
+        LOGGER.info("[%s] %s feature importance top-5: %s", self.sport.upper(), market, top)
+
+        calibrated_probs = np.clip(calibrated.predict_proba(x)[:, 1], 0.01, 0.99)
+        diagnostics[f"{market}_calibrated_brier"] = float(brier_score_loss(y, calibrated_probs))
+        diagnostics[f"{market}_calibrated_log_loss"] = float(log_loss(y, calibrated_probs))
+        return calibrated, diagnostics, importances
 
     def train(self, historical_df: pd.DataFrame) -> None:
         if len(historical_df) < 150:
             raise ValueError("Not enough historical samples to train robustly.")
 
-        ml_brier, ml_log = self._fit_market(historical_df, self.WIN_FEATURES, "home_win", self.moneyline_models, self.moneyline_cal)
-        sp_brier, sp_log = self._fit_market(historical_df, self.SPREAD_FEATURES, "home_cover", self.spread_models, self.spread_cal)
-        tt_brier, tt_log = self._fit_market(historical_df, self.TOTAL_FEATURES, "over_hit", self.total_models, self.total_cal)
+        self.moneyline_model, ml_metrics, ml_imp = self._fit_market(historical_df, self.WIN_FEATURES, "home_win", "moneyline")
+        self.spread_model, sp_metrics, sp_imp = self._fit_market(historical_df, self.SPREAD_FEATURES, "home_cover", "spread")
+        self.total_model, tt_metrics, tt_imp = self._fit_market(historical_df, self.TOTAL_FEATURES, "over_hit", "total")
 
-        self.metrics = {
-            "moneyline_brier": ml_brier,
-            "moneyline_logloss": ml_log,
-            "spread_brier": sp_brier,
-            "spread_logloss": sp_log,
-            "total_brier": tt_brier,
-            "total_logloss": tt_log,
-        }
+        self.metrics = {**ml_metrics, **sp_metrics, **tt_metrics}
+        self.feature_importance = {"moneyline": ml_imp, "spread": sp_imp, "total": tt_imp}
 
     def save_artifact(self, path: Path) -> None:
         payload = {
             "sport": self.sport,
-            "win_features": self.WIN_FEATURES,
-            "spread_features": self.SPREAD_FEATURES,
-            "total_features": self.TOTAL_FEATURES,
-            "moneyline_models": self.moneyline_models,
-            "spread_models": self.spread_models,
-            "total_models": self.total_models,
-            "moneyline_cal": self.moneyline_cal,
-            "spread_cal": self.spread_cal,
-            "total_cal": self.total_cal,
+            "moneyline_model": self.moneyline_model,
+            "spread_model": self.spread_model,
+            "total_model": self.total_model,
             "metrics": self.metrics,
+            "feature_importance": self.feature_importance,
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("wb") as f:
@@ -200,27 +117,27 @@ class NBAModel(SportModel):
     def load_artifact(self, path: Path) -> None:
         with path.open("rb") as f:
             payload = pickle.load(f)
-
         if payload.get("sport") != self.sport:
             raise ValueError(f"Model artifact sport mismatch for {path}: expected {self.sport}, got {payload.get('sport')}")
-
-        self.moneyline_models = payload["moneyline_models"]
-        self.spread_models = payload["spread_models"]
-        self.total_models = payload["total_models"]
-        self.moneyline_cal = payload["moneyline_cal"]
-        self.spread_cal = payload["spread_cal"]
-        self.total_cal = payload["total_cal"]
+        self.moneyline_model = payload["moneyline_model"]
+        self.spread_model = payload["spread_model"]
+        self.total_model = payload["total_model"]
         self.metrics = payload.get("metrics", {})
+        self.feature_importance = payload.get("feature_importance", {})
 
     def _confidence(self, edge: float, quality: float, feature_completeness: float) -> float:
-        conf = 0.54 + min(0.22, abs(edge) * 2.5) + 0.14 * quality + 0.10 * feature_completeness
+        conf = 0.55 + min(0.15, abs(edge) * 2.0) + 0.20 * quality + 0.10 * feature_completeness
         return float(np.clip(conf, 0.05, 0.95))
 
     def _safe_probability(self, value: float) -> float:
-        return float(np.clip(value, 0.08, 0.92))
+        # Shrink toward 50% and keep typical outputs in realistic 40-70% range.
+        shrunk = 0.5 + (value - 0.5) * 0.55
+        return float(np.clip(shrunk, 0.40, 0.70))
 
-    def _feature_vector_from_row(self, row: pd.Series, features: list[str]) -> pd.DataFrame:
-        return pd.DataFrame([{feature: row.get(feature, 0.0) for feature in features}]).fillna(0.0)
+    def _predict_proba(self, model: CalibratedClassifierCV | None, features_df: pd.DataFrame) -> float:
+        if model is None:
+            raise RuntimeError(f"[{self.sport.upper()}] model artifact not loaded/trained.")
+        return float(model.predict_proba(features_df)[:, 1][0])
 
     def predict_daily(self, daily_df: pd.DataFrame) -> list[Prediction]:
         preds: list[Prediction] = []
@@ -229,14 +146,12 @@ class NBAModel(SportModel):
             away_team, home_team = row["away_team"], row["home_team"]
             game_txt = f"{away_team} @ {home_team}"
 
-            win_features = self._feature_vector_from_row(row, self.WIN_FEATURES)
-            spread_features = self._feature_vector_from_row(row, self.SPREAD_FEATURES)
-            total_features = self._feature_vector_from_row(row, self.TOTAL_FEATURES)
+            win_features = self._build_features(pd.DataFrame([row]), self.WIN_FEATURES)
+            spread_features = self._build_features(pd.DataFrame([row]), self.SPREAD_FEATURES)
+            total_features = self._build_features(pd.DataFrame([row]), self.TOTAL_FEATURES)
+            completeness = float(1 - np.mean(pd.isna([row.get(feature) for feature in self.BASE_FEATURES])))
 
-            completeness = float(1 - np.mean(pd.isna([row.get(feature) for feature in self.WIN_FEATURES])))
-
-            ml_raw = self._ensemble_predict(self.moneyline_models, win_features)
-            p_home_ml = self._safe_probability(float(self.moneyline_cal.predict(ml_raw)[0]))
+            p_home_ml = self._safe_probability(self._predict_proba(self.moneyline_model, win_features))
             p_away_ml = self._safe_probability(1 - p_home_ml)
             market_home = american_to_implied_probability(int(row["home_odds"]))
             market_away = american_to_implied_probability(int(row["away_odds"]))
@@ -248,15 +163,11 @@ class NBAModel(SportModel):
             ]:
                 edge = p_model - p_market
                 ev = expected_value(p_model, odds)
-                conf = self._confidence(edge, 1 - self.metrics.get("moneyline_brier", 0.25), completeness)
-                reason = (
-                    f"Elo diff {row.get('elo_diff', 0.0):.2f}, rest diff {row.get('rest_diff', 0.0):.1f}, "
-                    f"injury impact {row.get('injury_impact_diff', 0.0):.2f}, market-model gap {edge:.1%}."
-                )
+                conf = self._confidence(edge, 1 - self.metrics.get("moneyline_calibrated_brier", 0.25), completeness)
+                reason = f"Elo {row.get('elo_diff', 0.0):.2f}, rest {row.get('rest_diff', 0.0):.1f}, injury {row.get('injury_impact', 0.0):.2f}."
                 preds.append(Prediction(game_id, self.sport, "moneyline", side, p_model, p_market, edge, ev, conf, reason, metadata={"game": game_txt}))
 
-            sp_raw = self._ensemble_predict(self.spread_models, spread_features)
-            p_home_cover = self._safe_probability(float(self.spread_cal.predict(sp_raw)[0]))
+            p_home_cover = self._safe_probability(self._predict_proba(self.spread_model, spread_features))
             p_away_cover = self._safe_probability(1 - p_home_cover)
             mk_away = american_to_implied_probability(int(row["away_spread_odds"]))
             mk_home = american_to_implied_probability(int(row["home_spread_odds"]))
@@ -268,12 +179,10 @@ class NBAModel(SportModel):
             ]:
                 edge = p_model - p_market
                 ev = expected_value(p_model, odds)
-                conf = self._confidence(edge, 1 - self.metrics.get("spread_brier", 0.25), completeness)
-                reason = f"Spread signal from rating/rest/travel profile, line {row.get('spread_line', 0.0):+.1f}, edge {edge:.1%}."
-                preds.append(Prediction(game_id, self.sport, "spread", side, p_model, p_market, edge, ev, conf, reason, metadata={"game": game_txt}))
+                conf = self._confidence(edge, 1 - self.metrics.get("spread_calibrated_brier", 0.25), completeness)
+                preds.append(Prediction(game_id, self.sport, "spread", side, p_model, p_market, edge, ev, conf, "Spread model signal.", metadata={"game": game_txt}))
 
-            tt_raw = self._ensemble_predict(self.total_models, total_features)
-            p_over = self._safe_probability(float(self.total_cal.predict(tt_raw)[0]))
+            p_over = self._safe_probability(self._predict_proba(self.total_model, total_features))
             p_under = self._safe_probability(1 - p_over)
             mk_over = american_to_implied_probability(int(row["over_odds"]))
             mk_under = american_to_implied_probability(int(row["under_odds"]))
@@ -285,8 +194,7 @@ class NBAModel(SportModel):
             ]:
                 edge = p_model - p_market
                 ev = expected_value(p_model, odds)
-                conf = self._confidence(edge, 1 - self.metrics.get("total_brier", 0.25), completeness)
-                reason = f"Total model uses pace/efficiency/injury + market baseline {row.get('market_total', row.get('total_line', 0.0)):.1f}; edge {edge:.1%}."
-                preds.append(Prediction(game_id, self.sport, "total", side, p_model, p_market, edge, ev, conf, reason, metadata={"game": game_txt}))
+                conf = self._confidence(edge, 1 - self.metrics.get("total_calibrated_brier", 0.25), completeness)
+                preds.append(Prediction(game_id, self.sport, "total", side, p_model, p_market, edge, ev, conf, "Totals model signal.", metadata={"game": game_txt}))
 
         return preds

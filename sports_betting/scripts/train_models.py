@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import argparse
 
-import pandas as pd
-
 from main import choose_model
 from sports_betting.scripts.data_io import (
-    historical_file_path,
+    load_historical_dataset,
+    load_nba_historical_dataset,
+    load_nfl_historical_dataset,
+    load_nhl_historical_dataset,
     model_artifact_path,
-    required_historical_columns,
 )
+
+SPORT_DATASET_LOADERS = {
+    "nba": load_nba_historical_dataset,
+    "nfl": load_nfl_historical_dataset,
+    "nhl": load_nhl_historical_dataset,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,25 +32,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _validate_historical_schema(df: pd.DataFrame, sport: str) -> None:
-    required = required_historical_columns(sport)
-    missing = [col for col in required if col not in df.columns]
-    if missing:
-        raise RuntimeError(
-            f"[{sport.upper()}] Missing required historical columns: {', '.join(missing)}. "
-            f"Expected columns include: {', '.join(required)}"
-        )
-
-
 def train_sport_model(sport: str) -> None:
-    hist_path = historical_file_path(sport)
     artifact_path = model_artifact_path(sport)
-
-    if not hist_path.exists():
-        raise RuntimeError(f"[{sport.upper()}] Historical CSV does not exist: {hist_path}")
-
-    historical = pd.read_csv(hist_path)
-    _validate_historical_schema(historical, sport)
+    loader = SPORT_DATASET_LOADERS.get(sport, lambda: load_historical_dataset(sport))
+    historical = loader()
 
     model = choose_model(sport)
     model.train(historical)
@@ -53,6 +44,8 @@ def train_sport_model(sport: str) -> None:
     print(f"[{sport.upper()}] Trained model artifact written to: {artifact_path}")
     if getattr(model, "metrics", None):
         print(f"[{sport.upper()}] Training metrics: {model.metrics}")
+    if getattr(model, "feature_importance", None):
+        print(f"[{sport.upper()}] Feature importance: {model.feature_importance}")
 
 
 def main() -> None:

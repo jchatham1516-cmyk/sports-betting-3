@@ -109,6 +109,27 @@ Required base fields:
 
 If files are missing in live mode, the run fails fast. Synthetic data is only allowed when `TEST_MODE=true`.
 
+
+## Training feature set
+All sports models now train on a shared engineered feature space:
+- `elo_diff`
+- `rest_diff`
+- `travel_distance`
+- `offensive_rating_diff`
+- `defensive_rating_diff`
+- `net_rating_diff`
+- `injury_impact`
+- `pace`
+- `home_indicator`
+
+Markets use:
+- Moneyline: base feature set
+- Spread: base + `spread_line`
+- Totals: base + `total_line`
+
+Training uses `GradientBoostingClassifier` with 5-fold cross-validation and isotonic probability calibration.
+Artifacts are saved to `sports_betting/data/models/{sport}_model.pkl`.
+
 ## Configuration and tuning
 Edit `sports_betting/config/default.yaml`:
 - bankroll and stake mode
