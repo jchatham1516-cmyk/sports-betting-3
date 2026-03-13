@@ -1,4 +1,4 @@
-name: Sports Betting Automation
+name: Sports Betting Predictions
 
 on:
   workflow_dispatch:
@@ -8,6 +8,7 @@ on:
 jobs:
   run-predictions:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     env:
       PYTHONUNBUFFERED: "1"
@@ -21,33 +22,174 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Create placeholder models
+      - name: Create placeholder model artifacts
         run: |
-          mkdir -p sports_betting/data/models
-          python - <<PY
-import pickle
-from sklearn.linear_model import LogisticRegression
-model = LogisticRegression()
-for sport in ["nba","nfl","nhl"]:
-    with open(f"sports_betting/data/models/{sport}_model.pkl","wb") as f:
-        pickle.dump(model,f)
-print("Models created")
-PY
+          python - <<'PY'
+          import pickle
+          from pathlib import Path
 
-      - name: Create output directory
-        run: mkdir -p data/outputs
+          import numpy as np
+          from sklearn.linear_model import LogisticRegression
+
+          from sports_betting.sports.common.calibration import IsotonicCalibrator
+
+
+          def fitted_lr(feature_count: int) -> LogisticRegression:
+              x = np.vstack([np.zeros(feature_count), np.ones(feature_count)])
+              y = np.array([0, 1])
+              model = LogisticRegression(max_iter=100)
+              model.fit(x, y)
+              return model
+
+
+          def calibrator() -> IsotonicCalibrator:
+              cal = IsotonicCalibrator()
+              cal.fit(np.array([0.1, 0.9]), np.array([0, 1]))
+              return cal
+
+
+          specs = {
+              "nba": {
+                  "win_features": [
+                      "elo_diff",
+                      "net_rating_diff",
+                      "off_rating_diff",
+                      "def_rating_diff",
+                      "pace_diff",
+                      "rest_diff",
+                      "injury_impact_diff",
+                      "travel_fatigue_diff",
+                      "recent_form_diff",
+                  ],
+                  "spread_features": [
+                      "elo_diff",
+                      "net_rating_diff",
+                      "off_rating_diff",
+                      "def_rating_diff",
+                      "pace_diff",
+                      "rest_diff",
+                      "injury_impact_diff",
+                      "travel_fatigue_diff",
+                      "recent_form_diff",
+                      "spread_line",
+                  ],
+                  "total_features": [
+                      "pace_sum",
+                      "off_rating_sum",
+                      "def_rating_sum",
+                      "recent_total_trend",
+                      "injury_total_impact",
+                      "total_line",
+                  ],
+              },
+              "nfl": {
+                  "win_features": [
+                      "elo_diff",
+                      "epa_per_play_diff",
+                      "success_rate_diff",
+                      "yards_per_play_diff",
+                      "qb_impact_diff",
+                      "pressure_rate_diff",
+                      "turnover_margin_diff",
+                      "rest_diff",
+                      "travel_fatigue_diff",
+                  ],
+                  "spread_features": [
+                      "elo_diff",
+                      "epa_per_play_diff",
+                      "success_rate_diff",
+                      "yards_per_play_diff",
+                      "qb_impact_diff",
+                      "pressure_rate_diff",
+                      "turnover_margin_diff",
+                      "rest_diff",
+                      "travel_fatigue_diff",
+                      "spread_line",
+                  ],
+                  "total_features": [
+                      "pace_sum",
+                      "off_efficiency_sum",
+                      "def_efficiency_sum",
+                      "weather_total_impact",
+                      "red_zone_efficiency_sum",
+                      "total_line",
+                  ],
+              },
+              "nhl": {
+                  "win_features": [
+                      "elo_diff",
+                      "xgf_diff",
+                      "xga_diff",
+                      "special_teams_diff",
+                      "goalie_strength_diff",
+                      "rest_diff",
+                      "travel_fatigue_diff",
+                      "injury_impact_diff",
+                      "recent_form_diff",
+                  ],
+                  "spread_features": [
+                      "elo_diff",
+                      "xgf_diff",
+                      "xga_diff",
+                      "special_teams_diff",
+                      "goalie_strength_diff",
+                      "rest_diff",
+                      "travel_fatigue_diff",
+                      "injury_impact_diff",
+                      "recent_form_diff",
+                      "spread_line",
+                  ],
+                  "total_features": [
+                      "pace_sum",
+                      "xg_total",
+                      "goalie_total_impact",
+                      "shooting_regression_signal",
+                      "save_regression_signal",
+                      "total_line",
+                  ],
+              },
+          }
+
+          models_dir = Path("sports_betting/data/models")
+          models_dir.mkdir(parents=True, exist_ok=True)
+
+          for sport, spec in specs.items():
+              payload = {
+                  "sport": sport,
+                  "win_features": spec["win_features"],
+                  "spread_features": spec["spread_features"],
+                  "total_features": spec["total_features"],
+                  "moneyline_model": fitted_lr(len(spec["win_features"])),
+                  "spread_model": fitted_lr(len(spec["spread_features"])),
+                  "total_model": fitted_lr(len(spec["total_features"])),
+                  "moneyline_cal": calibrator(),
+                  "spread_cal": calibrator(),
+                  "total_cal": calibrator(),
+                  "metrics": {},
+              }
+              with (models_dir / f"{sport}_model.pkl").open("wb") as f:
+                  pickle.dump(payload, f)
+
+          print("Placeholder models created:", sorted(p.name for p in models_dir.glob("*_model.pkl")))
+          PY
 
       - name: Run predictions
         run: python main.py
 
-      - name: Upload outputs
+      - name: Upload prediction outputs
         uses: actions/upload-artifact@v6
         with:
-          name: betting-results
-          path: data/outputs/**
+          name: sports-betting-outputs
+          path: |
+            data/outputs/predictions.csv
+            data/outputs/recommended_bets.csv
+            data/outputs/daily_report.txt
+          if-no-files-found: error
