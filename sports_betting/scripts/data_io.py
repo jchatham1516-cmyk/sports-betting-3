@@ -13,7 +13,7 @@ from urllib.request import urlopen
 import numpy as np
 import pandas as pd
 
-from sports_betting.sports.common.feature_engineering import SPORT_EFFICIENCY_FEATURES, enrich_with_context_features
+from sports_betting.sports.common.feature_engineering import SPORT_EFFICIENCY_FEATURES, add_elo_features, enrich_with_context_features
 
 
 ROOT = Path("sports_betting/data")
@@ -58,6 +58,11 @@ BASE_FEATURE_COLUMNS = [
     "expected_value",
     "line_movement",
     "clv_placeholder",
+    "opening_line",
+    "bet_line",
+    "current_line",
+    "closing_line",
+    "clv_diff",
     "public_favorite_bias_flag",
     "favorite_inflation_flag",
     "underdog_inflation_flag",
@@ -99,7 +104,8 @@ def model_artifact_path(sport: str) -> Path:
 def required_historical_columns(sport: str) -> list[str]:
     if sport not in FEATURE_COLUMNS_BY_SPORT:
         raise ValueError(f"Unsupported sport '{sport}'. Supported sports: {', '.join(sorted(FEATURE_COLUMNS_BY_SPORT))}")
-    return sorted(set(FEATURE_COLUMNS_BY_SPORT[sport] + ["spread_line", "total_line"] + TARGET_COLUMNS))
+    core = ["date", "home_team", "away_team", "home_score", "away_score", "closing_moneyline_home", "closing_moneyline_away", "closing_spread_home", "closing_total"]
+    return sorted(set(core + FEATURE_COLUMNS_BY_SPORT[sport] + ["spread_line", "total_line"] + TARGET_COLUMNS))
 
 
 def _normalize_sports(sports: list[str] | tuple[str, ...] | None) -> list[str]:
@@ -173,14 +179,28 @@ def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFra
     out["timezone_shift_away"] = _coalesce_numeric(out, ["timezone_shift_away"])
     out["travel_distance_home"] = _coalesce_numeric(out, ["travel_distance_home"])
     out["travel_distance_away"] = _coalesce_numeric(out, ["travel_distance_away"])
-    out["spread_line"] = _coalesce_numeric(out, ["spread_line"])
-    out["total_line"] = _coalesce_numeric(out, ["total_line"])
+    out["spread_line"] = _coalesce_numeric(out, ["spread_line", "closing_spread_home"])
+    out["total_line"] = _coalesce_numeric(out, ["total_line", "closing_total"])
+    out["home_score"] = _coalesce_numeric(out, ["home_score"])
+    out["away_score"] = _coalesce_numeric(out, ["away_score"])
+    out["date"] = pd.to_datetime(out.get("date", out.get("event_date")), errors="coerce", utc=True)
+    out["event_date"] = pd.to_datetime(out.get("event_date", out.get("date")), errors="coerce", utc=True)
+    out["closing_moneyline_home"] = _coalesce_numeric(out, ["closing_moneyline_home", "home_odds"])
+    out["closing_moneyline_away"] = _coalesce_numeric(out, ["closing_moneyline_away", "away_odds"])
+    out["closing_spread_home"] = _coalesce_numeric(out, ["closing_spread_home", "spread_line"])
+    out["closing_total"] = _coalesce_numeric(out, ["closing_total", "total_line"])
+    out["opening_line"] = _coalesce_numeric(out, ["opening_line", "open_line", "spread_line"])
+    out["bet_line"] = _coalesce_numeric(out, ["bet_line", "spread_line"])
+    out["current_line"] = _coalesce_numeric(out, ["current_line", "spread_line"])
+    out["closing_line"] = _coalesce_numeric(out, ["closing_line", "spread_line"])
+    out["clv_diff"] = out["closing_line"] - out["bet_line"]
 
     # Labels.
     out["home_win"] = _coalesce_numeric(out, ["home_win"]).round().clip(0, 1).astype(int)
     out["home_cover"] = _coalesce_numeric(out, ["home_cover"]).round().clip(0, 1).astype(int)
     out["over_hit"] = _coalesce_numeric(out, ["over_hit"]).round().clip(0, 1).astype(int)
 
+    out = add_elo_features(out, sport)
     LOGGER.info("[%s] Standardized historical feature columns for training.", sport.upper())
     return out
 
@@ -302,6 +322,7 @@ def generate_sample_data(sport: str, rows: int = 300) -> pd.DataFrame:
             "away_team": [f"A{i%30}" for i in range(rows)],
             "home_team": [f"H{i%30}" for i in range(rows)],
             "event_date": pd.date_range("2023-01-01", periods=rows, freq="D"),
+            "date": pd.date_range("2023-01-01", periods=rows, freq="D"),
             "spread_line": rng.normal(-2, 4, rows),
             "total_line": rng.normal(220 if sport == "nba" else 44 if sport == "nfl" else 6.0, 8, rows),
             "away_odds": rng.choice([-130, -120, -110, 100, 115, 130], rows),
@@ -312,6 +333,8 @@ def generate_sample_data(sport: str, rows: int = 300) -> pd.DataFrame:
             "under_odds": rng.choice([-112, -110, -108, 100], rows),
             "sportsbook": ["synthetic"] * rows,
             "home_indicator": np.ones(rows),
+            "home_score": rng.integers(70,130,size=rows),
+            "away_score": rng.integers(70,130,size=rows),
         }
     )
     for c in BASE_FEATURE_COLUMNS:
@@ -326,6 +349,10 @@ def generate_sample_data(sport: str, rows: int = 300) -> pd.DataFrame:
     spread_score = 0.18 * base["net_rating_diff"] + 0.08 * base["rest_diff"] - 0.15 * base["spread_line"]
     total_score = 0.22 * base["pace"] + 0.16 * base["offensive_rating_diff"] - 0.12 * base["defensive_rating_diff"]
     base["home_win"] = (win_score + rng.normal(0, 0.8, rows) > 0).astype(int)
+    base["closing_moneyline_home"] = base["home_odds"]
+    base["closing_moneyline_away"] = base["away_odds"]
+    base["closing_spread_home"] = base["spread_line"]
+    base["closing_total"] = base["total_line"]
     base["home_cover"] = (spread_score + rng.normal(0, 0.8, rows) > 0).astype(int)
     base["over_hit"] = (total_score + rng.normal(0, 0.8, rows) > 0).astype(int)
     return base

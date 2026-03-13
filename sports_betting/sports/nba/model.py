@@ -59,9 +59,17 @@ class NBAModel(SportModel):
         "favorite_inflation_flag",
         "underdog_inflation_flag",
         "clv_placeholder",
+        "off_rating_home",
+        "off_rating_away",
+        "def_rating_home",
+        "def_rating_away",
         "offensive_rating_diff",
         "defensive_rating_diff",
         "net_rating_diff",
+        "pace_home",
+        "pace_away",
+        "pace_diff",
+        "top_rotation_eff_diff",
         "pace",
         "home_indicator",
     ]
@@ -186,12 +194,17 @@ class NBAModel(SportModel):
                 ev = expected_value(p_model, odds)
                 flags = self._quality_flags(row, p_model)
                 conf = self._confidence(edge, 1 - self.metrics.get("moneyline_calibrated_brier", 0.25), completeness, injury_conf)
-                reason = f"Injury-adjusted edge {row.get('injury_impact_diff',0.0):+.2f}; fatigue/travel {row.get('rest_diff',0.0):+.1f}/{row.get('travel_fatigue_diff',0.0):+.2f}; market move {row.get('line_movement',0.0):+.2f}."
+                reason = f"Elo diff {row.get('elo_diff',0.0):+.1f}; net rating diff {row.get('net_rating_diff',0.0):+.2f}; injury impact {row.get('injury_impact_diff',0.0):+.2f}; travel {row.get('travel_distance_away', row.get('travel_distance',0.0)):.0f} mi away."
                 preds.append(Prediction(game_id, self.sport, "moneyline", side, p_model, p_market, edge, ev, conf, reason, flags, p_market, {
                     "game": game_txt,
                     "line_movement": float(row.get("line_movement", 0.0)),
                     "clv_placeholder": float(row.get("clv_placeholder", 0.0)),
                     "injury_confidence_score": injury_conf,
+                    "opening_line": float(row.get("opening_line", row.get("open_line", row.get("spread_line", 0.0)))),
+                    "bet_line": float(row.get("bet_line", row.get("spread_line", 0.0))),
+                    "current_line": float(row.get("current_line", row.get("spread_line", 0.0))),
+                    "closing_line": float(row.get("closing_line", row.get("spread_line", 0.0))),
+                    "clv_diff": float(row.get("clv_diff", row.get("closing_line", row.get("spread_line", 0.0)) - row.get("bet_line", row.get("spread_line", 0.0)))),
                 }))
 
             p_home_cover = self._safe_probability(self._predict_proba(self.spread_model, spread_f))
@@ -207,12 +220,17 @@ class NBAModel(SportModel):
                 ev = expected_value(p_model, odds)
                 flags = self._quality_flags(row, p_model)
                 conf = self._confidence(edge, 1 - self.metrics.get("spread_calibrated_brier", 0.25), completeness, injury_conf)
-                reason = f"Rotation/minutes impact {row.get('top_5_rotation_impact_sum_diff', row.get('offensive_line_grade_proxy_diff', row.get('top_line_impact_diff', 0.0))):+.2f}; back-to-back split {int(row.get('back_to_back_away',0))}-{int(row.get('back_to_back_home',0))}."
+                reason = f"Spread drivers: top rotation diff {row.get('top_rotation_eff_diff', row.get('top_5_rotation_impact_sum_diff', 0.0)):+.2f}, rest diff {row.get('rest_diff',0.0):+.1f}, line move {row.get('line_movement',0.0):+.2f}."
                 preds.append(Prediction(game_id, self.sport, "spread", side, p_model, p_market, edge, ev, conf, reason, flags, p_market, {
                     "game": game_txt,
                     "line_movement": float(row.get("line_movement", 0.0)),
                     "clv_placeholder": float(row.get("clv_placeholder", 0.0)),
                     "injury_confidence_score": injury_conf,
+                    "opening_line": float(row.get("opening_line", row.get("open_line", row.get("spread_line", 0.0)))),
+                    "bet_line": float(row.get("bet_line", row.get("spread_line", 0.0))),
+                    "current_line": float(row.get("current_line", row.get("spread_line", 0.0))),
+                    "closing_line": float(row.get("closing_line", row.get("spread_line", 0.0))),
+                    "clv_diff": float(row.get("clv_diff", row.get("closing_line", row.get("spread_line", 0.0)) - row.get("bet_line", row.get("spread_line", 0.0)))),
                 }))
 
             p_over = self._safe_probability(self._predict_proba(self.total_model, total_f))
@@ -225,11 +243,16 @@ class NBAModel(SportModel):
                 ev = expected_value(p_model, odds)
                 flags = self._quality_flags(row, p_model)
                 conf = self._confidence(edge, 1 - self.metrics.get("total_calibrated_brier", 0.25), completeness, injury_conf)
-                reason = f"Efficiency pace {row.get('pace',0.0):.2f}; key absences QB/goalie flags {int(row.get('qb_out_flag_away',0)+row.get('starting_goalie_out_flag_away',0))}-{int(row.get('qb_out_flag_home',0)+row.get('starting_goalie_out_flag_home',0))}; market overreaction filter applied."
+                reason = f"Total factors: pace {row.get('pace',0.0):.2f}, offensive diff {row.get('offensive_rating_diff',0.0):+.2f}, weather/goalie/QB swing {row.get('weather_total_impact_diff',0.0)+row.get('goalie_strength_diff',0.0)+row.get('qb_impact_away',0.0)-row.get('qb_impact_home',0.0):+.2f}."
                 preds.append(Prediction(game_id, self.sport, "total", side, p_model, p_market, edge, ev, conf, reason, flags, p_market, {
                     "game": game_txt,
                     "line_movement": float(row.get("line_movement", 0.0)),
                     "clv_placeholder": float(row.get("clv_placeholder", 0.0)),
                     "injury_confidence_score": injury_conf,
+                    "opening_line": float(row.get("opening_line", row.get("open_line", row.get("spread_line", 0.0)))),
+                    "bet_line": float(row.get("bet_line", row.get("spread_line", 0.0))),
+                    "current_line": float(row.get("current_line", row.get("spread_line", 0.0))),
+                    "closing_line": float(row.get("closing_line", row.get("spread_line", 0.0))),
+                    "clv_diff": float(row.get("clv_diff", row.get("closing_line", row.get("spread_line", 0.0)) - row.get("bet_line", row.get("spread_line", 0.0)))),
                 }))
         return preds

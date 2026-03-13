@@ -67,6 +67,11 @@ RECOMMENDATION_COLUMNS = [
     "line_movement",
     "clv_placeholder",
     "injury_confidence_score",
+    "opening_line",
+    "bet_line",
+    "current_line",
+    "closing_line",
+    "clv_diff",
 ]
 
 

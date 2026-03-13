@@ -43,7 +43,8 @@ def qualify_prediction(
         return None
     if odds > 2000:
         return None
-    if pred.edge < max(0.03, thresholds["min_edge"]):
+    min_edge = float(thresholds.get("min_edge", 0.02))
+    if pred.edge < min_edge:
         return None
     if pred.expected_value <= 0 or pred.expected_value < thresholds["min_ev"]:
         return None
@@ -78,4 +79,9 @@ def qualify_prediction(
         line_movement=float(pred.metadata.get("line_movement", 0.0)),
         clv_placeholder=float(pred.metadata.get("clv_placeholder", 0.0)),
         injury_confidence_score=float(pred.metadata.get("injury_confidence_score", 0.0)),
+        opening_line=float(pred.metadata.get("opening_line", pred.metadata.get("current_line", 0.0))),
+        bet_line=float(pred.metadata.get("bet_line", pred.metadata.get("current_line", 0.0))),
+        current_line=float(pred.metadata.get("current_line", 0.0)),
+        closing_line=float(pred.metadata.get("closing_line", pred.metadata.get("current_line", 0.0))),
+        clv_diff=float(pred.metadata.get("clv_diff", 0.0)),
     )
