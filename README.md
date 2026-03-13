@@ -59,11 +59,10 @@ pip install -r requirements.txt
 python main.py
 ```
 Outputs:
-- `sports_betting/data/outputs/daily_predictions.csv`
-- `sports_betting/data/outputs/daily_recommendations.csv`
-- `sports_betting/data/outputs/daily_recommendations.json`
-- `sports_betting/data/outputs/daily_card.txt`
-- `sports_betting/data/outputs/backtest_summary.csv`
+- `data/outputs/predictions.csv`
+- `data/outputs/recommended_bets.csv`
+- `data/outputs/daily_report.txt`
+- `data/outputs/backtest_summary.csv`
 
 ### Production model behavior
 - Live daily runs now **prefer loading saved model artifacts** at:
@@ -105,30 +104,36 @@ Required base fields:
 - odds: `away_odds, home_odds, away_spread_odds, home_spread_odds, over_odds, under_odds`
 - lines: `spread_line, total_line`
 - labels for training historical: `home_win, home_cover, over_hit`
-- feature columns: defined per sport model in each `model.py`
 
-If files are missing in live mode, the run fails fast. Synthetic data is only allowed when `TEST_MODE=true`.
-
+### Historical dataset requirements (new baseline)
+- Use real multi-season data only (no toy/synthetic training for live mode).
+- Minimum recommended rows per sport: 5,000+ (hard minimum enforcement in builder: 500 rows).
+- Include final scores (`home_score`, `away_score`) so labels can be rebuilt and audited.
+- Provide support files in `sports_betting/data/external/`:
+  - `{sport}_efficiency.csv` (team efficiency metrics)
+  - `{sport}_injuries.csv` (player availability + impact)
+  - `{sport}_team_locations.csv` (travel/rest geometry)
 
 ## Training feature set
-All sports models now train on a shared engineered feature space:
-- `elo_diff`
-- `rest_diff`
-- `travel_distance`
-- `offensive_rating_diff`
-- `defensive_rating_diff`
-- `net_rating_diff`
-- `injury_impact`
-- `pace`
-- `home_indicator`
+The model now uses a disciplined baseline feature core designed to improve trust and reduce noisy longshot output:
+- team strength: `elo_diff`
+- rest/fatigue: `rest_diff`, `travel_fatigue_diff`, `travel_distance`
+- injuries: `injury_impact_diff`
+- efficiency: `offensive_rating_diff`, `defensive_rating_diff`, `net_rating_diff`, `pace_diff`
 
 Markets use:
-- Moneyline: base feature set
-- Spread: base + `spread_line`
-- Totals: base + `total_line`
+- Moneyline: baseline core
+- Spread: baseline core + `spread_line`
+- Totals: baseline core + `total_line`, `pace`
 
-Training uses `GradientBoostingClassifier` with 5-fold cross-validation and isotonic probability calibration.
-Artifacts are saved to `sports_betting/data/models/{sport}_model.pkl`.
+Training uses `HistGradientBoostingClassifier` with 5-fold CV and probability calibration:
+- isotonic regression on larger datasets
+- Platt-style sigmoid calibration on smaller datasets
+- market-specific probability clamps to keep outputs realistic
+
+Recommendation ranking is no longer pure EV sorting; it uses a trust composite score based on edge, EV, confidence, and number of supporting signals.
+Moneyline recommendations are de-emphasized unless they pass stricter support guardrails.
+
 
 ## Configuration and tuning
 Edit `sports_betting/config/default.yaml`:
