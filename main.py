@@ -85,20 +85,33 @@ def choose_model(sport: str):
     return {"nba": NBAModel, "nfl": NFLModel, "nhl": NHLModel}[sport]()
 
 
-def _best_market_sides(recommendations: list) -> list:
-    """Keep only the best side per sport/game/market based on EV, edge, confidence."""
+def _best_market_sides(bets: list) -> list:
+    """Keep only one side per sport/game/market using highest EV/edge/confidence."""
     best = {}
-    for rec in recommendations:
-        key = (rec.sport, rec.game, rec.market)
+    for bet in bets:
+        key = (bet.sport, bet.game, bet.market)
         current = best.get(key)
-        if current is None or (rec.expected_value, rec.edge, rec.confidence_score, rec.rank_score) > (
+        if current is None or (
+            bet.expected_value,
+            bet.edge,
+            bet.confidence_score,
+            bet.rank_score,
+        ) > (
             current.expected_value,
             current.edge,
             current.confidence_score,
             current.rank_score,
         ):
-            best[key] = rec
+            best[key] = bet
     return list(best.values())
+
+
+def _bet_metrics(bet) -> dict[str, float]:
+    return {
+        "edge": bet.edge,
+        "ev": bet.expected_value,
+        "confidence": bet.confidence_score,
+    }
 
 
 def run_daily_pipeline(config_path: str | None = None, sport: str | None = None) -> None:
@@ -106,7 +119,6 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     logger = setup_logging(cfg["logging"]["level"])
 
     all_predictions: list[dict] = []
-    all_recs = []
     candidate_pool = []
     all_passes: list[str] = []
     recs_by_sport = defaultdict(list)
@@ -167,55 +179,68 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             if rec:
                 candidate_pool.append(rec)
 
-    # Collect all candidate bets before applying thresholds.
-    candidate_pool = _best_market_sides(candidate_pool)
+    # Remove duplicate sides first: keep one bet per game + market.
+    bets = _best_market_sides(candidate_pool)
 
-    all_recs = []
-    for rec in candidate_pool:
-        if rec.edge >= MIN_EDGE and rec.expected_value >= MIN_EV and rec.confidence_score >= MIN_CONFIDENCE:
-            all_recs.append(rec)
-        else:
+    qualified = [
+        b
+        for b in bets
+        if _bet_metrics(b).get("edge", 0) >= MIN_EDGE
+        and _bet_metrics(b).get("ev", 0) >= MIN_EV
+        and _bet_metrics(b).get("confidence", 0) >= MIN_CONFIDENCE
+    ]
+
+    filtered_out = len(bets) - len(qualified)
+    if filtered_out > 0:
+        qualified_ids = {id(q) for q in qualified}
+        for b in bets:
+            if id(b) in qualified_ids:
+                continue
             all_passes.append(
-                f"{rec.game} ({rec.sport.upper()} {rec.market} {rec.side}): filtered by edge/EV/confidence."
+                f"{b.game} ({b.sport.upper()} {b.market} {b.side}): filtered by edge/EV/confidence."
             )
 
     used_fallback = False
-    if not all_recs:
-        candidate_pool.sort(
+    if not qualified:
+        fallback = sorted(
+            bets,
             key=lambda x: (x.expected_value, x.edge, x.confidence_score),
             reverse=True,
         )
-        fallback_count = min(len(candidate_pool), 5)
-        if total_games_processed > 0:
-            fallback_count = min(len(candidate_pool), max(3, fallback_count))
-        all_recs = candidate_pool[:fallback_count]
-        for rec in all_recs:
-            rec.fallback_pick = True
-        used_fallback = bool(all_recs)
 
-    # Guarantee at least 3 exports (when games exist) by backfilling from best remaining candidates.
-    if total_games_processed > 0 and len(all_recs) < 3:
-        selected = {(r.sport, r.game, r.market, r.side, r.odds, r.line) for r in all_recs}
+        qualified = fallback[:5]
+
+        for b in qualified:
+            b.fallback_pick = True
+
+        used_fallback = bool(qualified)
+
+    # Ensure at least 3-5 bets whenever games exist.
+    if total_games_processed > 0 and len(qualified) < 3:
+        selected = {
+            (b.sport, b.game, b.market, b.side, b.odds, b.line)
+            for b in qualified
+        }
         remainder = sorted(
-            candidate_pool,
+            bets,
             key=lambda x: (x.expected_value, x.edge, x.confidence_score),
             reverse=True,
         )
-        for rec in remainder:
-            rec_key = (rec.sport, rec.game, rec.market, rec.side, rec.odds, rec.line)
+        for b in remainder:
+            rec_key = (b.sport, b.game, b.market, b.side, b.odds, b.line)
             if rec_key in selected:
                 continue
-            rec.fallback_pick = True
-            all_recs.append(rec)
+            b.fallback_pick = True
+            qualified.append(b)
             selected.add(rec_key)
-            if len(all_recs) >= 3:
+            if len(qualified) >= 3:
                 break
 
-    all_recs.sort(key=lambda x: (x.rank_score, x.expected_value), reverse=True)
+    qualified.sort(key=lambda x: (x.rank_score, x.expected_value), reverse=True)
     top_n = min(int(cfg["output"].get("top_n", MAX_BETS)), MAX_BETS)
     if total_games_processed > 0:
         top_n = max(top_n, 3)
-    trimmed_recs = all_recs[:top_n] if top_n > 0 else all_recs
+    trimmed_recs = qualified[:top_n] if top_n > 0 else qualified
 
     recs_by_sport = defaultdict(list)
     for rec in trimmed_recs:
@@ -251,12 +276,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     report_lines = [
         f"Output directory: {out_dir.resolve()}",
         f"Games processed: {total_games_processed}",
-        f"Total recommendations qualified: {len(all_recs)}",
+        f"Total recommendations qualified: {len(qualified)}",
         f"Total recommendations exported (after top_n): {len(trimmed_recs)}",
         "",
     ]
     if trimmed_recs and used_fallback:
-        report_lines.append("No bets met normal thresholds — exporting fallback picks.")
+        report_lines.append("No bets met thresholds — exporting fallback picks.")
     elif trimmed_recs:
         report_lines.append("Qualifying bets were found.")
     else:
