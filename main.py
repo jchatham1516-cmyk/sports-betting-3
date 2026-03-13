@@ -44,6 +44,11 @@ PREDICTION_COLUMNS = [
     "metadata",
 ]
 
+MIN_EDGE = 0.01
+MIN_EV = -0.005
+MIN_CONFIDENCE = 0.55
+MAX_BETS = 8
+
 RECOMMENDATION_COLUMNS = [
     "event_date",
     "sport",
@@ -162,16 +167,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             if rec:
                 candidate_pool.append(rec)
 
-    min_edge = 0.01
-    min_ev = -0.005
-    min_confidence = 0.55
-    max_bets = 8
-
+    # Collect all candidate bets before applying thresholds.
     candidate_pool = _best_market_sides(candidate_pool)
 
     all_recs = []
     for rec in candidate_pool:
-        if rec.edge >= min_edge and rec.expected_value >= min_ev and rec.confidence_score >= min_confidence:
+        if rec.edge >= MIN_EDGE and rec.expected_value >= MIN_EV and rec.confidence_score >= MIN_CONFIDENCE:
             all_recs.append(rec)
         else:
             all_passes.append(
@@ -184,13 +185,36 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             key=lambda x: (x.expected_value, x.edge, x.confidence_score),
             reverse=True,
         )
-        all_recs = candidate_pool[:5]
+        fallback_count = min(len(candidate_pool), 5)
+        if total_games_processed > 0:
+            fallback_count = min(len(candidate_pool), max(3, fallback_count))
+        all_recs = candidate_pool[:fallback_count]
         for rec in all_recs:
             rec.fallback_pick = True
         used_fallback = bool(all_recs)
 
+    # Guarantee at least 3 exports (when games exist) by backfilling from best remaining candidates.
+    if total_games_processed > 0 and len(all_recs) < 3:
+        selected = {(r.sport, r.game, r.market, r.side, r.odds, r.line) for r in all_recs}
+        remainder = sorted(
+            candidate_pool,
+            key=lambda x: (x.expected_value, x.edge, x.confidence_score),
+            reverse=True,
+        )
+        for rec in remainder:
+            rec_key = (rec.sport, rec.game, rec.market, rec.side, rec.odds, rec.line)
+            if rec_key in selected:
+                continue
+            rec.fallback_pick = True
+            all_recs.append(rec)
+            selected.add(rec_key)
+            if len(all_recs) >= 3:
+                break
+
     all_recs.sort(key=lambda x: (x.rank_score, x.expected_value), reverse=True)
-    top_n = min(int(cfg["output"].get("top_n", max_bets)), max_bets)
+    top_n = min(int(cfg["output"].get("top_n", MAX_BETS)), MAX_BETS)
+    if total_games_processed > 0:
+        top_n = max(top_n, 3)
     trimmed_recs = all_recs[:top_n] if top_n > 0 else all_recs
 
     recs_by_sport = defaultdict(list)
@@ -232,7 +256,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         "",
     ]
     if trimmed_recs and used_fallback:
-        report_lines.append("No bets met normal thresholds; exporting top fallback picks.")
+        report_lines.append("No bets met normal thresholds — exporting fallback picks.")
     elif trimmed_recs:
         report_lines.append("Qualifying bets were found.")
     else:
