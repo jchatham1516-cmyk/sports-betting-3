@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from collections import defaultdict
 import logging
 from dataclasses import asdict
@@ -97,6 +98,9 @@ RECOMMENDATION_COLUMNS = [
     "edge",
     "expected_value",
     "confidence",
+    "support_count",
+    "composite_score",
+    "reason_summary",
 ]
 
 
@@ -114,8 +118,8 @@ def _american_to_decimal(odds: int) -> float:
 
 
 def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_name: str, game: str) -> list[dict]:
-    """Create all six candidate bet types for a game from available prediction rows."""
-    prediction_map: dict[tuple[str, str], float] = {}
+    """Create candidate bets for a game from model prediction rows."""
+    prediction_map: dict[tuple[str, str], dict] = {}
     home_team = str(game_row["home_team"])
     away_team = str(game_row["away_team"])
     total_line = float(game_row.get("total_line", 0.0))
@@ -131,7 +135,7 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
         elif market == "totals":
             key = (market, "over" if side.startswith("Over") else "under")
         if key:
-            prediction_map[key] = float(pred["model_probability"])
+            prediction_map[key] = pred
 
     candidate_specs = [
         ("moneyline", "moneyline_home", int(game_row["home_odds"])),
@@ -148,10 +152,35 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
         if decimal_odds <= 1:
             continue
 
-        model_probability = prediction_map.get((market, selection), 0.5)
+        pred_row = prediction_map.get((market, selection), {})
+        model_probability = float(pred_row.get("model_probability", 0.5))
         market_probability = 1 / decimal_odds
         edge = model_probability - market_probability
         expected_value = (model_probability * (decimal_odds - 1)) - (1 - model_probability)
+        metadata = pred_row.get("metadata", {})
+        if isinstance(metadata, str):
+            try:
+                metadata = ast.literal_eval(metadata)
+            except (ValueError, SyntaxError):
+                metadata = {}
+        support_count = int(metadata.get("support_count", 0)) if isinstance(metadata, dict) else 0
+        reason_summary = str(pred_row.get("reason_summary", ""))
+        confidence = float(pred_row.get("confidence", model_probability))
+
+        # Composite trust score: reward supported edges and de-emphasize pure longshot EV.
+        moneyline_penalty = 0.0
+        if market == "moneyline":
+            moneyline_penalty -= 0.3
+            if american_odds >= 180 and support_count < 4:
+                moneyline_penalty -= 0.8
+        composite_score = (
+            1.9 * edge
+            + 1.1 * expected_value
+            + 0.9 * confidence
+            + 0.22 * support_count
+            + moneyline_penalty
+        )
+
         if market == "spread":
             selection_label = home_team if selection == "spread_home" else away_team
         elif market == "moneyline":
@@ -170,7 +199,10 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
                 "market_probability": market_probability,
                 "edge": edge,
                 "expected_value": expected_value,
-                "confidence": model_probability,
+                "confidence": confidence,
+                "support_count": support_count,
+                "composite_score": composite_score,
+                "reason_summary": reason_summary,
             }
         )
 
@@ -297,11 +329,17 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             continue
         bets.extend(game_bets)
 
-    ranked_bets = sorted(
-        bets,
-        key=lambda x: (x["expected_value"], x["edge"], x["confidence"]),
-        reverse=True,
-    )
+    filtered_bets = []
+    for bet in bets:
+        if bet["support_count"] < 2:
+            continue
+        if bet["market"] == "moneyline" and abs(int(bet["odds"])) >= 180 and bet["support_count"] < 4:
+            continue
+        if bet["market"] == "moneyline" and bet["model_probability"] < 0.46:
+            continue
+        filtered_bets.append(bet)
+
+    ranked_bets = sorted(filtered_bets, key=lambda x: (x["composite_score"], x["confidence"]), reverse=True)
     trimmed_recs = ranked_bets[:TOP_BETS_DAILY] if not loaded_predictions_df.empty else []
     logger.info("Total bets exported: %s", len(trimmed_recs))
 

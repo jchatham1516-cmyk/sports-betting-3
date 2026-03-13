@@ -1,34 +1,14 @@
-"""NHL model implementation."""
+"""NHL disciplined baseline model."""
 
 from __future__ import annotations
 
-from sports_betting.sports.nba.model import NBAModel
+from sports_betting.sports.common.baseline_model import DisciplinedBaselineModel
 
 
-class NHLModel(NBAModel):
-    """Reuse shared calibrated Gradient Boosting workflow for NHL."""
-
+class NHLModel(DisciplinedBaselineModel):
     sport = "nhl"
-    BASE_FEATURES = NBAModel.BASE_FEATURES + [
-        "xgf_home",
-        "xgf_away",
-        "xga_home",
-        "xga_away",
-        "xgf_diff",
-        "xga_diff",
-        "xgf_pct_diff",
-        "xGF%_diff",
-        "shot_share_diff",
-        "special_teams_efficiency_diff",
-        "goalie_strength_home",
-        "goalie_strength_away",
-        "goalie_strength_diff",
-        "goalie_save_strength_diff",
-        "goalie_xgsaved_proxy_diff",
-        "top_line_impact_diff",
-        "defensive_pair_impact_diff",
-        "special_teams_diff",
-    ]
-    WIN_FEATURES = BASE_FEATURES
-    SPREAD_FEATURES = BASE_FEATURES + ["spread_line"]
-    TOTAL_FEATURES = BASE_FEATURES + ["total_line"]
+    PROBABILITY_BOUNDS = {
+        "moneyline": (0.14, 0.86),
+        "spread": (0.20, 0.80),
+        "total": (0.20, 0.80),
+    }

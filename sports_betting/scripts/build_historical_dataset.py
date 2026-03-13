@@ -38,6 +38,12 @@ def build_historical_dataset(sport: str, input_dir: Path) -> Path:
         raise RuntimeError(f"[{sport.upper()}] No historical source found at {source}")
 
     df = pd.read_csv(source)
+    if len(df) < 500:
+        raise RuntimeError(f"[{sport.upper()}] historical source is too small ({len(df)} rows). Provide a larger multi-season dataset.")
+    required_identity = {"home_team", "away_team"}
+    missing_identity = [col for col in required_identity if col not in df.columns]
+    if missing_identity:
+        raise RuntimeError(f"[{sport.upper()}] historical source missing required columns: {', '.join(missing_identity)}")
     df["event_date"] = pd.to_datetime(df.get("date", df.get("event_date")), errors="coerce", utc=True)
     df["date"] = pd.to_datetime(df["event_date"], errors="coerce", utc=True)
 
