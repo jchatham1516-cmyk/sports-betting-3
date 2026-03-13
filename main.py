@@ -103,11 +103,21 @@ def _best_market_sides(bets: list) -> list:
     return list(best.values())
 
 
+def _american_payout(odds: int) -> float:
+    """Return net payout per 1 unit stake for American odds."""
+    if odds >= 100:
+        return odds / 100.0
+    if odds <= -100:
+        return 100.0 / abs(odds)
+    return 0.0
+
+
 def run_daily_pipeline(config_path: str | None = None, sport: str | None = None) -> None:
     cfg = load_config(config_path)
     logger = setup_logging(cfg["logging"]["level"])
 
     all_predictions: list[dict] = []
+    bets: list[dict] = []
     candidate_pool = []
     all_passes: list[str] = []
     recs_by_sport = defaultdict(list)
@@ -156,11 +166,31 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 "total": "over_odds" if pred.side.startswith("Over") else "under_odds",
             }[pred.market]
             line_col = {"moneyline": None, "spread": "spread_line", "total": "total_line"}[pred.market]
+            odds = int(game_row[odds_col])
+            market_probability = float(pred.market_implied_probability)
+            model_probability = float(pred.model_probability)
+            edge = model_probability - market_probability
+            payout = _american_payout(odds)
+            expected_value = (model_probability * payout) - (1 - model_probability)
+            candidate_bet = {
+                "game": game,
+                "sport": pred.sport,
+                "market": pred.market,
+                "selection": pred.side,
+                "odds": odds,
+                "model_probability": model_probability,
+                "market_probability": market_probability,
+                "edge": edge,
+                "expected_value": expected_value,
+                "confidence": float(pred.confidence),
+            }
+            bets.append(candidate_bet)
+
             rec = candidate_prediction(
                 pred=pred,
                 game_text=game,
                 event_date=pd.to_datetime(game_row["event_date"]).date(),
-                odds=int(game_row[odds_col]),
+                odds=odds,
                 line=float(game_row[line_col]) if line_col else None,
                 bankroll_cfg=bankroll_cfg,
                 stake_mode=cfg["bankroll"]["stake_mode"],
@@ -168,18 +198,20 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             if rec:
                 candidate_pool.append(rec)
 
-    # Remove duplicate sides first: keep one bet per game + market.
-    bets = _best_market_sides(candidate_pool)
+    print("Candidate bets generated:", len(bets))
+
+    # Ranking/filtering only happens after we have built the full candidate-bet list.
+    qualified_bets = _best_market_sides(candidate_pool)
 
     ranked_bets = sorted(
-        bets,
+        qualified_bets,
         key=lambda x: (x.expected_value, x.edge, x.confidence_score),
         reverse=True,
     )
 
     if total_games_processed > 0:
         trimmed_recs = ranked_bets[:TOP_BETS_DAILY]
-        if not trimmed_recs:
+        if not bets:
             all_passes.append("Games exist, but no valid bet candidates were produced.")
     else:
         trimmed_recs = []
