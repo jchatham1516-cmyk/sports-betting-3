@@ -1,25 +1,34 @@
 name: Sports Betting Automation
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   schedule:
     - cron: "0 9 * * *"
-    
+
 jobs:
   run-predictions:
+    name: Run Betting Predictions
     runs-on: ubuntu-latest
 
     env:
+      PYTHONUNBUFFERED: "1"
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v5
 
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+
+      - name: Validate API key
+        run: |
+          if [ -z "${ODDS_API_KEY}" ]; then
+            echo "ODDS_API_KEY secret is missing"
+            exit 1
+          fi
 
       - name: Install dependencies
         run: |
@@ -36,18 +45,29 @@ from sklearn.linear_model import LogisticRegression
 model = LogisticRegression()
 
 for sport in ["nba","nfl","nhl"]:
-    with open(f"sports_betting/data/models/{sport}_model.pkl","wb") as f:
+    path = f"sports_betting/data/models/{sport}_model.pkl"
+    with open(path,"wb") as f:
         pickle.dump(model,f)
+
+print("Placeholder models created")
 PY
 
       - name: Create output directory
-        run: mkdir -p data/outputs
+        run: |
+          mkdir -p data/outputs
 
       - name: Run predictions
-        run: python main.py
+        run: |
+          python main.py
 
-      - name: Upload outputs
+      - name: Show generated files
+        run: |
+          echo "Files in outputs:"
+          ls -R data/outputs || true
+
+      - name: Upload prediction artifacts
         uses: actions/upload-artifact@v6
         with:
           name: betting-results
-          path: data/outputs/
+          path: data/outputs/**
+          retention-days: 14
