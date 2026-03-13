@@ -27,51 +27,45 @@ SPORT_TO_ODDS_API_KEY = {
 FEATURE_COLUMNS_BY_SPORT = {
     "nba": [
         "elo_diff",
+        "offensive_rating_diff",
+        "defensive_rating_diff",
         "net_rating_diff",
-        "off_rating_diff",
-        "def_rating_diff",
         "pace_diff",
         "rest_diff",
-        "injury_impact_diff",
         "travel_fatigue_diff",
         "recent_form_diff",
-        "pace_sum",
-        "off_rating_sum",
-        "def_rating_sum",
-        "recent_total_trend",
-        "injury_total_impact",
+        "injury_impact_diff",
+        "market_spread",
+        "market_total",
     ],
     "nfl": [
         "elo_diff",
         "epa_per_play_diff",
         "success_rate_diff",
         "yards_per_play_diff",
-        "qb_impact_diff",
-        "pressure_rate_diff",
         "turnover_margin_diff",
+        "pressure_rate_diff",
+        "qb_impact_diff",
+        "weather_total_impact",
         "rest_diff",
         "travel_fatigue_diff",
-        "pace_sum",
-        "off_efficiency_sum",
-        "def_efficiency_sum",
-        "weather_total_impact",
-        "red_zone_efficiency_sum",
+        "market_spread",
+        "market_total",
     ],
     "nhl": [
         "elo_diff",
         "xgf_diff",
         "xga_diff",
-        "special_teams_diff",
+        "xg_total",
         "goalie_strength_diff",
+        "special_teams_diff",
         "rest_diff",
         "travel_fatigue_diff",
-        "injury_impact_diff",
         "recent_form_diff",
-        "pace_sum",
-        "xg_total",
-        "goalie_total_impact",
         "shooting_regression_signal",
         "save_regression_signal",
+        "market_spread",
+        "market_total",
     ],
 }
 
@@ -305,8 +299,10 @@ def fetch_live_daily_odds(sport: str) -> pd.DataFrame:
         record.update(h2h)
         record.update(spreads)
         record.update(totals)
+        record["market_spread"] = float(record.get("spread_line", 0.0))
+        record["market_total"] = float(record.get("total_line", 0.0))
         for feature_name in FEATURE_COLUMNS_BY_SPORT[sport]:
-            record[feature_name] = 0.0
+            record.setdefault(feature_name, 0.0)
         records.append(record)
 
     daily = pd.DataFrame(records)
