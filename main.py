@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 from dataclasses import asdict
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -20,9 +19,7 @@ from sports_betting.scripts.data_io import (
     validate_model_artifacts_exist,
 )
 from sports_betting.sports.common.logging_utils import setup_logging
-from sports_betting.sports.common.reporting import render_daily_card, save_dataframe, save_recommendations_json
-from sports_betting.sports.common.risk import BankrollConfig
-from sports_betting.sports.common.selection import candidate_prediction
+from sports_betting.sports.common.reporting import save_dataframe
 from sports_betting.sports.nba.model import NBAModel
 from sports_betting.sports.nfl.model import NFLModel
 from sports_betting.sports.nhl.model import NHLModel
@@ -47,61 +44,21 @@ PREDICTION_COLUMNS = [
 TOP_BETS_DAILY = 5
 
 RECOMMENDATION_COLUMNS = [
-    "event_date",
     "sport",
     "game",
     "market",
-    "side",
-    "line",
+    "selection",
     "odds",
     "model_probability",
-    "market_implied_probability",
+    "market_probability",
     "edge",
     "expected_value",
-    "confidence_score",
-    "confidence_tier",
-    "recommended_units",
-    "reason_summary",
-    "flags",
-    "rank_score",
-    "market_prob",
-    "model_prob",
-    "line_movement",
-    "clv_placeholder",
-    "injury_confidence_score",
-    "opening_line",
-    "bet_line",
-    "current_line",
-    "closing_line",
-    "clv_diff",
-    "fallback_pick",
+    "confidence",
 ]
 
 
 def choose_model(sport: str):
     return {"nba": NBAModel, "nfl": NFLModel, "nhl": NHLModel}[sport]()
-
-
-def _best_market_sides(bets: list) -> list:
-    """Keep only one side per sport/game/market using highest EV/edge/confidence."""
-    best = {}
-    for bet in bets:
-        key = (bet.sport, bet.game, bet.market)
-        current = best.get(key)
-        if current is None or (
-            bet.expected_value,
-            bet.edge,
-            bet.confidence_score,
-            bet.rank_score,
-        ) > (
-            current.expected_value,
-            current.edge,
-            current.confidence_score,
-            current.rank_score,
-        ):
-            best[key] = bet
-    return list(best.values())
-
 
 
 def _american_to_decimal(odds: int) -> float:
@@ -113,7 +70,7 @@ def _american_to_decimal(odds: int) -> float:
     return 0.0
 
 
-def _build_game_candidate_bets(predictions: list, game_row: pd.Series, sport_name: str, game: str) -> list[dict]:
+def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_name: str, game: str) -> list[dict]:
     """Create all six candidate bet types for a game from available prediction rows."""
     prediction_map: dict[tuple[str, str], float] = {}
     home_team = str(game_row["home_team"])
@@ -121,8 +78,8 @@ def _build_game_candidate_bets(predictions: list, game_row: pd.Series, sport_nam
     total_line = float(game_row.get("total_line", 0.0))
 
     for pred in predictions:
-        market = "totals" if pred.market in {"total", "totals"} else pred.market
-        side = str(pred.side)
+        market = "totals" if pred["market"] in {"total", "totals"} else pred["market"]
+        side = str(pred["side"])
         key = None
         if market == "moneyline":
             key = (market, "moneyline_home" if side == home_team else "moneyline_away")
@@ -131,7 +88,7 @@ def _build_game_candidate_bets(predictions: list, game_row: pd.Series, sport_nam
         elif market == "totals":
             key = (market, "over" if side.startswith("Over") else "under")
         if key:
-            prediction_map[key] = float(pred.model_probability)
+            prediction_map[key] = float(pred["model_probability"])
 
     candidate_specs = [
         ("moneyline", "moneyline_home", int(game_row["home_odds"])),
@@ -182,17 +139,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     logger = setup_logging(cfg["logging"]["level"])
 
     all_predictions: list[dict] = []
-    bets: list[dict] = []
-    candidate_pool = []
-    all_passes: list[str] = []
-    recs_by_sport = defaultdict(list)
-
-    bankroll_cfg = BankrollConfig(
-        bankroll=cfg["bankroll"]["bankroll"],
-        unit_size=cfg["bankroll"]["unit_size"],
-        max_units_per_bet=cfg["bankroll"]["max_units_per_bet"],
-        kelly_fraction=cfg["bankroll"]["kelly_fraction"],
-    )
+    game_rows_by_id: dict[str, dict] = {}
 
     sports_to_run = [sport] if sport else cfg["sports_enabled"]
 
@@ -221,85 +168,71 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         preds = model.predict_daily(daily)
         logger.info("%s games processed for %s (%s predictions generated)", len(daily), sport_name, len(preds))
 
-        predictions_by_game_id: dict[str, list] = defaultdict(list)
+        predictions_by_game_id: dict[str, list[dict]] = defaultdict(list)
         for pred in preds:
             all_predictions.append(asdict(pred))
-            predictions_by_game_id[pred.game_id].append(pred)
-
-            game = pred.metadata.get("game", pred.game_id)
             game_row = daily[daily["game_id"] == pred.game_id].iloc[0]
-            odds_col = {
-                "moneyline": "home_odds" if pred.side == game_row["home_team"] else "away_odds",
-                "spread": "home_spread_odds" if pred.side.startswith(game_row["home_team"]) else "away_spread_odds",
-                "total": "over_odds" if pred.side.startswith("Over") else "under_odds",
-            }[pred.market]
-            line_col = {"moneyline": None, "spread": "spread_line", "total": "total_line"}[pred.market]
-            odds = int(game_row[odds_col])
-            rec = candidate_prediction(
-                pred=pred,
-                game_text=game,
-                event_date=pd.to_datetime(game_row["event_date"]).date(),
-                odds=odds,
-                line=float(game_row[line_col]) if line_col else None,
-                bankroll_cfg=bankroll_cfg,
-                stake_mode=cfg["bankroll"]["stake_mode"],
-            )
-            if rec:
-                candidate_pool.append(rec)
-
-        for game_id, game_predictions in predictions_by_game_id.items():
-            game_row = daily[daily["game_id"] == game_id].iloc[0]
-            game = game_predictions[0].metadata.get("game", game_id)
-            bets.extend(_build_game_candidate_bets(game_predictions, game_row, sport_name, game))
-
-    print("Candidate bets generated:", len(bets))
-
-    # Ranking/filtering only happens after we have built the full candidate-bet list.
-    qualified_bets = _best_market_sides(candidate_pool)
-
-    ranked_bets = sorted(
-        qualified_bets,
-        key=lambda x: (x.expected_value, x.edge, x.confidence_score),
-        reverse=True,
-    )
-
-    if total_games_processed > 0:
-        trimmed_recs = ranked_bets[:TOP_BETS_DAILY]
-        if not bets:
-            all_passes.append("Games exist, but no valid bet candidates were produced.")
-    else:
-        trimmed_recs = []
-
-    recs_by_sport = defaultdict(list)
-    for rec in trimmed_recs:
-        recs_by_sport[rec.sport].append(rec)
+            predictions_by_game_id[pred.game_id].append(asdict(pred))
+            game_rows_by_id[pred.game_id] = {
+                "home_team": game_row["home_team"],
+                "away_team": game_row["away_team"],
+                "home_odds": game_row["home_odds"],
+                "away_odds": game_row["away_odds"],
+                "home_spread_odds": game_row["home_spread_odds"],
+                "away_spread_odds": game_row["away_spread_odds"],
+                "over_odds": game_row["over_odds"],
+                "under_odds": game_row["under_odds"],
+                "total_line": game_row.get("total_line", 0.0),
+                "game": pred.metadata.get("game", pred.game_id),
+                "sport": sport_name,
+            }
 
     out_dir = Path("data/outputs")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("Writing outputs to: %s", out_dir.resolve())
     logger.info("Total games processed: %s", total_games_processed)
-    logger.info("Total bets exported: %s", len(trimmed_recs))
 
     predictions_df = pd.DataFrame(all_predictions)
     predictions_df = predictions_df.reindex(columns=PREDICTION_COLUMNS)
     save_dataframe(predictions_df, out_dir / "predictions.csv")
 
-    recommendations_df = pd.DataFrame([asdict(r) for r in trimmed_recs])
+    loaded_predictions_df = pd.read_csv(out_dir / "predictions.csv")
+    bets = []
+    for game_id, game_predictions in loaded_predictions_df.groupby("game_id"):
+        game_context = game_rows_by_id.get(game_id)
+        if game_context is None:
+            continue
+        bets.extend(
+            _build_game_candidate_bets(
+                predictions=game_predictions.to_dict("records"),
+                game_row=game_context,
+                sport_name=game_context["sport"],
+                game=game_context["game"],
+            )
+        )
+
+    ranked_bets = sorted(
+        bets,
+        key=lambda x: (x["expected_value"], x["edge"], x["confidence"]),
+        reverse=True,
+    )
+    trimmed_recs = ranked_bets[:TOP_BETS_DAILY] if not loaded_predictions_df.empty else []
+    logger.info("Total bets exported: %s", len(trimmed_recs))
+
+    recommendations_df = pd.DataFrame(trimmed_recs)
     recommendations_df = recommendations_df.reindex(columns=RECOMMENDATION_COLUMNS)
     save_dataframe(recommendations_df, out_dir / "recommended_bets.csv")
 
-    save_recommendations_json(trimmed_recs, out_dir / "daily_recommendations.json")
-
-    # simple synthetic backtest summary using recommendation EV as proxy; replace with realized grading data in production
     if trimmed_recs:
-        bt = pd.DataFrame([asdict(r) for r in trimmed_recs])
+        bt = recommendations_df.copy()
+        bt["recommended_units"] = 1.0
         bt["result_units"] = bt["expected_value"] * bt["recommended_units"]
         bt["stake_units"] = bt["recommended_units"]
         bt_summary = summarize_backtest(bt)
         save_dataframe(pd.DataFrame([asdict(bt_summary)]), out_dir / "backtest_summary.csv")
 
-    card = render_daily_card(datetime.utcnow().strftime("%Y-%m-%d"), recs_by_sport, all_passes[:20])
+    card = "Top model bets exported from predictions." if trimmed_recs else "No bets exported today"
     print(card)
     report_lines = [
         f"Output directory: {out_dir.resolve()}",
@@ -309,7 +242,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         "",
     ]
     if trimmed_recs:
-        report_lines.append("Top model bets exported (no strict filtering applied).")
+        report_lines.append("Top model bets exported from predictions.")
     else:
         report_lines.append("No bets exported today")
 
