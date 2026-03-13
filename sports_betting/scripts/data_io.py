@@ -13,6 +13,8 @@ from urllib.request import urlopen
 import numpy as np
 import pandas as pd
 
+from sports_betting.sports.common.feature_engineering import SPORT_EFFICIENCY_FEATURES, enrich_with_context_features
+
 
 ROOT = Path("sports_betting/data")
 LOGGER = logging.getLogger(__name__)
@@ -29,15 +31,45 @@ BASE_FEATURE_COLUMNS = [
     "elo_diff",
     "rest_diff",
     "travel_distance",
+    "travel_fatigue_diff",
+    "injury_impact",
+    "injury_impact_diff",
+    "injury_impact_home",
+    "injury_impact_away",
+    "starter_out_count_home",
+    "starter_out_count_away",
+    "star_player_out_flag_home",
+    "star_player_out_flag_away",
+    "starting_goalie_out_flag_home",
+    "starting_goalie_out_flag_away",
+    "qb_out_flag_home",
+    "qb_out_flag_away",
+    "offensive_injury_weight_diff",
+    "defensive_injury_weight_diff",
+    "rest_days_home",
+    "rest_days_away",
+    "back_to_back_home",
+    "back_to_back_away",
+    "three_in_four_home",
+    "three_in_four_away",
+    "road_trip_length_home",
+    "road_trip_length_away",
+    "timezone_shift_home",
+    "timezone_shift_away",
+    "travel_distance_home",
+    "travel_distance_away",
     "offensive_rating_diff",
     "defensive_rating_diff",
     "net_rating_diff",
-    "injury_impact",
     "pace",
     "home_indicator",
 ]
 
-FEATURE_COLUMNS_BY_SPORT = {sport: list(BASE_FEATURE_COLUMNS) for sport in SUPPORTED_SPORTS}
+FEATURE_COLUMNS_BY_SPORT = {
+    "nba": list(BASE_FEATURE_COLUMNS) + [f"{f}_diff" for f in SPORT_EFFICIENCY_FEATURES["nba"]],
+    "nfl": list(BASE_FEATURE_COLUMNS) + [f"{f}_diff" for f in SPORT_EFFICIENCY_FEATURES["nfl"]],
+    "nhl": list(BASE_FEATURE_COLUMNS) + [f"{f}_diff" for f in SPORT_EFFICIENCY_FEATURES["nhl"]],
+}
 TARGET_COLUMNS = ["home_win", "home_cover", "over_hit"]
 
 
@@ -85,6 +117,32 @@ def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFra
     out["injury_impact"] = _coalesce_numeric(out, ["injury_impact", "injury_impact_diff", "qb_impact_diff", "goalie_strength_diff"])
     out["pace"] = _coalesce_numeric(out, ["pace", "pace_diff", "xg_total", "weather_total_impact"])
     out["home_indicator"] = _coalesce_numeric(out, ["home_indicator"], default=1.0).clip(0, 1)
+    out["travel_fatigue_diff"] = _coalesce_numeric(out, ["travel_fatigue_diff"])
+    out["injury_impact_home"] = _coalesce_numeric(out, ["injury_impact_home"])
+    out["injury_impact_away"] = _coalesce_numeric(out, ["injury_impact_away"])
+    out["injury_impact_diff"] = _coalesce_numeric(out, ["injury_impact_diff", "injury_impact"]) 
+    out["starter_out_count_home"] = _coalesce_numeric(out, ["starter_out_count_home"])
+    out["starter_out_count_away"] = _coalesce_numeric(out, ["starter_out_count_away"])
+    out["star_player_out_flag_home"] = _coalesce_numeric(out, ["star_player_out_flag_home"])
+    out["star_player_out_flag_away"] = _coalesce_numeric(out, ["star_player_out_flag_away"])
+    out["starting_goalie_out_flag_home"] = _coalesce_numeric(out, ["starting_goalie_out_flag_home"])
+    out["starting_goalie_out_flag_away"] = _coalesce_numeric(out, ["starting_goalie_out_flag_away"])
+    out["qb_out_flag_home"] = _coalesce_numeric(out, ["qb_out_flag_home"])
+    out["qb_out_flag_away"] = _coalesce_numeric(out, ["qb_out_flag_away"])
+    out["offensive_injury_weight_diff"] = _coalesce_numeric(out, ["offensive_injury_weight_diff"])
+    out["defensive_injury_weight_diff"] = _coalesce_numeric(out, ["defensive_injury_weight_diff"])
+    out["rest_days_home"] = _coalesce_numeric(out, ["rest_days_home"])
+    out["rest_days_away"] = _coalesce_numeric(out, ["rest_days_away"])
+    out["back_to_back_home"] = _coalesce_numeric(out, ["back_to_back_home"])
+    out["back_to_back_away"] = _coalesce_numeric(out, ["back_to_back_away"])
+    out["three_in_four_home"] = _coalesce_numeric(out, ["three_in_four_home"])
+    out["three_in_four_away"] = _coalesce_numeric(out, ["three_in_four_away"])
+    out["road_trip_length_home"] = _coalesce_numeric(out, ["road_trip_length_home"])
+    out["road_trip_length_away"] = _coalesce_numeric(out, ["road_trip_length_away"])
+    out["timezone_shift_home"] = _coalesce_numeric(out, ["timezone_shift_home"])
+    out["timezone_shift_away"] = _coalesce_numeric(out, ["timezone_shift_away"])
+    out["travel_distance_home"] = _coalesce_numeric(out, ["travel_distance_home"])
+    out["travel_distance_away"] = _coalesce_numeric(out, ["travel_distance_away"])
     out["spread_line"] = _coalesce_numeric(out, ["spread_line"])
     out["total_line"] = _coalesce_numeric(out, ["total_line"])
 
@@ -230,6 +288,9 @@ def generate_sample_data(sport: str, rows: int = 300) -> pd.DataFrame:
         if c == "home_indicator":
             continue
         base[c] = rng.normal(0, 1, rows)
+    for c in FEATURE_COLUMNS_BY_SPORT.get(sport, []):
+        if c not in base.columns and c != "home_indicator":
+            base[c] = rng.normal(0, 1, rows)
 
     win_score = 0.25 * base["elo_diff"] + 0.2 * base["net_rating_diff"] + 0.1 * base["rest_diff"] - 0.08 * base["travel_distance"]
     spread_score = 0.18 * base["net_rating_diff"] + 0.08 * base["rest_diff"] - 0.15 * base["spread_line"]
@@ -357,6 +418,8 @@ def load_historical_and_daily(sport: str) -> tuple[pd.DataFrame, pd.DataFrame]:
         daily = load_csv_or_empty(daily_path)
         if daily.empty:
             daily = generate_sample_data(sport, rows=12)
+        historical = enrich_with_context_features(historical, sport, ROOT)
+        daily = enrich_with_context_features(daily, sport, ROOT)
         return historical, daily
 
     if historical.empty and not model_artifact_path(sport).exists():
@@ -372,5 +435,6 @@ def load_historical_and_daily(sport: str) -> tuple[pd.DataFrame, pd.DataFrame]:
             model_artifact_path(sport),
         )
 
-    daily = fetch_live_daily_odds(sport)
+    historical = enrich_with_context_features(historical, sport, ROOT) if not historical.empty else historical
+    daily = enrich_with_context_features(fetch_live_daily_odds(sport), sport, ROOT)
     return historical, daily

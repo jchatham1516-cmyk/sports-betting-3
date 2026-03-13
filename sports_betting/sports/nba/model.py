@@ -30,11 +30,35 @@ class NBAModel(SportModel):
     BASE_FEATURES = [
         "elo_diff",
         "rest_diff",
+        "rest_days_home",
+        "rest_days_away",
+        "back_to_back_home",
+        "back_to_back_away",
+        "three_in_four_home",
+        "three_in_four_away",
         "travel_distance",
+        "travel_fatigue_diff",
+        "road_trip_length_home",
+        "road_trip_length_away",
+        "timezone_shift_home",
+        "timezone_shift_away",
+        "injury_impact",
+        "injury_impact_diff",
+        "injury_impact_home",
+        "injury_impact_away",
+        "starter_out_count_home",
+        "starter_out_count_away",
+        "star_player_out_flag_home",
+        "star_player_out_flag_away",
+        "starting_goalie_out_flag_home",
+        "starting_goalie_out_flag_away",
+        "qb_out_flag_home",
+        "qb_out_flag_away",
+        "offensive_injury_weight_diff",
+        "defensive_injury_weight_diff",
         "offensive_rating_diff",
         "defensive_rating_diff",
         "net_rating_diff",
-        "injury_impact",
         "pace",
         "home_indicator",
     ]
@@ -164,7 +188,11 @@ class NBAModel(SportModel):
                 edge = p_model - p_market
                 ev = expected_value(p_model, odds)
                 conf = self._confidence(edge, 1 - self.metrics.get("moneyline_calibrated_brier", 0.25), completeness)
-                reason = f"Elo {row.get('elo_diff', 0.0):.2f}, rest {row.get('rest_diff', 0.0):.1f}, injury {row.get('injury_impact', 0.0):.2f}."
+                reason = (
+                    f"Elo {row.get('elo_diff', 0.0):.2f}; injury-adjusted edge {row.get('injury_impact_diff', 0.0):+.2f} "
+                    f"(star flags {int(row.get('star_player_out_flag_away', 0))}-{int(row.get('star_player_out_flag_home', 0))}); "
+                    f"rest/travel {row.get('rest_diff', 0.0):+.1f}/{row.get('travel_fatigue_diff', 0.0):+.2f}."
+                )
                 preds.append(Prediction(game_id, self.sport, "moneyline", side, p_model, p_market, edge, ev, conf, reason, metadata={"game": game_txt}))
 
             p_home_cover = self._safe_probability(self._predict_proba(self.spread_model, spread_features))
@@ -180,7 +208,11 @@ class NBAModel(SportModel):
                 edge = p_model - p_market
                 ev = expected_value(p_model, odds)
                 conf = self._confidence(edge, 1 - self.metrics.get("spread_calibrated_brier", 0.25), completeness)
-                preds.append(Prediction(game_id, self.sport, "spread", side, p_model, p_market, edge, ev, conf, "Spread model signal.", metadata={"game": game_txt}))
+                spread_reason = (
+                    f"Top-rotation efficiency diff {row.get('top_5_rotation_impact_sum_diff', row.get('offensive_line_grade_proxy_diff', row.get('top_line_impact_diff', 0.0))):+.2f}; "
+                    f"fatigue split B2B {int(row.get('back_to_back_away', 0))}-{int(row.get('back_to_back_home', 0))}."
+                )
+                preds.append(Prediction(game_id, self.sport, "spread", side, p_model, p_market, edge, ev, conf, spread_reason, metadata={"game": game_txt}))
 
             p_over = self._safe_probability(self._predict_proba(self.total_model, total_features))
             p_under = self._safe_probability(1 - p_over)
@@ -195,6 +227,11 @@ class NBAModel(SportModel):
                 edge = p_model - p_market
                 ev = expected_value(p_model, odds)
                 conf = self._confidence(edge, 1 - self.metrics.get("total_calibrated_brier", 0.25), completeness)
-                preds.append(Prediction(game_id, self.sport, "total", side, p_model, p_market, edge, ev, conf, "Totals model signal.", metadata={"game": game_txt}))
+                total_reason = (
+                    f"Pace/efficiency {row.get('pace', 0.0):.2f}/{row.get('offensive_rating_diff', 0.0):+.2f}; "
+                    f"injury/goaltender-QB flags {int(row.get('starting_goalie_out_flag_away', 0) + row.get('qb_out_flag_away', 0))}-"
+                    f"{int(row.get('starting_goalie_out_flag_home', 0) + row.get('qb_out_flag_home', 0))}."
+                )
+                preds.append(Prediction(game_id, self.sport, "total", side, p_model, p_market, edge, ev, conf, total_reason, metadata={"game": game_txt}))
 
         return preds
