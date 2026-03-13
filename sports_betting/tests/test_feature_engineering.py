@@ -41,4 +41,12 @@ def test_enrich_with_context_features_adds_columns(tmp_path: Path):
     assert "injury_impact_diff" in out.columns
     assert "travel_fatigue_diff" in out.columns
     assert "epa_per_play_diff" in out.columns
+    assert "qb_efficiency_diff" in out.columns
+    assert "market_prob" in out.columns
+    assert "opening_line" in out.columns
+    assert "public_bias_flag" in out.columns
+    assert "three_games_in_four_home" in out.columns
+    assert "last5_net_rating_diff" in out.columns
+    assert "recent_epa_diff" in out.columns
+    assert "starter_out_count" in out.columns
     assert out.loc[0, "qb_out_flag_home"] == 1

@@ -23,6 +23,7 @@ class NFLModel(NBAModel):
         "qb_impact_home",
         "qb_impact_away",
         "qb_efficiency_metric_diff",
+        "qb_efficiency_diff",
         "offensive_line_grade_proxy_diff",
         "defensive_efficiency_diff",
         "special_teams_impact_diff",

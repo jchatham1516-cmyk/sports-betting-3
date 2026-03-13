@@ -12,6 +12,8 @@ from sports_betting.sports.common.injuries import load_injury_frame, normalize_s
 
 SPORT_EFFICIENCY_FEATURES: dict[str, list[str]] = {
     "nba": [
+        "off_rating",
+        "def_rating",
         "offensive_rating",
         "defensive_rating",
         "net_rating",
@@ -31,6 +33,7 @@ SPORT_EFFICIENCY_FEATURES: dict[str, list[str]] = {
         "epa_per_play",
         "success_rate",
         "yards_per_play",
+        "qb_efficiency",
         "red_zone_efficiency",
         "pressure_rate",
         "sack_rate",
@@ -45,6 +48,7 @@ SPORT_EFFICIENCY_FEATURES: dict[str, list[str]] = {
     "nhl": [
         "xgf",
         "xga",
+        "xgf%",
         "xgf_pct",
         "shot_share",
         "special_teams_efficiency",
@@ -129,6 +133,10 @@ def add_injury_features(games_df: pd.DataFrame, sport: str, data_root: Path) -> 
         + pd.to_numeric(out.get("injury_data_stale_away", 0.0), errors="coerce").fillna(0)
         > 0
     ).astype(float)
+    out["starter_out_count"] = out.get("starter_out_count_away", 0.0) - out.get("starter_out_count_home", 0.0)
+    out["star_player_out_flag"] = out.get("star_player_out_flag_away", 0.0) - out.get("star_player_out_flag_home", 0.0)
+    out["qb_out_flag"] = out.get("qb_out_flag_away", 0.0) - out.get("qb_out_flag_home", 0.0)
+    out["starting_goalie_out_flag"] = out.get("starting_goalie_out_flag_away", 0.0) - out.get("starting_goalie_out_flag_home", 0.0)
     return out
 
 
@@ -184,7 +192,7 @@ def add_travel_fatigue_features(games_df: pd.DataFrame, sport: str, data_root: P
 
             out.loc[idx, f"rest_days_{side}"] = rest_days
             out.loc[idx, f"back_to_back_{side}"] = int(rest_days <= 1)
-            out.loc[idx, f"three_in_four_{side}"] = int(rest_days <= 2)
+            out.loc[idx, f"three_games_in_four_{side}"] = int(rest_days <= 2)
             out.loc[idx, f"road_trip_length_{side}"] = road_trip
             out.loc[idx, f"timezone_shift_{side}"] = tz_shift
             out.loc[idx, f"travel_distance_{side}"] = travel
@@ -199,10 +207,14 @@ def add_travel_fatigue_features(games_df: pd.DataFrame, sport: str, data_root: P
         out.loc[idx, "travel_fatigue_diff"] = (
             0.002 * out.loc[idx, "travel_distance"]
             + 0.35 * (out.loc[idx, "back_to_back_away"] - out.loc[idx, "back_to_back_home"])
-            + 0.2 * (out.loc[idx, "three_in_four_away"] - out.loc[idx, "three_in_four_home"])
+            + 0.2 * (out.loc[idx, "three_games_in_four_away"] - out.loc[idx, "three_games_in_four_home"])
             + 0.05 * (out.loc[idx, "timezone_shift_away"] - out.loc[idx, "timezone_shift_home"])
         )
 
+    out["rest_days"] = out.get("rest_days_away", 0.0)
+    out["back_to_back"] = out.get("back_to_back_away", 0.0)
+    out["three_games_in_four"] = out.get("three_games_in_four_away", 0.0)
+    out["time_zone_shift"] = out.get("timezone_shift_away", 0.0)
     return out.fillna(0.0)
 
 
@@ -255,6 +267,16 @@ def add_efficiency_features(games_df: pd.DataFrame, sport: str, data_root: Path)
     out["special_teams_diff"] = out.get("special_teams_efficiency_diff", out.get("special_teams_impact_diff", 0.0))
     out["xgf_diff"] = out.get("xgf_diff", 0.0)
     out["xga_diff"] = out.get("xga_diff", 0.0)
+    out["xGF_home"] = out.get("xgf_home", 0.0)
+    out["xGF_away"] = out.get("xgf_away", 0.0)
+    out["xGA_home"] = out.get("xga_home", 0.0)
+    out["xGA_away"] = out.get("xga_away", 0.0)
+    out["xGF%_home"] = out.get("xgf_pct_home", out.get("xgf%_home", 0.0))
+    out["xGF%_away"] = out.get("xgf_pct_away", out.get("xgf%_away", 0.0))
+    out["xGF%_diff"] = out.get("xgf_pct_diff", out.get("xgf%_diff", 0.0))
+    out["qb_efficiency_home"] = out.get("qb_efficiency_home", out.get("qb_efficiency_metric_home", 0.0))
+    out["qb_efficiency_away"] = out.get("qb_efficiency_away", out.get("qb_efficiency_metric_away", 0.0))
+    out["qb_efficiency_diff"] = out.get("qb_efficiency_diff", out.get("qb_efficiency_metric_diff", 0.0))
     return out
 
 
@@ -312,6 +334,7 @@ def add_market_context_features(games_df: pd.DataFrame) -> pd.DataFrame:
     out["current_line"] = _series("current_line") if "current_line" in out.columns else _series("spread_line")
     out["line_movement"] = out["current_line"] - out["open_line"]
     out["public_favorite_bias_flag"] = (_series("home_odds") < -140).astype(float)
+    out["public_bias_flag"] = out["public_favorite_bias_flag"]
     out["favorite_inflation_flag"] = (out["line_movement"].abs() >= 1.5).astype(float)
     out["underdog_inflation_flag"] = (out["line_movement"] <= -1.5).astype(float)
     out["bet_line"] = _series("bet_line") if "bet_line" in out.columns else out["current_line"]
@@ -322,12 +345,45 @@ def add_market_context_features(games_df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def add_recent_form_features(games_df: pd.DataFrame, sport: str) -> pd.DataFrame:
+    out = games_df.copy()
+    out["event_date"] = pd.to_datetime(out.get("event_date"), errors="coerce", utc=True)
+    out = out.sort_values("event_date").copy()
+
+    def _rolling(team_col: str, score_col: str, opp_col: str, windows: tuple[int, ...]) -> pd.DataFrame:
+        base = out[["event_date", team_col, score_col, opp_col]].rename(columns={team_col: "team", score_col: "for", opp_col: "against"}).copy()
+        rev = out[["event_date", "away_team" if team_col == "home_team" else "home_team", opp_col, score_col]].rename(columns={"away_team" if team_col == "home_team" else "home_team": "team", opp_col: "for", score_col: "against"})
+        games = pd.concat([base, rev], ignore_index=True).sort_values(["team", "event_date"])
+        games["diff"] = pd.to_numeric(games["for"], errors="coerce").fillna(0.0) - pd.to_numeric(games["against"], errors="coerce").fillna(0.0)
+        for w in windows:
+            games[f"last{w}_avg"] = games.groupby("team")["diff"].transform(lambda s: s.shift(1).rolling(w, min_periods=1).mean())
+        return games
+
+    if "home_score" in out.columns and "away_score" in out.columns:
+        team_form = _rolling("home_team", "home_score", "away_score", (5, 10))
+        home = team_form[["event_date", "team", "last5_avg", "last10_avg"]].rename(columns={"team": "home_team", "last5_avg": "last5_home", "last10_avg": "last10_home"})
+        away = team_form[["event_date", "team", "last5_avg", "last10_avg"]].rename(columns={"team": "away_team", "last5_avg": "last5_away", "last10_avg": "last10_away"})
+        out = out.merge(home, on=["event_date", "home_team"], how="left").merge(away, on=["event_date", "away_team"], how="left")
+        out["last5_net_rating_diff"] = pd.to_numeric(out.get("last5_away", 0.0), errors="coerce").fillna(0.0) - pd.to_numeric(out.get("last5_home", 0.0), errors="coerce").fillna(0.0)
+        out["last10_net_rating_diff"] = pd.to_numeric(out.get("last10_away", 0.0), errors="coerce").fillna(0.0) - pd.to_numeric(out.get("last10_home", 0.0), errors="coerce").fillna(0.0)
+        out["recent_goal_diff"] = out["last5_net_rating_diff"] if sport == "nhl" else 0.0
+        out["recent_epa_diff"] = out["last5_net_rating_diff"] if sport == "nfl" else 0.0
+    else:
+        out["last5_net_rating_diff"] = 0.0
+        out["last10_net_rating_diff"] = 0.0
+        out["recent_goal_diff"] = 0.0
+        out["recent_epa_diff"] = 0.0
+
+    return out.fillna(0.0)
+
+
 def enrich_with_context_features(games_df: pd.DataFrame, sport: str, data_root: Path) -> pd.DataFrame:
     out = add_injury_features(games_df, sport, data_root)
     out = add_travel_fatigue_features(out, sport, data_root)
     out = add_elo_features(out, sport)
     out = add_efficiency_features(out, sport, data_root)
     out = add_market_context_features(out)
+    out = add_recent_form_features(out, sport)
     out["injury_impact"] = out.get("injury_impact_diff", 0.0)
     out["home_indicator"] = pd.to_numeric(out["home_indicator"], errors="coerce").fillna(1.0) if "home_indicator" in out.columns else 1.0
     return out.fillna(0.0)

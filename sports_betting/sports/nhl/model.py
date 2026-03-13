@@ -17,6 +17,7 @@ class NHLModel(NBAModel):
         "xgf_diff",
         "xga_diff",
         "xgf_pct_diff",
+        "xGF%_diff",
         "shot_share_diff",
         "special_teams_efficiency_diff",
         "goalie_strength_home",
