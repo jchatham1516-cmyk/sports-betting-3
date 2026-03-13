@@ -1,4 +1,4 @@
-"""Feature engineering for injuries, travel fatigue, and efficiency metrics."""
+"""Feature engineering for injuries, travel fatigue, market and efficiency context."""
 
 from __future__ import annotations
 
@@ -6,29 +6,9 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
-STATUS_MAP = {
-    "out": "out",
-    "doubtful": "doubtful",
-    "questionable": "questionable",
-    "probable": "probable",
-    "day-to-day": "day-to-day",
-    "day to day": "day-to-day",
-    "ir": "ir",
-    "inactive": "inactive",
-}
-
-STATUS_WEIGHT = {
-    "out": 1.0,
-    "ir": 1.0,
-    "inactive": 1.0,
-    "doubtful": 0.75,
-    "questionable": 0.45,
-    "day-to-day": 0.35,
-    "probable": 0.15,
-}
+from sports_betting.sports.common.injuries import load_injury_frame, normalize_status, summarize_team_injuries
 
 SPORT_EFFICIENCY_FEATURES: dict[str, list[str]] = {
     "nba": [
@@ -82,90 +62,67 @@ class TeamTravelState:
     last_was_home: bool | None = None
 
 
-def normalize_status(status: str) -> str:
-    s = str(status or "").strip().lower()
-    return STATUS_MAP.get(s, "questionable")
-
-
-def _to_bool(value: object) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    return int(str(value).strip().lower() in {"1", "true", "yes", "y"})
-
-
-def load_injury_reports(sport: str, data_root: Path) -> pd.DataFrame:
-    path = data_root / "external" / f"{sport}_injuries.csv"
-    if not path.exists():
-        return pd.DataFrame()
-    df = pd.read_csv(path)
-    df.columns = [c.strip().lower() for c in df.columns]
-    for col in ["team", "player", "status", "impact_rating", "is_starter", "is_star", "unit", "position", "starting_goalie", "qb"]:
-        if col not in df.columns:
-            df[col] = 0 if col in {"impact_rating", "is_starter", "is_star", "starting_goalie", "qb"} else ""
-    df["status_norm"] = df["status"].map(normalize_status)
-    df["status_weight"] = df["status_norm"].map(STATUS_WEIGHT).fillna(0.4)
-    df["impact_rating"] = pd.to_numeric(df["impact_rating"], errors="coerce").fillna(0.8)
-    df["weighted_impact"] = df["impact_rating"] * df["status_weight"]
-    df["is_starter"] = df["is_starter"].map(_to_bool)
-    df["is_star"] = df["is_star"].map(_to_bool)
-    df["starting_goalie"] = df["starting_goalie"].map(_to_bool)
-    df["qb"] = df["qb"].map(_to_bool)
-    df["unit"] = df["unit"].astype(str).str.lower().replace({"": "offense"})
-    return df
-
-
-def _team_injury_summary(inj_df: pd.DataFrame, sport: str) -> pd.DataFrame:
-    if inj_df.empty:
-        return pd.DataFrame()
-    grouped = inj_df.groupby("team", dropna=False)
-    out = grouped.agg(
-        injury_impact=("weighted_impact", "sum"),
-        starter_out_count=("is_starter", lambda s: int(((s == 1) & (inj_df.loc[s.index, "status_weight"] >= 0.75)).sum())),
-        star_player_out_flag=("is_star", lambda s: int(((s == 1) & (inj_df.loc[s.index, "status_weight"] >= 0.75)).any())),
-        offensive_injury_weight=("weighted_impact", lambda s: float(s[inj_df.loc[s.index, "unit"] == "offense"].sum())),
-        defensive_injury_weight=("weighted_impact", lambda s: float(s[inj_df.loc[s.index, "unit"] == "defense"].sum())),
-        starting_goalie_out_flag=("starting_goalie", lambda s: int(((s == 1) & (inj_df.loc[s.index, "status_weight"] >= 0.75)).any())),
-        qb_out_flag=("qb", lambda s: int(((s == 1) & (inj_df.loc[s.index, "status_weight"] >= 0.75)).any())),
-    ).reset_index()
-    if sport != "nhl":
-        out["starting_goalie_out_flag"] = 0
-    if sport != "nfl":
-        out["qb_out_flag"] = 0
-    return out
-
-
 def add_injury_features(games_df: pd.DataFrame, sport: str, data_root: Path) -> pd.DataFrame:
-    injuries = load_injury_reports(sport, data_root)
-    team_summary = _team_injury_summary(injuries, sport)
+    injuries = load_injury_frame(sport, data_root)
+    team_summary = summarize_team_injuries(injuries, sport)
     out = games_df.copy()
+
+    # Persist a team summary artifact for debugging and reporting.
+    external = data_root / "external"
+    external.mkdir(parents=True, exist_ok=True)
+    team_summary.to_csv(external / f"{sport}_injury_team_summary.csv", index=False)
+
+    default_cols = [
+        "injury_impact_home",
+        "injury_impact_away",
+        "injury_impact_diff",
+        "starter_out_count_home",
+        "starter_out_count_away",
+        "star_player_out_home",
+        "star_player_out_away",
+        "star_player_out_flag_home",
+        "star_player_out_flag_away",
+        "qb_out_flag_home",
+        "qb_out_flag_away",
+        "starting_goalie_out_flag_home",
+        "starting_goalie_out_flag_away",
+        "offensive_injury_weight_home",
+        "offensive_injury_weight_away",
+        "offensive_injury_weight_diff",
+        "defensive_injury_weight_home",
+        "defensive_injury_weight_away",
+        "defensive_injury_weight_diff",
+        "injury_confidence_score_home",
+        "injury_confidence_score_away",
+        "injury_confidence_score",
+        "injury_data_stale_flag",
+    ]
+
     if team_summary.empty:
-        for col in [
-            "injury_impact_home",
-            "injury_impact_away",
-            "injury_impact_diff",
-            "starter_out_count_home",
-            "starter_out_count_away",
-            "star_player_out_flag_home",
-            "star_player_out_flag_away",
-            "starting_goalie_out_flag_home",
-            "starting_goalie_out_flag_away",
-            "qb_out_flag_home",
-            "qb_out_flag_away",
-            "offensive_injury_weight_diff",
-            "defensive_injury_weight_diff",
-        ]:
+        for col in default_cols:
             out[col] = 0.0
         return out
 
     home = team_summary.add_suffix("_home").rename(columns={"team_home": "home_team"})
     away = team_summary.add_suffix("_away").rename(columns={"team_away": "away_team"})
-    out = out.merge(home, on="home_team", how="left").merge(away, on="away_team", how="left")
-    out = out.fillna(0.0)
-    out["injury_impact_home"] = out["injury_impact_home"]
-    out["injury_impact_away"] = out["injury_impact_away"]
+    out = out.merge(home, on="home_team", how="left").merge(away, on="away_team", how="left").fillna(0.0)
+
     out["injury_impact_diff"] = out["injury_impact_away"] - out["injury_impact_home"]
     out["offensive_injury_weight_diff"] = out.get("offensive_injury_weight_away", 0.0) - out.get("offensive_injury_weight_home", 0.0)
     out["defensive_injury_weight_diff"] = out.get("defensive_injury_weight_away", 0.0) - out.get("defensive_injury_weight_home", 0.0)
+    out["star_player_out_home"] = out.get("star_player_out_home", 0.0)
+    out["star_player_out_away"] = out.get("star_player_out_away", 0.0)
+    out["star_player_out_flag_home"] = out["star_player_out_home"]
+    out["star_player_out_flag_away"] = out["star_player_out_away"]
+    out["injury_confidence_score"] = 0.5 * (
+        pd.to_numeric(out.get("injury_confidence_score_home", 0.0), errors="coerce").fillna(0.0)
+        + pd.to_numeric(out.get("injury_confidence_score_away", 0.0), errors="coerce").fillna(0.0)
+    )
+    out["injury_data_stale_flag"] = (
+        pd.to_numeric(out.get("injury_data_stale_home", 0.0), errors="coerce").fillna(0)
+        + pd.to_numeric(out.get("injury_data_stale_away", 0.0), errors="coerce").fillna(0)
+        > 0
+    ).astype(float)
     return out
 
 
@@ -204,7 +161,6 @@ def add_travel_fatigue_features(games_df: pd.DataFrame, sport: str, data_root: P
         row = out.loc[idx]
         for side in ["home", "away"]:
             team = row[f"{side}_team"]
-            opponent_side = "away" if side == "home" else "home"
             lat, lon, tz = _team_loc(str(team), locs)
             date = row["event_date"]
             state = states.setdefault(str(team), TeamTravelState())
@@ -217,10 +173,7 @@ def add_travel_fatigue_features(games_df: pd.DataFrame, sport: str, data_root: P
                     travel = _haversine_miles(state.last_lat, state.last_lon, lat, lon)
                 tz_shift = abs(tz - state.last_tz)
             is_home = side == "home"
-            if is_home:
-                road_trip = 0 if state.last_was_home is not False else state.consecutive_road_games
-            else:
-                road_trip = state.consecutive_road_games + 1
+            road_trip = 0 if is_home and state.last_was_home is not False else state.consecutive_road_games + (0 if is_home else 1)
 
             out.loc[idx, f"rest_days_{side}"] = rest_days
             out.loc[idx, f"back_to_back_{side}"] = int(rest_days <= 1)
@@ -273,12 +226,10 @@ def add_efficiency_features(games_df: pd.DataFrame, sport: str, data_root: Path)
 
     home = metrics[["team", *feature_set]].copy().add_suffix("_home").rename(columns={"team_home": "home_team"})
     away = metrics[["team", *feature_set]].copy().add_suffix("_away").rename(columns={"team_away": "away_team"})
-    out = out.merge(home, on="home_team", how="left").merge(away, on="away_team", how="left")
-    out = out.fillna(0.0)
+    out = out.merge(home, on="home_team", how="left").merge(away, on="away_team", how="left").fillna(0.0)
     for f in feature_set:
         out[f"{f}_diff"] = out[f"{f}_away"] - out[f"{f}_home"]
 
-    # Shared aliases expected by model interfaces.
     out["offensive_rating_diff"] = out.get("offensive_rating_diff", out.get("epa_per_play_diff", out.get("xgf_diff", 0.0)))
     out["defensive_rating_diff"] = out.get("defensive_rating_diff", out.get("defensive_efficiency_diff", out.get("xga_diff", 0.0)))
     out["net_rating_diff"] = out.get("net_rating_diff", out.get("success_rate_diff", out.get("xgf_pct_diff", 0.0)))
@@ -286,11 +237,33 @@ def add_efficiency_features(games_df: pd.DataFrame, sport: str, data_root: Path)
     return out
 
 
+def add_market_context_features(games_df: pd.DataFrame) -> pd.DataFrame:
+    out = games_df.copy()
+
+    def _series(name: str, default: float = 0.0) -> pd.Series:
+        if name in out.columns:
+            return pd.to_numeric(out[name], errors="coerce").fillna(default)
+        return pd.Series(default, index=out.index, dtype="float64")
+
+    out["market_prob"] = _series("market_prob")
+    out["model_prob"] = _series("model_prob")
+    out["edge"] = _series("edge")
+    out["expected_value"] = _series("expected_value")
+    out["open_line"] = _series("open_line") if "open_line" in out.columns else _series("spread_line")
+    out["current_line"] = _series("current_line") if "current_line" in out.columns else _series("spread_line")
+    out["line_movement"] = out["current_line"] - out["open_line"]
+    out["public_favorite_bias_flag"] = (_series("home_odds") < -140).astype(float)
+    out["favorite_inflation_flag"] = (out["line_movement"].abs() >= 1.5).astype(float)
+    out["underdog_inflation_flag"] = (out["line_movement"] <= -1.5).astype(float)
+    out["clv_placeholder"] = _series("clv_placeholder")
+    return out
+
+
 def enrich_with_context_features(games_df: pd.DataFrame, sport: str, data_root: Path) -> pd.DataFrame:
     out = add_injury_features(games_df, sport, data_root)
     out = add_travel_fatigue_features(out, sport, data_root)
     out = add_efficiency_features(out, sport, data_root)
+    out = add_market_context_features(out)
     out["injury_impact"] = out.get("injury_impact_diff", 0.0)
-    home_indicator = out["home_indicator"] if "home_indicator" in out.columns else pd.Series(1.0, index=out.index)
-    out["home_indicator"] = pd.to_numeric(home_indicator, errors="coerce").fillna(1.0)
+    out["home_indicator"] = pd.to_numeric(out["home_indicator"], errors="coerce").fillna(1.0) if "home_indicator" in out.columns else 1.0
     return out.fillna(0.0)
