@@ -29,22 +29,20 @@ def fitted_model(feature_count: int) -> LogisticRegression:
 
 def build_payload(sport: str, model_cls: type[NBAModel]) -> dict:
     """Create payload keys expected by load_artifact() and prediction paths."""
-    win_features = list(model_cls.WIN_FEATURES)
-    spread_features = list(model_cls.SPREAD_FEATURES)
-    total_features = list(model_cls.TOTAL_FEATURES)
+    win_feature_count = len(model_cls.WIN_FEATURES)
+    spread_feature_count = len(model_cls.SPREAD_FEATURES)
+    total_feature_count = len(model_cls.TOTAL_FEATURES)
 
     return {
         "sport": sport,
-        "win_features": win_features,
-        "spread_features": spread_features,
-        "total_features": total_features,
-        "moneyline_models": [fitted_model(len(win_features))],
-        "spread_models": [fitted_model(len(spread_features))],
-        "total_models": [fitted_model(len(total_features))],
+        "moneyline_model": fitted_model(win_feature_count),
+        "spread_model": fitted_model(spread_feature_count),
+        "total_model": fitted_model(total_feature_count),
         "moneyline_cal": None,
         "spread_cal": None,
         "total_cal": None,
         "metrics": {},
+        "feature_importance": {},
     }
 
 
