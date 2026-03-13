@@ -27,30 +27,25 @@ def _has_severe_data_issue(pred: Prediction) -> bool:
     return bool(severe_flags.intersection(set(pred.flags)))
 
 
-def qualify_prediction(
+def _passes_base_checks(pred: Prediction, odds: int) -> bool:
+    if _has_severe_data_issue(pred):
+        return False
+    if pred.model_probability < 0.52:
+        return False
+    if odds > 2000:
+        return False
+    return True
+
+
+def _build_recommendation(
     pred: Prediction,
     game_text: str,
     event_date: date,
     odds: int,
     line: float | None,
-    thresholds: dict,
     bankroll_cfg: BankrollConfig,
     stake_mode: str,
 ) -> BetRecommendation | None:
-    if _has_severe_data_issue(pred):
-        return None
-    if pred.model_probability < 0.52:
-        return None
-    if odds > 2000:
-        return None
-    min_edge = float(thresholds.get("min_edge", 0.02))
-    if pred.edge < min_edge:
-        return None
-    if pred.expected_value <= 0 or pred.expected_value < thresholds["min_ev"]:
-        return None
-    if pred.confidence < thresholds["min_confidence"]:
-        return None
-
     stake = recommend_units(pred.model_probability, odds, pred.confidence, bankroll_cfg, mode=stake_mode, edge=pred.edge)
     if stake <= 0:
         return None
@@ -85,3 +80,55 @@ def qualify_prediction(
         closing_line=float(pred.metadata.get("closing_line", pred.metadata.get("current_line", 0.0))),
         clv_diff=float(pred.metadata.get("clv_diff", 0.0)),
     )
+
+
+def qualify_prediction(
+    pred: Prediction,
+    game_text: str,
+    event_date: date,
+    odds: int,
+    line: float | None,
+    thresholds: dict,
+    bankroll_cfg: BankrollConfig,
+    stake_mode: str,
+) -> BetRecommendation | None:
+    if not _passes_base_checks(pred, odds):
+        return None
+
+    min_edge = float(thresholds.get("min_edge", 0.02))
+    min_ev = float(thresholds.get("min_ev", 0.0))
+    min_confidence = float(thresholds.get("min_confidence", 0.58))
+
+    if pred.edge < min_edge:
+        return None
+    if pred.expected_value < min_ev:
+        return None
+    if pred.confidence < min_confidence:
+        return None
+
+    return _build_recommendation(pred, game_text, event_date, odds, line, bankroll_cfg, stake_mode)
+
+
+def fallback_prediction(
+    pred: Prediction,
+    game_text: str,
+    event_date: date,
+    odds: int,
+    line: float | None,
+    bankroll_cfg: BankrollConfig,
+    stake_mode: str,
+    *,
+    min_edge: float = 0.01,
+    min_ev: float = -0.01,
+    min_confidence: float = 0.54,
+) -> BetRecommendation | None:
+    if not _passes_base_checks(pred, odds):
+        return None
+    if pred.edge < min_edge:
+        return None
+    if pred.expected_value <= min_ev:
+        return None
+    if pred.confidence < min_confidence:
+        return None
+
+    return _build_recommendation(pred, game_text, event_date, odds, line, bankroll_cfg, stake_mode)
