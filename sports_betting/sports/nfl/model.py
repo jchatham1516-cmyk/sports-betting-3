@@ -9,3 +9,19 @@ class NFLModel(NBAModel):
     """Reuse shared calibrated Gradient Boosting workflow for NFL."""
 
     sport = "nfl"
+    BASE_FEATURES = NBAModel.BASE_FEATURES + [
+        "epa_per_play_diff",
+        "success_rate_diff",
+        "yards_per_play_diff",
+        "red_zone_efficiency_diff",
+        "pressure_rate_diff",
+        "sack_rate_diff",
+        "explosive_play_rate_diff",
+        "qb_efficiency_metric_diff",
+        "offensive_line_grade_proxy_diff",
+        "defensive_efficiency_diff",
+        "special_teams_impact_diff",
+    ]
+    WIN_FEATURES = BASE_FEATURES
+    SPREAD_FEATURES = BASE_FEATURES + ["spread_line"]
+    TOTAL_FEATURES = BASE_FEATURES + ["total_line"]
