@@ -64,6 +64,12 @@ class DisciplinedBaselineModel(SportModel):
     def _build_features(self, df: pd.DataFrame, features: list[str]) -> pd.DataFrame:
         return df.reindex(columns=features, fill_value=0.0).apply(pd.to_numeric, errors="coerce").fillna(0.0)
 
+    def _ensure_features(self, frame: pd.DataFrame, features: list[str]) -> pd.DataFrame:
+        for col in features:
+            if col not in frame.columns:
+                frame[col] = 0.0
+        return frame
+
     def _calibrate(self, base, x: pd.DataFrame, y: pd.Series, method: str, cv) -> CalibratedClassifierCV:
         calibrated = CalibratedClassifierCV(base, method=method, cv=cv)
         calibrated.fit(x, y)
@@ -182,6 +188,7 @@ class DisciplinedBaselineModel(SportModel):
             game_txt = f"{away_team} @ {home_team}"
 
             game_frame = pd.DataFrame([row])
+            game_frame = self._ensure_features(game_frame, self.WIN_FEATURES)
             p_home_ml = self._safe_probability(self._predict_proba(self.moneyline_model, game_frame[self.WIN_FEATURES]), "moneyline")
             p_away_ml = self._safe_probability(1 - p_home_ml, "moneyline")
             mk_home = american_to_implied_probability(int(row["home_odds"]))
@@ -216,6 +223,7 @@ class DisciplinedBaselineModel(SportModel):
                     )
                 )
 
+            game_frame = self._ensure_features(game_frame, self.SPREAD_FEATURES)
             p_home_cover = self._safe_probability(self._predict_proba(self.spread_model, game_frame[self.SPREAD_FEATURES]), "spread")
             p_away_cover = self._safe_probability(1 - p_home_cover, "spread")
             mk_hs = american_to_implied_probability(int(row["home_spread_odds"]))
@@ -248,6 +256,7 @@ class DisciplinedBaselineModel(SportModel):
                     )
                 )
 
+            game_frame = self._ensure_features(game_frame, self.TOTAL_FEATURES)
             p_over = self._safe_probability(self._predict_proba(self.total_model, game_frame[self.TOTAL_FEATURES]), "total")
             p_under = self._safe_probability(1 - p_over, "total")
             mk_over = american_to_implied_probability(int(row["over_odds"]))
