@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -384,21 +385,52 @@ def generate_sample_data(sport: str, rows: int = 300) -> pd.DataFrame:
     return base
 
 
-def _extract_market_prices(event: dict, market_key: str) -> dict[str, int | float] | None:
+def _normalize_team_name(name: str | None) -> str:
+    if not name:
+        return ""
+    cleaned = re.sub(r"[^a-z0-9]+", " ", str(name).lower()).strip()
+    return " ".join(cleaned.split())
+
+
+def _build_outcome_lookup(outcomes: list[dict]) -> dict[str, dict]:
+    lookup: dict[str, dict] = {}
+    for out in outcomes:
+        normalized = _normalize_team_name(out.get("name"))
+        if normalized:
+            lookup[normalized] = out
+    return lookup
+
+
+def _extract_market_prices(event: dict, market_key: str) -> dict[str, int | float | str] | None:
+    raw_home = event.get("home_team")
+    raw_away = event.get("away_team")
+    parsed_home = _normalize_team_name(raw_home)
+    parsed_away = _normalize_team_name(raw_away)
+
     for book in event.get("bookmakers", []):
         for market in book.get("markets", []):
             if market.get("key") != market_key:
                 continue
-            outcomes = {out.get("name"): out for out in market.get("outcomes", [])}
-            if market_key == "h2h" and {event.get("home_team"), event.get("away_team")} <= set(outcomes.keys()):
+            outcomes_list = market.get("outcomes", [])
+            outcomes = {out.get("name"): out for out in outcomes_list}
+            normalized_outcomes = _build_outcome_lookup(outcomes_list)
+
+            if market_key == "h2h":
+                home_outcome = outcomes.get(raw_home) or normalized_outcomes.get(parsed_home)
+                away_outcome = outcomes.get(raw_away) or normalized_outcomes.get(parsed_away)
+                if not (home_outcome and away_outcome):
+                    continue
                 return {
                     "sportsbook": book.get("key", "unknown"),
-                    "home_odds": int(outcomes[event["home_team"]]["price"]),
-                    "away_odds": int(outcomes[event["away_team"]]["price"]),
+                    "home_odds": int(home_outcome["price"]),
+                    "away_odds": int(away_outcome["price"]),
                 }
-            if market_key == "spreads" and {event.get("home_team"), event.get("away_team")} <= set(outcomes.keys()):
-                home = outcomes[event["home_team"]]
-                away = outcomes[event["away_team"]]
+
+            if market_key == "spreads":
+                home = outcomes.get(raw_home) or normalized_outcomes.get(parsed_home)
+                away = outcomes.get(raw_away) or normalized_outcomes.get(parsed_away)
+                if not (home and away):
+                    continue
                 return {
                     "sportsbook": book.get("key", "unknown"),
                     "home_spread_odds": int(home["price"]),
@@ -468,6 +500,22 @@ def fetch_live_daily_odds(sport: str) -> pd.DataFrame:
         record.update(spreads)
         record.update(totals)
         record["home_indicator"] = 1.0
+
+        LOGGER.info(
+            "[%s] odds map | raw_away=%s raw_home=%s parsed_away=%s parsed_home=%s away_ml=%s home_ml=%s away_spread=%s@%s home_spread=%s@%s",
+            sport.upper(),
+            event.get("away_team"),
+            event.get("home_team"),
+            _normalize_team_name(event.get("away_team")),
+            _normalize_team_name(event.get("home_team")),
+            record.get("away_odds"),
+            record.get("home_odds"),
+            record.get("away_spread_odds"),
+            -float(record.get("spread_line", 0.0)),
+            record.get("home_spread_odds"),
+            float(record.get("spread_line", 0.0)),
+        )
+
         for feature_name in FEATURE_COLUMNS_BY_SPORT[sport]:
             record.setdefault(feature_name, 0.0)
         records.append(record)
