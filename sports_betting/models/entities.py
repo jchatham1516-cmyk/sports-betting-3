@@ -73,3 +73,4 @@ class BetRecommendation:
     current_line: float = 0.0
     closing_line: float = 0.0
     clv_diff: float = 0.0
+    fallback_pick: bool = False
