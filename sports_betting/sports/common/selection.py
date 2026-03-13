@@ -82,6 +82,21 @@ def _build_recommendation(
     )
 
 
+def candidate_prediction(
+    pred: Prediction,
+    game_text: str,
+    event_date: date,
+    odds: int,
+    line: float | None,
+    bankroll_cfg: BankrollConfig,
+    stake_mode: str,
+) -> BetRecommendation | None:
+    if not _passes_base_checks(pred, odds):
+        return None
+
+    return _build_recommendation(pred, game_text, event_date, odds, line, bankroll_cfg, stake_mode)
+
+
 def qualify_prediction(
     pred: Prediction,
     game_text: str,
@@ -92,43 +107,19 @@ def qualify_prediction(
     bankroll_cfg: BankrollConfig,
     stake_mode: str,
 ) -> BetRecommendation | None:
-    if not _passes_base_checks(pred, odds):
+    rec = candidate_prediction(pred, game_text, event_date, odds, line, bankroll_cfg, stake_mode)
+    if rec is None:
         return None
 
-    min_edge = float(thresholds.get("min_edge", 0.02))
-    min_ev = float(thresholds.get("min_ev", 0.0))
-    min_confidence = float(thresholds.get("min_confidence", 0.58))
+    min_edge = float(thresholds.get("min_edge", 0.01))
+    min_ev = float(thresholds.get("min_ev", -0.005))
+    min_confidence = float(thresholds.get("min_confidence", 0.55))
 
-    if pred.edge < min_edge:
+    if rec.edge < min_edge:
         return None
-    if pred.expected_value < min_ev:
+    if rec.expected_value < min_ev:
         return None
-    if pred.confidence < min_confidence:
-        return None
-
-    return _build_recommendation(pred, game_text, event_date, odds, line, bankroll_cfg, stake_mode)
-
-
-def fallback_prediction(
-    pred: Prediction,
-    game_text: str,
-    event_date: date,
-    odds: int,
-    line: float | None,
-    bankroll_cfg: BankrollConfig,
-    stake_mode: str,
-    *,
-    min_edge: float = 0.01,
-    min_ev: float = -0.01,
-    min_confidence: float = 0.54,
-) -> BetRecommendation | None:
-    if not _passes_base_checks(pred, odds):
-        return None
-    if pred.edge < min_edge:
-        return None
-    if pred.expected_value <= min_ev:
-        return None
-    if pred.confidence < min_confidence:
+    if rec.confidence_score < min_confidence:
         return None
 
-    return _build_recommendation(pred, game_text, event_date, odds, line, bankroll_cfg, stake_mode)
+    return rec

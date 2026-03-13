@@ -22,7 +22,7 @@ from sports_betting.scripts.data_io import (
 from sports_betting.sports.common.logging_utils import setup_logging
 from sports_betting.sports.common.reporting import render_daily_card, save_dataframe, save_recommendations_json
 from sports_betting.sports.common.risk import BankrollConfig
-from sports_betting.sports.common.selection import fallback_prediction, qualify_prediction
+from sports_betting.sports.common.selection import candidate_prediction
 from sports_betting.sports.nba.model import NBAModel
 from sports_betting.sports.nfl.model import NFLModel
 from sports_betting.sports.nhl.model import NHLModel
@@ -72,6 +72,7 @@ RECOMMENDATION_COLUMNS = [
     "current_line",
     "closing_line",
     "clv_diff",
+    "fallback_pick",
 ]
 
 
@@ -80,15 +81,16 @@ def choose_model(sport: str):
 
 
 def _best_market_sides(recommendations: list) -> list:
-    """Keep only the best side per sport/game/market based on EV then rank."""
+    """Keep only the best side per sport/game/market based on EV, edge, confidence."""
     best = {}
     for rec in recommendations:
         key = (rec.sport, rec.game, rec.market)
         current = best.get(key)
-        if current is None or (rec.expected_value, rec.rank_score, rec.confidence_score) > (
+        if current is None or (rec.expected_value, rec.edge, rec.confidence_score, rec.rank_score) > (
             current.expected_value,
-            current.rank_score,
+            current.edge,
             current.confidence_score,
+            current.rank_score,
         ):
             best[key] = rec
     return list(best.values())
@@ -100,7 +102,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     all_predictions: list[dict] = []
     all_recs = []
-    fallback_pool = []
+    candidate_pool = []
     all_passes: list[str] = []
     recs_by_sport = defaultdict(list)
 
@@ -148,46 +150,47 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 "total": "over_odds" if pred.side.startswith("Over") else "under_odds",
             }[pred.market]
             line_col = {"moneyline": None, "spread": "spread_line", "total": "total_line"}[pred.market]
-            rec = qualify_prediction(
+            rec = candidate_prediction(
                 pred=pred,
                 game_text=game,
                 event_date=pd.to_datetime(game_row["event_date"]).date(),
                 odds=int(game_row[odds_col]),
                 line=float(game_row[line_col]) if line_col else None,
-                thresholds=cfg["thresholds"][sport_name][pred.market],
                 bankroll_cfg=bankroll_cfg,
                 stake_mode=cfg["bankroll"]["stake_mode"],
             )
             if rec:
-                all_recs.append(rec)
-            else:
-                all_passes.append(
-                    f"{game} ({sport_name.upper()} {pred.market} {pred.side}): filtered by edge/EV/confidence."
-                )
+                candidate_pool.append(rec)
 
-            fallback_rec = fallback_prediction(
-                pred=pred,
-                game_text=game,
-                event_date=pd.to_datetime(game_row["event_date"]).date(),
-                odds=int(game_row[odds_col]),
-                line=float(game_row[line_col]) if line_col else None,
-                bankroll_cfg=bankroll_cfg,
-                stake_mode=cfg["bankroll"]["stake_mode"],
+    min_edge = 0.01
+    min_ev = -0.005
+    min_confidence = 0.55
+    max_bets = 8
+
+    candidate_pool = _best_market_sides(candidate_pool)
+
+    all_recs = []
+    for rec in candidate_pool:
+        if rec.edge >= min_edge and rec.expected_value >= min_ev and rec.confidence_score >= min_confidence:
+            all_recs.append(rec)
+        else:
+            all_passes.append(
+                f"{rec.game} ({rec.sport.upper()} {rec.market} {rec.side}): filtered by edge/EV/confidence."
             )
-            if fallback_rec:
-                fallback_pool.append(fallback_rec)
 
-    all_recs = _best_market_sides(all_recs)
     used_fallback = False
-
     if not all_recs:
-        fallback_pool = _best_market_sides(fallback_pool)
-        fallback_pool.sort(key=lambda x: (x.expected_value, x.rank_score), reverse=True)
-        all_recs = fallback_pool[:5]
+        candidate_pool.sort(
+            key=lambda x: (x.expected_value, x.edge, x.confidence_score),
+            reverse=True,
+        )
+        all_recs = candidate_pool[:5]
+        for rec in all_recs:
+            rec.fallback_pick = True
         used_fallback = bool(all_recs)
 
     all_recs.sort(key=lambda x: (x.rank_score, x.expected_value), reverse=True)
-    top_n = min(int(cfg["output"].get("top_n", 10)), 10)
+    top_n = min(int(cfg["output"].get("top_n", max_bets)), max_bets)
     trimmed_recs = all_recs[:top_n] if top_n > 0 else all_recs
 
     recs_by_sport = defaultdict(list)
@@ -229,7 +232,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         "",
     ]
     if trimmed_recs and used_fallback:
-        report_lines.append("No bets met standard thresholds; fallback picks were used (top 5 by EV).")
+        report_lines.append("No bets met normal thresholds; exporting top fallback picks.")
     elif trimmed_recs:
         report_lines.append("Qualifying bets were found.")
     else:
