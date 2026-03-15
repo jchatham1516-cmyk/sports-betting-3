@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from sports_betting.sports.common.feature_engineering import SPORT_EFFICIENCY_FEATURES, add_elo_features, enrich_with_context_features
+from sports_betting.sports.common.time_filters import filter_games_for_today
 
 from sports_betting.scripts.build_nba_historical_dataset import NBA_HISTORICAL_COLUMNS
 
@@ -496,7 +497,7 @@ def _extract_market_prices(event: dict, market_key: str) -> dict[str, int | floa
     return None
 
 
-def fetch_live_daily_odds(sport: str) -> pd.DataFrame:
+def fetch_live_daily_odds(sport: str, today_only: bool = True) -> pd.DataFrame:
     api_key = os.getenv("ODDS_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("ODDS_API_KEY is required in live mode. Set TEST_MODE=true to use synthetic demo data.")
@@ -540,6 +541,7 @@ def fetch_live_daily_odds(sport: str) -> pd.DataFrame:
             "away_team": event.get("away_team", "UNKNOWN_AWAY"),
             "home_team": event.get("home_team", "UNKNOWN_HOME"),
             "event_date": event.get("commence_time"),
+            "commence_time": event.get("commence_time"),
             "sportsbook": h2h.get("sportsbook") or spreads.get("sportsbook") or totals.get("sportsbook") or "unknown",
         }
         record.update(h2h)
@@ -574,15 +576,19 @@ def fetch_live_daily_odds(sport: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     daily["event_date"] = pd.to_datetime(daily["event_date"], utc=True, errors="coerce")
+    daily["commence_time"] = pd.to_datetime(daily["commence_time"], utc=True, errors="coerce")
     if daily["event_date"].isna().any():
         bad_count = int(daily["event_date"].isna().sum())
         raise RuntimeError(f"[{sport.upper()}] Failed to parse event_date for {bad_count} events from Odds API.")
+
+    if today_only:
+        daily = filter_games_for_today(daily)
 
     LOGGER.info("[%s] Odds API events returned: %s (usable with full markets: %s)", sport.upper(), len(payload), len(daily))
     return daily
 
 
-def load_historical_and_daily(sport: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_historical_and_daily(sport: str, today_only: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
     hist_path = historical_file_path(sport)
     daily_path = ROOT / "raw" / f"{sport}_daily.csv"
 
@@ -615,5 +621,5 @@ def load_historical_and_daily(sport: str) -> tuple[pd.DataFrame, pd.DataFrame]:
         )
 
     historical = enrich_with_context_features(historical, sport, ROOT) if not historical.empty else historical
-    daily = enrich_with_context_features(fetch_live_daily_odds(sport), sport, ROOT)
+    daily = enrich_with_context_features(fetch_live_daily_odds(sport, today_only=today_only), sport, ROOT)
     return historical, daily
