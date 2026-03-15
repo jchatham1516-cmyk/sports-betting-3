@@ -20,6 +20,7 @@ from sports_betting.scripts.data_io import (
     validate_historical_requirements,
     validate_model_artifacts_exist,
 )
+from sports_betting.sports.common.final_game_filter import filter_predictions_today
 from sports_betting.sports.common.logging_utils import setup_logging
 from sports_betting.sports.common.reporting import save_dataframe
 from sports_betting.sports.nba.model import NBAModel
@@ -305,6 +306,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     predictions_df = pd.DataFrame(all_predictions)
     predictions_df = predictions_df.reindex(columns=PREDICTION_COLUMNS)
+    predictions_df = filter_predictions_today(predictions_df)
     save_dataframe(predictions_df, out_dir / "predictions.csv")
 
     loaded_predictions_df = pd.read_csv(out_dir / "predictions.csv")
@@ -345,6 +347,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     recommendations_df = pd.DataFrame(trimmed_recs)
     recommendations_df = recommendations_df.reindex(columns=RECOMMENDATION_COLUMNS)
+    recommendations_df = filter_predictions_today(recommendations_df)
+    trimmed_recs = recommendations_df.to_dict("records")
     save_dataframe(recommendations_df, out_dir / "recommended_bets.csv")
 
     if trimmed_recs:
