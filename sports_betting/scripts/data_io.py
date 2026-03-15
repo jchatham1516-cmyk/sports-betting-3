@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -521,14 +521,20 @@ def fetch_live_daily_odds(sport: str, today_only: bool = True) -> pd.DataFrame:
     if not odds_sport:
         raise ValueError(f"Unsupported sport '{sport}'. Supported sports: {', '.join(sorted(SPORT_TO_ODDS_API_KEY))}")
 
-    query = urlencode(
-        {
-            "apiKey": api_key,
-            "regions": "us",
-            "markets": "h2h,spreads,totals",
-            "oddsFormat": "american",
-        }
-    )
+    params = {
+        "apiKey": api_key,
+        "regions": "us",
+        "markets": "h2h,spreads,totals",
+        "oddsFormat": "american",
+        "dateFormat": "iso",
+    }
+    if today_only:
+        start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        params["commenceTimeFrom"] = f"{start.isoformat()}Z"
+        params["commenceTimeTo"] = f"{end.isoformat()}Z"
+
+    query = urlencode(params)
     url = f"https://api.the-odds-api.com/v4/sports/{odds_sport}/odds/?{query}"
 
     LOGGER.info("[%s] Odds API enabled: True (provider=the-odds-api, sport_key=%s)", sport.upper(), odds_sport)
