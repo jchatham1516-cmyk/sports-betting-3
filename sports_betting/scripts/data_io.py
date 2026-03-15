@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from sports_betting.sports.common.feature_engineering import SPORT_EFFICIENCY_FEATURES, add_elo_features, enrich_with_context_features
+from sports_betting.sports.common.time_utils import filter_games_for_today
 
 from sports_betting.scripts.build_nba_historical_dataset import NBA_HISTORICAL_COLUMNS
 
@@ -497,21 +498,6 @@ def _extract_market_prices(event: dict, market_key: str) -> dict[str, int | floa
     return None
 
 
-def filter_games_today(raw_games: list[dict]) -> list[dict]:
-    """Keep only raw Odds API events that start today (UTC)."""
-    today = datetime.utcnow().date()
-    filtered: list[dict] = []
-
-    for game in raw_games:
-        commence = pd.to_datetime(game.get("commence_time"), utc=True, errors="coerce")
-        if pd.isna(commence):
-            continue
-        if commence.date() == today:
-            filtered.append(game)
-
-    return filtered
-
-
 def fetch_live_daily_odds(sport: str, today_only: bool = True) -> pd.DataFrame:
     api_key = os.getenv("ODDS_API_KEY", "").strip()
     if not api_key:
@@ -549,7 +535,7 @@ def fetch_live_daily_odds(sport: str, today_only: bool = True) -> pd.DataFrame:
     if not isinstance(payload, list):
         raise RuntimeError(f"Unexpected Odds API payload for {sport}: expected list, got {type(payload).__name__}")
 
-    events = filter_games_today(payload) if today_only else payload
+    events = filter_games_for_today(payload) if today_only else payload
 
     records: list[dict] = []
     for event in events:
