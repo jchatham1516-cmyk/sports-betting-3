@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -15,7 +16,6 @@ import numpy as np
 import pandas as pd
 
 from sports_betting.sports.common.feature_engineering import SPORT_EFFICIENCY_FEATURES, add_elo_features, enrich_with_context_features
-from sports_betting.sports.common.date_filters import filter_games_for_today
 
 from sports_betting.scripts.build_nba_historical_dataset import NBA_HISTORICAL_COLUMNS
 
@@ -497,6 +497,21 @@ def _extract_market_prices(event: dict, market_key: str) -> dict[str, int | floa
     return None
 
 
+def filter_games_today(raw_games: list[dict]) -> list[dict]:
+    """Keep only raw Odds API events that start today (UTC)."""
+    today = datetime.utcnow().date()
+    filtered: list[dict] = []
+
+    for game in raw_games:
+        commence = pd.to_datetime(game.get("commence_time"), utc=True, errors="coerce")
+        if pd.isna(commence):
+            continue
+        if commence.date() == today:
+            filtered.append(game)
+
+    return filtered
+
+
 def fetch_live_daily_odds(sport: str, today_only: bool = True) -> pd.DataFrame:
     api_key = os.getenv("ODDS_API_KEY", "").strip()
     if not api_key:
@@ -528,8 +543,10 @@ def fetch_live_daily_odds(sport: str, today_only: bool = True) -> pd.DataFrame:
     if not isinstance(payload, list):
         raise RuntimeError(f"Unexpected Odds API payload for {sport}: expected list, got {type(payload).__name__}")
 
+    events = filter_games_today(payload) if today_only else payload
+
     records: list[dict] = []
-    for event in payload:
+    for event in events:
         h2h = _extract_market_prices(event, "h2h")
         spreads = _extract_market_prices(event, "spreads")
         totals = _extract_market_prices(event, "totals")
@@ -581,10 +598,13 @@ def fetch_live_daily_odds(sport: str, today_only: bool = True) -> pd.DataFrame:
         bad_count = int(daily["event_date"].isna().sum())
         raise RuntimeError(f"[{sport.upper()}] Failed to parse event_date for {bad_count} events from Odds API.")
 
-    if today_only:
-        daily = filter_games_for_today(daily)
-
-    LOGGER.info("[%s] Odds API events returned: %s (usable with full markets: %s)", sport.upper(), len(payload), len(daily))
+    LOGGER.info(
+        "[%s] Odds API events returned: %s (events after date filter: %s, usable with full markets: %s)",
+        sport.upper(),
+        len(payload),
+        len(events),
+        len(daily),
+    )
     return daily
 
 
