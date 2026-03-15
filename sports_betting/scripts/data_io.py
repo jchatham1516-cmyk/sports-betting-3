@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from sports_betting.sports.common.feature_engineering import SPORT_EFFICIENCY_FEATURES, add_elo_features, enrich_with_context_features
-from sports_betting.sports.common.time_filters import filter_games_for_today
+from sports_betting.sports.common.date_filters import filter_games_for_today
 
 from sports_betting.scripts.build_nba_historical_dataset import NBA_HISTORICAL_COLUMNS
 
