@@ -127,3 +127,139 @@ def test_load_nba_historical_dataset_fills_optional_columns(temp_data_root):
     assert "travel_fatigue_diff" in df.columns
     assert float(df.loc[0, "travel_fatigue_diff"]) == 0.0
     assert float(df.loc[0, "closing_spread_home"]) == -2.5
+
+
+def test_fetch_live_daily_odds_filters_out_tomorrow_games(monkeypatch):
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            import json
+
+            return json.dumps(self._payload).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    today = pd.Timestamp.utcnow().date()
+    tomorrow = today + pd.Timedelta(days=1)
+
+    def _event(event_id: str, game_date, home: str, away: str):
+        return {
+            "id": event_id,
+            "home_team": home,
+            "away_team": away,
+            "commence_time": f"{game_date.isoformat()}T01:00:00Z",
+            "bookmakers": [
+                {
+                    "key": "demo_book",
+                    "markets": [
+                        {
+                            "key": "h2h",
+                            "outcomes": [
+                                {"name": home, "price": -120},
+                                {"name": away, "price": 110},
+                            ],
+                        },
+                        {
+                            "key": "spreads",
+                            "outcomes": [
+                                {"name": home, "price": -110, "point": -2.5},
+                                {"name": away, "price": -110, "point": 2.5},
+                            ],
+                        },
+                        {
+                            "key": "totals",
+                            "outcomes": [
+                                {"name": "Over", "price": -110, "point": 221.5},
+                                {"name": "Under", "price": -110, "point": 221.5},
+                            ],
+                        },
+                    ],
+                }
+            ],
+        }
+
+    payload = [
+        _event("today_game", today, "Home Team A", "Away Team A"),
+        _event("tomorrow_game", tomorrow, "Home Team B", "Away Team B"),
+    ]
+
+    monkeypatch.setenv("ODDS_API_KEY", "demo")
+    monkeypatch.setattr(data_io, "urlopen", lambda *args, **kwargs: _Resp(payload))
+
+    daily = data_io.fetch_live_daily_odds("nba")
+
+    assert daily["game_id"].tolist() == ["today_game"]
+
+
+def test_fetch_live_daily_odds_can_include_future_games_when_requested(monkeypatch):
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            import json
+
+            return json.dumps(self._payload).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    today = pd.Timestamp.utcnow().date()
+    tomorrow = today + pd.Timedelta(days=1)
+
+    def _event(event_id: str, game_date, home: str, away: str):
+        return {
+            "id": event_id,
+            "home_team": home,
+            "away_team": away,
+            "commence_time": f"{game_date.isoformat()}T01:00:00Z",
+            "bookmakers": [
+                {
+                    "key": "demo_book",
+                    "markets": [
+                        {
+                            "key": "h2h",
+                            "outcomes": [
+                                {"name": home, "price": -120},
+                                {"name": away, "price": 110},
+                            ],
+                        },
+                        {
+                            "key": "spreads",
+                            "outcomes": [
+                                {"name": home, "price": -110, "point": -2.5},
+                                {"name": away, "price": -110, "point": 2.5},
+                            ],
+                        },
+                        {
+                            "key": "totals",
+                            "outcomes": [
+                                {"name": "Over", "price": -110, "point": 221.5},
+                                {"name": "Under", "price": -110, "point": 221.5},
+                            ],
+                        },
+                    ],
+                }
+            ],
+        }
+
+    payload = [
+        _event("today_game", today, "Home Team A", "Away Team A"),
+        _event("tomorrow_game", tomorrow, "Home Team B", "Away Team B"),
+    ]
+
+    monkeypatch.setenv("ODDS_API_KEY", "demo")
+    monkeypatch.setattr(data_io, "urlopen", lambda *args, **kwargs: _Resp(payload))
+
+    daily = data_io.fetch_live_daily_odds("nba", today_only=False)
+
+    assert sorted(daily["game_id"].tolist()) == ["today_game", "tomorrow_game"]
