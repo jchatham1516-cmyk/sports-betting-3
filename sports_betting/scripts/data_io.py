@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -16,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from sports_betting.sports.common.feature_engineering import SPORT_EFFICIENCY_FEATURES, add_elo_features, enrich_with_context_features
-from sports_betting.sports.common.time_utils import filter_games_for_today
+from sports_betting.sports.common.game_filters import current_sports_day_window, filter_games_for_today
 
 from sports_betting.scripts.build_nba_historical_dataset import NBA_HISTORICAL_COLUMNS
 
@@ -515,10 +514,9 @@ def fetch_live_daily_odds(sport: str, today_only: bool = True) -> pd.DataFrame:
         "dateFormat": "iso",
     }
     if today_only:
-        start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-        end = start + timedelta(days=1)
-        params["commenceTimeFrom"] = f"{start.isoformat()}Z"
-        params["commenceTimeTo"] = f"{end.isoformat()}Z"
+        start, end = current_sports_day_window()
+        params["commenceTimeFrom"] = start.isoformat().replace("+00:00", "Z")
+        params["commenceTimeTo"] = end.isoformat().replace("+00:00", "Z")
 
     query = urlencode(params)
     url = f"https://api.the-odds-api.com/v4/sports/{odds_sport}/odds/?{query}"
