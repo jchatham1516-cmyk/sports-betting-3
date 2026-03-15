@@ -1,9 +1,11 @@
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from sports_betting.scripts import data_io
+from sports_betting.sports.common.time_utils import EASTERN
 
 
 @pytest.fixture
@@ -145,15 +147,16 @@ def test_fetch_live_daily_odds_filters_out_tomorrow_games(monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return False
 
-    today = pd.Timestamp.utcnow().date()
-    tomorrow = today + pd.Timedelta(days=1)
+    today_et = datetime.now(EASTERN).date()
+    tomorrow_et = today_et + timedelta(days=1)
 
-    def _event(event_id: str, game_date, home: str, away: str):
+    def _event(event_id: str, game_day_et, home: str, away: str):
+        commence_utc = pd.Timestamp(f"{game_day_et.isoformat()} 19:00:00", tz=EASTERN).tz_convert("UTC")
         return {
             "id": event_id,
             "home_team": home,
             "away_team": away,
-            "commence_time": f"{game_date.isoformat()}T01:00:00Z",
+            "commence_time": commence_utc.isoformat(),
             "bookmakers": [
                 {
                     "key": "demo_book",
@@ -185,8 +188,8 @@ def test_fetch_live_daily_odds_filters_out_tomorrow_games(monkeypatch):
         }
 
     payload = [
-        _event("today_game", today, "Home Team A", "Away Team A"),
-        _event("tomorrow_game", tomorrow, "Home Team B", "Away Team B"),
+        _event("today_game", today_et, "Home Team A", "Away Team A"),
+        _event("tomorrow_game", tomorrow_et, "Home Team B", "Away Team B"),
     ]
 
     monkeypatch.setenv("ODDS_API_KEY", "demo")
