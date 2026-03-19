@@ -67,22 +67,18 @@ def apply_smart_bet_filter(df):
         if market_prob == 0:
             continue
 
-        # MARKET-ADJUSTED PROBABILITY (CRITICAL)
+        # MARKET ADJUSTMENT (CRITICAL)
         adjusted_prob = 0.75 * market_prob + 0.25 * model_prob
         edge = adjusted_prob - market_prob
 
-        # FILTER RULES
-
-        # 1. Minimum edge
-        if edge < 0.025:
+        # LOOSER FILTERS (so bets actually appear)
+        if edge < 0.015:
             continue
 
-        # 2. Confidence band (removes fake 0.99 probabilities)
-        if adjusted_prob < 0.53 or adjusted_prob > 0.68:
+        if adjusted_prob < 0.50 or adjusted_prob > 0.75:
             continue
 
-        # 3. Sanity check vs market
-        if abs(model_prob - market_prob) > 0.15:
+        if abs(model_prob - market_prob) > 0.25:
             continue
 
         row["adjusted_prob"] = adjusted_prob
@@ -358,7 +354,13 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     predictions_df = apply_smart_bet_filter(predictions_df)
     save_dataframe(predictions_df, out_dir / "predictions.csv")
 
-    loaded_predictions_df = pd.read_csv(out_dir / "predictions.csv")
+    pred_path = out_dir / "predictions.csv"
+
+    if not pred_path.exists() or pred_path.stat().st_size == 0:
+        print("No predictions generated today — skipping read.")
+        return
+
+    loaded_predictions_df = pd.read_csv(pred_path)
     bets = []
     for game_id, game_predictions in loaded_predictions_df.groupby("game_id"):
         game_context = game_rows_by_id.get(game_id)
