@@ -50,6 +50,36 @@ TOP_BETS_DAILY = 5
 LOGGER = logging.getLogger(__name__)
 
 
+def generate_sharp_edge(row):
+
+    market_prob = row.get("market_prob", 0)
+    spread = row.get("spread", 0)
+    moneyline = row.get("moneyline", 0)
+
+    edge = 0
+
+    # FAVORITE STRENGTH EDGE
+    if moneyline < -200:
+        edge += 0.015
+
+    if moneyline < -400:
+        edge += 0.01
+
+    # SPREAD CONFIRMATION
+    if abs(spread) >= 8:
+        edge += 0.01
+
+    # SMALL DOG VALUE
+    if 100 < moneyline < 200:
+        edge += 0.01
+
+    # FADE MASSIVE FAVORITES (too public)
+    if moneyline < -800:
+        edge -= 0.015
+
+    return market_prob + edge
+
+
 def apply_smart_bet_filter(df):
 
     import pandas as pd
@@ -63,6 +93,9 @@ def apply_smart_bet_filter(df):
 
         model_prob = row.get("model_prob", 0)
         market_prob = row.get("market_prob", 0)
+
+        row["model_prob"] = generate_sharp_edge(row)
+        model_prob = row.get("model_prob", model_prob)
 
         if market_prob == 0:
             continue
