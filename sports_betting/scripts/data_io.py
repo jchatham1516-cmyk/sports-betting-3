@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from sports_betting.sports.common.feature_engineering import SPORT_EFFICIENCY_FEATURES, add_elo_features, enrich_with_context_features
-from sports_betting.sports.common.game_filters import current_sports_day_window, filter_games_for_today
+from sports_betting.sports.common.game_filters import current_sports_day_window, filter_games_window
 
 from sports_betting.scripts.build_nba_historical_dataset import NBA_HISTORICAL_COLUMNS
 
@@ -533,7 +533,7 @@ def fetch_live_daily_odds(sport: str, today_only: bool = True) -> pd.DataFrame:
     if not isinstance(payload, list):
         raise RuntimeError(f"Unexpected Odds API payload for {sport}: expected list, got {type(payload).__name__}")
 
-    events = filter_games_for_today(payload) if today_only else payload
+    events = filter_games_window(payload) if today_only else payload
 
     records: list[dict] = []
     for event in events:
