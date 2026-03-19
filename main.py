@@ -45,39 +45,53 @@ PREDICTION_COLUMNS = [
 ]
 
 TOP_BETS_DAILY = 5
+EDGE_THRESHOLD = 0.01
 
 
 LOGGER = logging.getLogger(__name__)
 
 
 def generate_sharp_edge(row):
-
-    market_prob = row.get("market_prob", 0)
+    ml = row.get("moneyline", 0)
     spread = row.get("spread", 0)
-    moneyline = row.get("moneyline", 0)
 
-    edge = 0
+    # Convert market probability
+    if "market_prob" not in row or row["market_prob"] == 0:
+        if ml < 0:
+            market_prob = abs(ml) / (abs(ml) + 100)
+        else:
+            market_prob = 100 / (ml + 100)
+    else:
+        market_prob = row["market_prob"]
 
-    # FAVORITE STRENGTH EDGE
-    if moneyline < -200:
-        edge += 0.015
+    # Moneyline strength scaling
+    if ml < 0:
+        ml_strength = min(abs(ml) / 400, 1)
+    else:
+        ml_strength = -min(ml / 400, 1)
 
-    if moneyline < -400:
-        edge += 0.01
+    # Spread strength scaling
+    spread_strength = min(abs(spread) / 12, 1)
 
-    # SPREAD CONFIRMATION
-    if abs(spread) >= 8:
-        edge += 0.01
+    # Favorite bias (favorites win more often)
+    favorite_boost = 0.03 if ml < -150 else 0
 
-    # SMALL DOG VALUE
-    if 100 < moneyline < 200:
-        edge += 0.01
+    # Underdog value bias
+    dog_boost = 0.02 if 120 < ml < 250 else 0
 
-    # FADE MASSIVE FAVORITES (too public)
-    if moneyline < -800:
-        edge -= 0.015
+    # Build final probability
+    final_prob = (
+        0.65 * market_prob
+        + 0.20 * (0.5 + ml_strength * 0.25)
+        + 0.15 * (0.5 + spread_strength * 0.2)
+        + favorite_boost
+        + dog_boost
+    )
 
-    return market_prob + edge
+    # Clamp probability
+    final_prob = max(0.05, min(0.95, final_prob))
+
+    return final_prob
 
 
 def apply_smart_bet_filter(df):
@@ -102,7 +116,7 @@ def apply_smart_bet_filter(df):
 
         # Blend model + market (very important)
         adjusted_prob = 0.7 * market_prob + 0.3 * model_prob
-        edge = adjusted_prob - market_prob
+        edge = (model_prob - market_prob) * 1.25
 
         row["adjusted_prob"] = adjusted_prob
         row["edge"] = edge
@@ -116,7 +130,7 @@ def apply_smart_bet_filter(df):
 
     # PRIMARY FILTER (normal mode)
     filtered = df[
-        (df["edge"] > 0.01) &
+        (df["edge"] > EDGE_THRESHOLD) &
         (df["adjusted_prob"].between(0.50, 0.75))
     ]
 
