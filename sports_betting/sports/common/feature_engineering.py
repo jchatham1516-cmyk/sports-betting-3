@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from sports_betting.sports.common.injuries import load_injury_frame, normalize_status, summarize_team_injuries
@@ -328,7 +329,12 @@ def add_market_context_features(games_df: pd.DataFrame) -> pd.DataFrame:
 
     out["market_prob"] = _series("market_prob")
     out["model_prob"] = _series("model_prob")
-    out["edge"] = _series("edge")
+    out["adjusted_prob"] = _series("adjusted_prob", default=np.nan)
+    needs_adjust = out["adjusted_prob"].isna()
+    if needs_adjust.any():
+        out.loc[needs_adjust, "adjusted_prob"] = (0.75 * out.loc[needs_adjust, "market_prob"]) + (0.25 * out.loc[needs_adjust, "model_prob"])
+    out["model_prob"] = out["adjusted_prob"]
+    out["edge"] = out["adjusted_prob"] - out["market_prob"]
     out["expected_value"] = _series("expected_value")
     out["open_line"] = _series("open_line") if "open_line" in out.columns else _series("spread_line")
     out["current_line"] = _series("current_line") if "current_line" in out.columns else _series("spread_line")
