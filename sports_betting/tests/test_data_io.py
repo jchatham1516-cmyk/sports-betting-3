@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -266,3 +266,11 @@ def test_fetch_live_daily_odds_can_include_future_games_when_requested(monkeypat
     daily = data_io.fetch_live_daily_odds("nba", today_only=False)
 
     assert sorted(daily["game_id"].tolist()) == ["today_game", "tomorrow_game"]
+
+
+def test_format_odds_api_time_uses_strict_iso_z_suffix():
+    dt = datetime(2026, 3, 19, 12, 34, 56, 789012, tzinfo=timezone.utc)
+
+    formatted = data_io.format_odds_api_time(dt)
+
+    assert formatted == "2026-03-19T12:34:56Z"

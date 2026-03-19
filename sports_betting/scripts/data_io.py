@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -515,8 +516,8 @@ def fetch_live_daily_odds(sport: str, today_only: bool = True) -> pd.DataFrame:
     }
     if today_only:
         start, end = current_sports_day_window()
-        params["commenceTimeFrom"] = start.isoformat().replace("+00:00", "Z")
-        params["commenceTimeTo"] = end.isoformat().replace("+00:00", "Z")
+        params["commenceTimeFrom"] = format_odds_api_time(start)
+        params["commenceTimeTo"] = format_odds_api_time(end)
 
     query = urlencode(params)
     url = f"https://api.the-odds-api.com/v4/sports/{odds_sport}/odds/?{query}"
@@ -596,6 +597,10 @@ def fetch_live_daily_odds(sport: str, today_only: bool = True) -> pd.DataFrame:
         len(daily),
     )
     return daily
+
+
+def format_odds_api_time(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def load_historical_and_daily(sport: str, today_only: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
