@@ -143,8 +143,34 @@ class DisciplinedBaselineModel(SportModel):
         lo, hi = self.PROBABILITY_BOUNDS[market]
         return float(np.clip(probability, lo, hi))
 
-    def _adjust_probability(self, p_model: float, p_market: float) -> float:
-        return float(0.75 * p_market + 0.25 * p_model)
+    def _adjust_probability(self, row: pd.Series, p_model: float, p_market: float, moneyline: int) -> float:
+        if "market_prob" not in row:
+            ml = row.get("moneyline", moneyline)
+            if ml != 0:
+                if ml < 0:
+                    row["market_prob"] = abs(ml) / (abs(ml) + 100)
+                else:
+                    row["market_prob"] = 100 / (ml + 100)
+
+        market_prob = row.get("market_prob", p_market)
+        spread = abs(row.get("spread", row.get("spread_line", 0)))
+        ml = row.get("moneyline", moneyline)
+
+        ml_strength = 0.0
+        if ml < 0:
+            ml_strength = min(abs(ml) / 500, 1)
+        else:
+            ml_strength = -min(ml / 500, 1)
+
+        spread_strength = min(spread / 15, 1)
+
+        smart_prob = (
+            0.6 * market_prob
+            + 0.25 * (0.5 + ml_strength * 0.25)
+            + 0.15 * (0.5 + spread_strength * 0.25)
+        )
+        final_prob = 0.8 * smart_prob + 0.2 * p_model
+        return float(final_prob)
 
     def _support_signals(self, row: pd.Series, p_model: float, p_market: float, market: str, odds: int) -> tuple[int, dict[str, float]]:
         signals = {
@@ -203,7 +229,7 @@ class DisciplinedBaselineModel(SportModel):
                 (away_team, p_away_ml, nv_away, int(row["away_odds"])),
             ]
             for side, p_model, p_market, odds in moneyline_sides:
-                adjusted_prob = self._adjust_probability(p_model, p_market)
+                adjusted_prob = self._adjust_probability(row, p_model, p_market, odds)
                 edge = adjusted_prob - p_market
                 support_count, signals = self._support_signals(row, adjusted_prob, p_market, "moneyline", odds)
                 flags = [] if support_count >= 2 else ["low_feature_support"]
@@ -244,7 +270,7 @@ class DisciplinedBaselineModel(SportModel):
                 (f"{away_team} {(-row.get('spread_line', 0.0)):+.1f}", p_away_cover, nv_away_s, int(row["away_spread_odds"])),
             ]
             for side, p_model, p_market, odds in spread_sides:
-                adjusted_prob = self._adjust_probability(p_model, p_market)
+                adjusted_prob = self._adjust_probability(row, p_model, p_market, odds)
                 edge = adjusted_prob - p_market
                 support_count, signals = self._support_signals(row, adjusted_prob, p_market, "spread", odds)
                 flags = [] if support_count >= 2 else ["low_feature_support"]
@@ -282,7 +308,7 @@ class DisciplinedBaselineModel(SportModel):
                 (f"Over {row.get('total_line', 0.0):.1f}", p_over, nv_over, int(row["over_odds"])),
                 (f"Under {row.get('total_line', 0.0):.1f}", p_under, nv_under, int(row["under_odds"])),
             ]:
-                adjusted_prob = self._adjust_probability(p_model, p_market)
+                adjusted_prob = self._adjust_probability(row, p_model, p_market, odds)
                 edge = adjusted_prob - p_market
                 support_count, signals = self._support_signals(row, adjusted_prob, p_market, "total", odds)
                 flags = [] if support_count >= 2 else ["low_feature_support"]
