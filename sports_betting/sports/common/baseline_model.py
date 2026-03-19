@@ -143,6 +143,9 @@ class DisciplinedBaselineModel(SportModel):
         lo, hi = self.PROBABILITY_BOUNDS[market]
         return float(np.clip(probability, lo, hi))
 
+    def _adjust_probability(self, p_model: float, p_market: float) -> float:
+        return float(0.75 * p_market + 0.25 * p_model)
+
     def _support_signals(self, row: pd.Series, p_model: float, p_market: float, market: str, odds: int) -> tuple[int, dict[str, float]]:
         signals = {
             "team_strength_edge": float(abs(float(row.get("elo_diff", 0.0))) >= 35),
@@ -200,8 +203,9 @@ class DisciplinedBaselineModel(SportModel):
                 (away_team, p_away_ml, nv_away, int(row["away_odds"])),
             ]
             for side, p_model, p_market, odds in moneyline_sides:
-                edge = p_model - p_market
-                support_count, signals = self._support_signals(row, p_model, p_market, "moneyline", odds)
+                adjusted_prob = self._adjust_probability(p_model, p_market)
+                edge = adjusted_prob - p_market
+                support_count, signals = self._support_signals(row, adjusted_prob, p_market, "moneyline", odds)
                 flags = [] if support_count >= 2 else ["low_feature_support"]
                 if odds >= 180 and support_count < 4:
                     flags.append("extreme_underdog_guardrail")
@@ -211,15 +215,20 @@ class DisciplinedBaselineModel(SportModel):
                         self.sport,
                         "moneyline",
                         side,
-                        p_model,
+                        adjusted_prob,
                         p_market,
                         edge,
-                        expected_value(p_model, odds),
+                        expected_value(adjusted_prob, odds),
                         self._confidence(edge, support_count, "moneyline"),
                         self._reason(row, signals, "moneyline"),
                         flags,
                         p_market,
-                        {"game": game_txt, **self._prediction_metadata(row, support_count, signals)},
+                        {
+                            "game": game_txt,
+                            "raw_model_probability": p_model,
+                            "adjusted_prob": adjusted_prob,
+                            **self._prediction_metadata(row, support_count, signals),
+                        },
                     )
                 )
 
@@ -235,8 +244,9 @@ class DisciplinedBaselineModel(SportModel):
                 (f"{away_team} {(-row.get('spread_line', 0.0)):+.1f}", p_away_cover, nv_away_s, int(row["away_spread_odds"])),
             ]
             for side, p_model, p_market, odds in spread_sides:
-                edge = p_model - p_market
-                support_count, signals = self._support_signals(row, p_model, p_market, "spread", odds)
+                adjusted_prob = self._adjust_probability(p_model, p_market)
+                edge = adjusted_prob - p_market
+                support_count, signals = self._support_signals(row, adjusted_prob, p_market, "spread", odds)
                 flags = [] if support_count >= 2 else ["low_feature_support"]
                 preds.append(
                     Prediction(
@@ -244,15 +254,20 @@ class DisciplinedBaselineModel(SportModel):
                         self.sport,
                         "spread",
                         side,
-                        p_model,
+                        adjusted_prob,
                         p_market,
                         edge,
-                        expected_value(p_model, odds),
+                        expected_value(adjusted_prob, odds),
                         self._confidence(edge, support_count, "spread"),
                         self._reason(row, signals, "spread"),
                         flags,
                         p_market,
-                        {"game": game_txt, **self._prediction_metadata(row, support_count, signals)},
+                        {
+                            "game": game_txt,
+                            "raw_model_probability": p_model,
+                            "adjusted_prob": adjusted_prob,
+                            **self._prediction_metadata(row, support_count, signals),
+                        },
                     )
                 )
 
@@ -267,8 +282,9 @@ class DisciplinedBaselineModel(SportModel):
                 (f"Over {row.get('total_line', 0.0):.1f}", p_over, nv_over, int(row["over_odds"])),
                 (f"Under {row.get('total_line', 0.0):.1f}", p_under, nv_under, int(row["under_odds"])),
             ]:
-                edge = p_model - p_market
-                support_count, signals = self._support_signals(row, p_model, p_market, "total", odds)
+                adjusted_prob = self._adjust_probability(p_model, p_market)
+                edge = adjusted_prob - p_market
+                support_count, signals = self._support_signals(row, adjusted_prob, p_market, "total", odds)
                 flags = [] if support_count >= 2 else ["low_feature_support"]
                 preds.append(
                     Prediction(
@@ -276,15 +292,20 @@ class DisciplinedBaselineModel(SportModel):
                         self.sport,
                         "total",
                         side,
-                        p_model,
+                        adjusted_prob,
                         p_market,
                         edge,
-                        expected_value(p_model, odds),
+                        expected_value(adjusted_prob, odds),
                         self._confidence(edge, support_count, "total"),
                         self._reason(row, signals, "total"),
                         flags,
                         p_market,
-                        {"game": game_txt, **self._prediction_metadata(row, support_count, signals)},
+                        {
+                            "game": game_txt,
+                            "raw_model_probability": p_model,
+                            "adjusted_prob": adjusted_prob,
+                            **self._prediction_metadata(row, support_count, signals),
+                        },
                     )
                 )
 

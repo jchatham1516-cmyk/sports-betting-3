@@ -59,6 +59,7 @@ BASE_FEATURE_COLUMNS = [
     "injury_data_stale_flag",
     "market_prob",
     "model_prob",
+    "adjusted_prob",
     "edge",
     "expected_value",
     "line_movement",
@@ -194,7 +195,12 @@ def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFra
     out["injury_data_stale_flag"] = _coalesce_numeric(out, ["injury_data_stale_flag"])
     out["market_prob"] = _coalesce_numeric(out, ["market_prob"])
     out["model_prob"] = _coalesce_numeric(out, ["model_prob"])
-    out["edge"] = _coalesce_numeric(out, ["edge"])
+    out["adjusted_prob"] = _coalesce_numeric(out, ["adjusted_prob"], default=np.nan)
+    missing_adjusted = out["adjusted_prob"].isna()
+    if missing_adjusted.any():
+        out.loc[missing_adjusted, "adjusted_prob"] = (0.75 * out.loc[missing_adjusted, "market_prob"]) + (0.25 * out.loc[missing_adjusted, "model_prob"])
+    out["model_prob"] = out["adjusted_prob"]
+    out["edge"] = out["adjusted_prob"] - out["market_prob"]
     out["expected_value"] = _coalesce_numeric(out, ["expected_value"])
     out["line_movement"] = _coalesce_numeric(out, ["line_movement"])
     out["clv_placeholder"] = _coalesce_numeric(out, ["clv_placeholder"])
