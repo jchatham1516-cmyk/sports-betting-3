@@ -51,10 +51,13 @@ LOGGER = logging.getLogger(__name__)
 
 
 def apply_smart_bet_filter(df):
+
+    import pandas as pd
+
     if df is None or len(df) == 0:
         return df
 
-    selected = []
+    results = []
 
     for _, row in df.iterrows():
 
@@ -64,31 +67,33 @@ def apply_smart_bet_filter(df):
         if market_prob == 0:
             continue
 
-        # MARKET ADJUSTMENT (CRITICAL)
-        adjusted_prob = 0.75 * market_prob + 0.25 * model_prob
+        # Blend model + market (very important)
+        adjusted_prob = 0.7 * market_prob + 0.3 * model_prob
         edge = adjusted_prob - market_prob
-
-        # LOOSER FILTERS (so bets actually appear)
-        if edge < 0.015:
-            continue
-
-        if adjusted_prob < 0.50 or adjusted_prob > 0.75:
-            continue
-
-        if abs(model_prob - market_prob) > 0.25:
-            continue
 
         row["adjusted_prob"] = adjusted_prob
         row["edge"] = edge
 
-        selected.append(row)
+        results.append(row)
 
-    result = pd.DataFrame(selected)
+    df = pd.DataFrame(results)
 
-    if len(result) == 0:
-        return result
+    if len(df) == 0:
+        return df
 
-    return result.sort_values("edge", ascending=False).head(5)
+    # PRIMARY FILTER (normal mode)
+    filtered = df[
+        (df["edge"] > 0.01) &
+        (df["adjusted_prob"].between(0.50, 0.75))
+    ]
+
+    # 🔥 FALLBACK MODE (CRITICAL)
+    if len(filtered) == 0:
+        print("No strong bets → using fallback mode")
+
+        return df.sort_values("edge", ascending=False).head(5)
+
+    return filtered.sort_values("edge", ascending=False).head(5)
 
 
 def _normalize_team_name(name: str | None) -> str:
