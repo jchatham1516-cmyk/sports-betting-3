@@ -447,17 +447,28 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         filtered_bets.append(bet)
 
     ranked_bets = sorted(filtered_bets, key=lambda x: (x["composite_score"], x["confidence"]), reverse=True)
-    trimmed_recs = ranked_bets[:TOP_BETS_DAILY] if not loaded_predictions_df.empty else []
-    logger.info("Total bets exported: %s", len(trimmed_recs))
+    strong_bets = ranked_bets[:TOP_BETS_DAILY] if not loaded_predictions_df.empty else []
+    fallback_bets = strong_bets
+    logger.info("Total bets exported: %s", len(strong_bets))
 
-    recommendations_df = pd.DataFrame(trimmed_recs)
+    recommendations_df = pd.DataFrame(strong_bets)
     recommendations_df = recommendations_df.reindex(columns=RECOMMENDATION_COLUMNS)
     recommendations_df = filter_predictions_today(recommendations_df)
     recommendations_df = apply_smart_bet_filter(recommendations_df)
-    trimmed_recs = recommendations_df.to_dict("records")
+    strong_bets = recommendations_df.to_dict("records")
+
+    final_bets = []
+    if len(strong_bets) > 0:
+        final_bets = strong_bets
+    else:
+        print("No strong bets → using fallback mode")
+        final_bets = fallback_bets
+
+    recommendations_df = pd.DataFrame(final_bets)
+    recommendations_df = recommendations_df.reindex(columns=RECOMMENDATION_COLUMNS)
     save_dataframe(recommendations_df, out_dir / "recommended_bets.csv")
 
-    if trimmed_recs:
+    if final_bets:
         bt = recommendations_df.copy()
         bt["recommended_units"] = 1.0
         bt["result_units"] = bt["expected_value"] * bt["recommended_units"]
@@ -465,16 +476,19 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         bt_summary = summarize_backtest(bt)
         save_dataframe(pd.DataFrame([asdict(bt_summary)]), out_dir / "backtest_summary.csv")
 
-    card = "Top model bets exported from predictions." if trimmed_recs else "No bets exported today"
-    print(card)
+    if len(final_bets) == 0:
+        print("No bets exported today")
+    else:
+        print(f"Exporting {len(final_bets)} bets")
+    card = "Top model bets exported from predictions." if final_bets else "No bets exported today"
     report_lines = [
         f"Output directory: {out_dir.resolve()}",
         f"Games processed: {total_games_processed}",
         f"Total ranked recommendations available: {len(ranked_bets)}",
-        f"Total recommendations exported (top {TOP_BETS_DAILY}): {len(trimmed_recs)}",
+        f"Total recommendations exported (top {TOP_BETS_DAILY}): {len(final_bets)}",
         "",
     ]
-    if trimmed_recs:
+    if final_bets:
         report_lines.append("Top model bets exported from predictions.")
     else:
         report_lines.append("No bets exported today")
