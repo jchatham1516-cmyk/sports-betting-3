@@ -360,7 +360,28 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print("No predictions generated today — skipping read.")
         return
 
-    loaded_predictions_df = pd.read_csv(pred_path)
+    import pandas as pd
+
+    pred_path = out_dir / "predictions.csv"
+
+    try:
+        if not pred_path.exists():
+            print("No predictions file found — skipping.")
+            return
+
+        if pred_path.stat().st_size < 10:
+            print("Predictions file is empty — skipping.")
+            return
+
+        loaded_predictions_df = pd.read_csv(pred_path)
+
+        if loaded_predictions_df.empty or len(loaded_predictions_df.columns) == 0:
+            print("Predictions dataframe empty — skipping.")
+            return
+
+    except pd.errors.EmptyDataError:
+        print("Predictions CSV has no columns — skipping.")
+        return
     bets = []
     for game_id, game_predictions in loaded_predictions_df.groupby("game_id"):
         game_context = game_rows_by_id.get(game_id)
