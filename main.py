@@ -51,9 +51,6 @@ LOGGER = logging.getLogger(__name__)
 
 
 def apply_smart_bet_filter(df):
-
-    import pandas as pd
-
     if df is None or len(df) == 0:
         return df
 
@@ -359,8 +356,6 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     if not pred_path.exists() or pred_path.stat().st_size == 0:
         print("No predictions generated today — skipping read.")
         return
-
-    import pandas as pd
 
     pred_path = out_dir / "predictions.csv"
 
