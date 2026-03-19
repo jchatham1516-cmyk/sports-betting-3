@@ -50,6 +50,54 @@ TOP_BETS_DAILY = 5
 LOGGER = logging.getLogger(__name__)
 
 
+def apply_smart_bet_filter(df):
+
+    import pandas as pd
+
+    if df is None or len(df) == 0:
+        return df
+
+    selected = []
+
+    for _, row in df.iterrows():
+
+        model_prob = row.get("model_prob", 0)
+        market_prob = row.get("market_prob", 0)
+
+        if market_prob == 0:
+            continue
+
+        # MARKET-ADJUSTED PROBABILITY (CRITICAL)
+        adjusted_prob = 0.75 * market_prob + 0.25 * model_prob
+        edge = adjusted_prob - market_prob
+
+        # FILTER RULES
+
+        # 1. Minimum edge
+        if edge < 0.025:
+            continue
+
+        # 2. Confidence band (removes fake 0.99 probabilities)
+        if adjusted_prob < 0.53 or adjusted_prob > 0.68:
+            continue
+
+        # 3. Sanity check vs market
+        if abs(model_prob - market_prob) > 0.15:
+            continue
+
+        row["adjusted_prob"] = adjusted_prob
+        row["edge"] = edge
+
+        selected.append(row)
+
+    result = pd.DataFrame(selected)
+
+    if len(result) == 0:
+        return result
+
+    return result.sort_values("edge", ascending=False).head(5)
+
+
 def _normalize_team_name(name: str | None) -> str:
     if not name:
         return ""
@@ -307,6 +355,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     predictions_df = pd.DataFrame(all_predictions)
     predictions_df = predictions_df.reindex(columns=PREDICTION_COLUMNS)
     predictions_df = filter_predictions_today(predictions_df)
+    predictions_df = apply_smart_bet_filter(predictions_df)
     save_dataframe(predictions_df, out_dir / "predictions.csv")
 
     loaded_predictions_df = pd.read_csv(out_dir / "predictions.csv")
@@ -348,6 +397,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     recommendations_df = pd.DataFrame(trimmed_recs)
     recommendations_df = recommendations_df.reindex(columns=RECOMMENDATION_COLUMNS)
     recommendations_df = filter_predictions_today(recommendations_df)
+    recommendations_df = apply_smart_bet_filter(recommendations_df)
     trimmed_recs = recommendations_df.to_dict("records")
     save_dataframe(recommendations_df, out_dir / "recommended_bets.csv")
 
