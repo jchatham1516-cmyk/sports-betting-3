@@ -18,6 +18,7 @@ from sklearn.isotonic import IsotonicRegression
 from sports_betting.backtesting.engine import summarize_backtest
 from sports_betting.config.settings import load_config
 from sports_betting.data.fetch_injuries import compute_injury_impact, fetch_nba_injuries
+from sports_betting.data.load_injuries import load_injuries, get_team_injury_penalty
 from sports_betting.models.entities import Prediction
 from sports_betting.scripts.data_io import (
     historical_file_path,
@@ -1067,16 +1068,34 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         )
         df["model_probability"] = df["model_probability"].clip(0.02, 0.98)
 
-        # Slight probability boost after calibration and before edge/EV recompute.
+        # Slight probability boost after calibration and before injury adjustments.
         df["model_probability"] = df["model_probability"] * 1.03
         df["model_probability"] = df["model_probability"].clip(0.02, 0.98)
 
-        # Recompute edge and EV from finalized probabilities/odds.
+        injuries = load_injuries()
+
+        def apply_injury_adjustment(row):
+            home_penalty = get_team_injury_penalty(row["home_team"], injuries)
+            away_penalty = get_team_injury_penalty(row["away_team"], injuries)
+
+            # Adjust model probabilities
+            adj_home_prob = row["model_prob"] - home_penalty + away_penalty
+            adj_home_prob = max(0.01, min(0.99, adj_home_prob))
+
+            return adj_home_prob
+
+        df["model_prob"] = df.apply(apply_injury_adjustment, axis=1)
+
+        # Injury-adjusted probability is the final probability used in edge and EV.
+        df["model_probability"] = df["model_prob"]
         df["edge"] = df["model_probability"] - df["market_probability"]
         df["payout"] = df["odds"].apply(get_payout)
         df["expected_value"] = (
             df["model_probability"] * df["payout"]
         ) - (1 - df["model_probability"])
+
+        print("[INJURY ADJUSTMENT APPLIED]")
+        print(df[["away_team", "home_team", "model_probability", "edge", "expected_value"]].head())
         assert df["expected_value"].max() < 1, "EV ERROR: value too high"
         assert df["expected_value"].min() > -1, "EV ERROR: value too low"
         df["confidence"] = (df["edge"] * 0.6) + (df["expected_value"] * 0.4)
