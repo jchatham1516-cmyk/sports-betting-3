@@ -342,15 +342,24 @@ def predict_runtime(model, games_df: pd.DataFrame):
     if "home_moneyline" not in df.columns:
         if "home_ml" in df.columns:
             df["home_moneyline"] = df["home_ml"]
+        elif "moneyline_home" in df.columns:
+            df["home_moneyline"] = df["moneyline_home"]
+        elif "odds_home" in df.columns:
+            df["home_moneyline"] = df["odds_home"]
         else:
-            raise ValueError("Missing both home_moneyline and home_ml columns")
+            print("[WARNING] Missing home_moneyline — using neutral probability")
+            df["home_moneyline"] = 0
 
     if "spread" not in df.columns:
         if "home_spread" in df.columns:
             df["spread"] = df["home_spread"]
+        elif "spread_home" in df.columns:
+            df["spread"] = df["spread_home"]
         else:
             df["spread"] = 0.0
 
+    df["home_moneyline"] = pd.to_numeric(df["home_moneyline"], errors="coerce").fillna(0)
+    df["spread"] = pd.to_numeric(df["spread"], errors="coerce").fillna(0)
     df["implied_home_prob"] = df["home_moneyline"].apply(american_to_implied_prob)
     df["spread_value_signal"] = df["spread"] * df["implied_home_prob"]
 
@@ -372,6 +381,31 @@ def predict_runtime(model, games_df: pd.DataFrame):
 
     print(f"[NBA] Prediction columns: {list(df.columns)}")
     return model.predict_proba(X)[:, 1]
+
+
+def _ensure_runtime_prediction_columns(daily: pd.DataFrame) -> pd.DataFrame:
+    out = daily.copy()
+    if "home_moneyline" not in out.columns:
+        if "home_ml" in out.columns:
+            out["home_moneyline"] = out["home_ml"]
+        elif "moneyline_home" in out.columns:
+            out["home_moneyline"] = out["moneyline_home"]
+        elif "odds_home" in out.columns:
+            out["home_moneyline"] = out["odds_home"]
+
+    if "spread" not in out.columns:
+        if "home_spread" in out.columns:
+            out["spread"] = out["home_spread"]
+        elif "spread_home" in out.columns:
+            out["spread"] = out["spread_home"]
+        else:
+            out["spread"] = 0.0
+
+    if "home_moneyline" in out.columns:
+        out["home_moneyline"] = pd.to_numeric(out["home_moneyline"], errors="coerce").fillna(0)
+    if "spread" in out.columns:
+        out["spread"] = pd.to_numeric(out["spread"], errors="coerce").fillna(0)
+    return out
 
 
 def _build_runtime_moneyline_predictions(
@@ -620,6 +654,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         model = choose_model(sport_name)
         model.runtime_model = None
         historical, daily = load_historical_and_daily(sport_name)
+        daily = _ensure_runtime_prediction_columns(daily)
+        print("[DEBUG] Daily columns BEFORE prediction:", list(daily.columns))
         runtime_home_win_model = None
         total_games_processed += len(daily)
         csv_path = historical_file_path(sport_name)
