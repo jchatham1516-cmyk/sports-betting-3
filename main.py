@@ -1139,7 +1139,56 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print("[FINAL EV VALIDATION]")
         print(df[["odds", "model_probability", "market_probability", "edge", "expected_value"]].head())
 
+        injury_col = None
+        if "injury_impact" in df.columns:
+            injury_col = "injury_impact"
+        elif "injury_impact_diff" in df.columns:
+            injury_col = "injury_impact_diff"
+
+        if injury_col is not None:
+            top_teams_by_injury = df[
+                ["home_team", "away_team", injury_col]
+            ].sort_values(by=injury_col, ascending=False)
+            print("[TOP TEAMS BY INJURY IMPACT]")
+            print(top_teams_by_injury.head(10))
+
+            df["edge_after_injury"] = df["edge"] + df[injury_col]
+            df["expected_value_after_injury"] = df["expected_value"] + df[injury_col]
+
+            print("[INJURY-ADJUSTED EDGE / EV]")
+            print(
+                df[
+                    [
+                        "home_team",
+                        "away_team",
+                        "edge",
+                        "expected_value",
+                        "edge_after_injury",
+                        "expected_value_after_injury",
+                    ]
+                ]
+            )
+        else:
+            print("[INJURY-ADJUSTED EDGE / EV SKIPPED: no injury impact column found]")
+
     if not df.empty and {"expected_value", "edge", "model_probability"}.issubset(df.columns):
+        if {"edge_after_injury", "expected_value_after_injury"}.issubset(df.columns):
+            filtered_bets = df[
+                (df["edge_after_injury"] > 0.05)
+                & (df["expected_value_after_injury"] > 0.03)
+            ].copy()
+            print("[FILTERED BETS AFTER INJURY ADJUSTMENT]")
+            print(
+                filtered_bets[
+                    [
+                        "home_team",
+                        "away_team",
+                        "edge_after_injury",
+                        "expected_value_after_injury",
+                    ]
+                ]
+            )
+
         df = df[
             (df["expected_value"] > 0.02) &
             (df["model_probability"] < 0.60)
