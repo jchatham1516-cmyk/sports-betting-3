@@ -1168,17 +1168,23 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             ]
         )
     )
-    print("\n🔥 FINAL BETS:")
-    print(final_bets[[
-        "away_team",
-        "home_team",
-        "odds",
-        "model_probability",
-        "market_probability",
-        "edge",
-        "expected_value",
-        "units"
-    ]])
+    if final_bets.empty:
+        print("No bets passed filters today.")
+    else:
+        if "units" not in final_bets.columns:
+            final_bets["units"] = 1
+
+        print("\n🔥 FINAL BETS:")
+        print(final_bets[[
+            "away_team",
+            "home_team",
+            "odds",
+            "model_probability",
+            "market_probability",
+            "edge",
+            "expected_value",
+            "units"
+        ]])
 
     ranked_bets = final_bets.to_dict("records")
     final_bets_records = ranked_bets
