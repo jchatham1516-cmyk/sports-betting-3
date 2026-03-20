@@ -365,28 +365,39 @@ def predict_runtime(model, games_df: pd.DataFrame):
 
     df["home_moneyline"] = pd.to_numeric(df["home_moneyline"], errors="coerce").fillna(0)
     df["spread"] = pd.to_numeric(df["spread"], errors="coerce").fillna(0)
-    df["implied_home_prob"] = df["home_moneyline"].apply(american_to_implied_prob)
+    if "implied_home_prob" not in df.columns:
+        df["implied_home_prob"] = df["home_moneyline"].apply(american_to_implied_prob)
+    else:
+        df["implied_home_prob"] = pd.to_numeric(df["implied_home_prob"], errors="coerce").fillna(0)
+    df["spread_abs"] = df["spread"].abs()
+    df["is_favorite"] = (df["home_moneyline"] < 0).astype(int)
     df["spread_value_signal"] = df["spread"] * df["implied_home_prob"]
     print("[NBA] Using real odds for prediction")
 
-    for col in NBA_RUNTIME_FEATURE_COLUMNS:
+    runtime_model = model
+    scaler = None
+    if isinstance(model, tuple) and len(model) >= 2:
+        runtime_model, scaler = model
+
+    feature_columns = getattr(runtime_model, "feature_columns", NBA_RUNTIME_FEATURE_COLUMNS)
+    for col in feature_columns:
         if col not in df.columns:
             df[col] = 0
 
-    X = df[NBA_RUNTIME_FEATURE_COLUMNS].copy()
+    missing = [col for col in feature_columns if col not in df.columns]
+    if missing:
+        raise ValueError(f"Missing features at prediction time: {missing}")
+
+    X = df[feature_columns].copy()
 
     X = X.fillna(0.0)
     if "implied_home_prob" in X.columns:
         X["implied_home_prob"] = X["implied_home_prob"].replace(0.0, 0.5)
 
     print(f"[NBA] Prediction columns: {list(df.columns)}")
-    runtime_model = model
-    scaler = None
-    if isinstance(model, tuple) and len(model) == 2:
-        runtime_model, scaler = model
     if scaler is not None:
         X = scaler.transform(X)
-    return runtime_model.predict_proba(X)[:, 1]
+    return runtime_model.predict_proba(X.values if isinstance(X, pd.DataFrame) else X)[:, 1]
 
 
 def _ensure_runtime_prediction_columns(daily: pd.DataFrame) -> pd.DataFrame:
@@ -419,6 +430,12 @@ def _ensure_runtime_prediction_columns(daily: pd.DataFrame) -> pd.DataFrame:
         out["home_moneyline"] = pd.to_numeric(out["home_moneyline"], errors="coerce").fillna(0)
     if "spread" in out.columns:
         out["spread"] = pd.to_numeric(out["spread"], errors="coerce").fillna(0)
+    if "implied_home_prob" not in out.columns and "home_moneyline" in out.columns:
+        out["implied_home_prob"] = out["home_moneyline"].apply(american_to_implied_prob)
+    if "spread" in out.columns:
+        out["spread_abs"] = out["spread"].abs()
+    if "home_moneyline" in out.columns:
+        out["is_favorite"] = (out["home_moneyline"] < 0).astype(int)
     return out
 
 
@@ -432,6 +449,9 @@ def _build_runtime_moneyline_predictions(
 
     runtime_df = daily_df.copy()
     runtime_df["predicted_home_win_prob"] = predict_runtime(runtime_model, runtime_df)
+    def _calibrate_prob(p):
+        return min(max(p, 0.05), 0.95)
+    runtime_df["predicted_home_win_prob"] = runtime_df["predicted_home_win_prob"].apply(_calibrate_prob)
     if "model_prob" not in runtime_df.columns:
         runtime_df["model_prob"] = runtime_df["predicted_home_win_prob"]
 

@@ -19,6 +19,14 @@ BASE_URL = "https://www.basketball-reference.com"
 DEFAULT_OUTPUT = Path("sports_betting/data/historical/nba_historical.csv")
 
 
+def american_to_implied_prob(odds: float) -> float:
+    if pd.isna(odds):
+        return np.nan
+    if odds < 0:
+        return (-odds) / ((-odds) + 100)
+    return 100 / (odds + 100)
+
+
 @dataclass
 class EloConfig:
     start_rating: float = 1500.0
@@ -183,6 +191,10 @@ def _build_features(games: pd.DataFrame, elo_config: EloConfig) -> pd.DataFrame:
 
     output = pd.DataFrame(rows)
     output = output.sort_values(["event_date", "game_id"]).reset_index(drop=True)
+    if "implied_home_prob" not in output.columns:
+        output["implied_home_prob"] = output["home_moneyline"].apply(american_to_implied_prob)
+    output["spread_abs"] = output["spread"].abs()
+    output["is_favorite"] = (output["home_moneyline"] < 0).astype(int)
     return output
 
 

@@ -5,12 +5,9 @@ import pandas as pd
 FEATURE_COLUMNS = [
     "implied_home_prob",
     "spread",
-    "spread_value_signal",
+    "spread_abs",
+    "is_favorite",
     "elo_diff",
-    "rest_diff",
-    "injury_impact_diff",
-    "net_rating_diff",
-    "last5_net_rating_diff",
 ]
 
 
@@ -36,7 +33,12 @@ def prepare_df(df):
             df["spread"] = 0
     df["home_moneyline"] = pd.to_numeric(df["home_moneyline"], errors="coerce").fillna(0)
     df["spread"] = pd.to_numeric(df["spread"], errors="coerce").fillna(0)
-    df["implied_home_prob"] = df["home_moneyline"].apply(american_to_implied_prob)
+    if "implied_home_prob" not in df.columns:
+        df["implied_home_prob"] = df["home_moneyline"].apply(american_to_implied_prob)
+    else:
+        df["implied_home_prob"] = pd.to_numeric(df["implied_home_prob"], errors="coerce").fillna(0)
+    df["spread_abs"] = df["spread"].abs()
+    df["is_favorite"] = (df["home_moneyline"] < 0).astype(int)
     df["spread_value_signal"] = df["spread"] * df["implied_home_prob"]
     return df
 
@@ -57,10 +59,12 @@ def train_runtime_model(df):
     if y.nunique() < 2:
         return None
 
+    feature_columns = X.columns.tolist()
     scaler = StandardScaler()
     X = scaler.fit_transform(X)
 
     model = LogisticRegression(max_iter=1000)
+    model.feature_columns = feature_columns
     model.fit(X, y)
 
     return model, scaler
@@ -69,18 +73,21 @@ def train_runtime_model(df):
 def predict(model_bundle, games_df):
     df = prepare_df(games_df)
 
-    for col in FEATURE_COLUMNS:
-        if col not in df.columns:
-            df[col] = 0
-
-    X = df[FEATURE_COLUMNS].copy().fillna(0)
-
     scaler = None
     model = model_bundle
-    if isinstance(model_bundle, tuple) and len(model_bundle) == 2:
+    if isinstance(model_bundle, tuple) and len(model_bundle) >= 2:
         model, scaler = model_bundle
 
+    feature_columns = getattr(model, "feature_columns", FEATURE_COLUMNS)
+    for col in feature_columns:
+        if col not in df.columns:
+            df[col] = 0
+    missing = [col for col in feature_columns if col not in df.columns]
+    if missing:
+        raise ValueError(f"Missing features at prediction time: {missing}")
+
+    X = df[feature_columns].copy().fillna(0)
     if scaler is not None:
         X = scaler.transform(X)
 
-    return model.predict_proba(X)[:, 1]
+    return model.predict_proba(X.values if isinstance(X, pd.DataFrame) else X)[:, 1]
