@@ -58,9 +58,9 @@ TOP_BETS_DAILY = 6
 EDGE_THRESHOLD = 0.01
 FORCE_BETS = True
 LOGGER = logging.getLogger(__name__)
-MIN_EDGE = 0.02
+MIN_EDGE = 0.015
 MIN_EV = 0.01
-MIN_MODEL_PROBABILITY = 0.55
+MIN_MODEL_PROBABILITY = 0.52
 MAX_BETS_PER_SPORT_PER_DAY = 5
 MAX_EV = 0.15
 MAX_HEAVY_FAVORITE_ODDS = -300
@@ -1075,9 +1075,15 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print(df[["odds", "model_probability", "market_probability", "edge", "expected_value"]].head())
 
     if not df.empty and {"expected_value", "edge", "model_probability"}.issubset(df.columns):
-        low_edge_mask = df["edge"] < MIN_EDGE
-        low_ev_mask = df["expected_value"] < MIN_EV
-        low_confidence_mask = df["model_probability"] < MIN_MODEL_PROBABILITY
+        min_edge = MIN_EDGE
+        min_expected_value = MIN_EV
+        min_confidence = MIN_MODEL_PROBABILITY
+        print("[FILTER SETTINGS]")
+        print(f"min_edge={min_edge}, min_ev={min_expected_value}, min_conf={min_confidence}")
+
+        low_edge_mask = df["edge"] <= min_edge
+        low_ev_mask = df["expected_value"] <= min_expected_value
+        low_confidence_mask = df["model_probability"] <= min_confidence
 
         if low_edge_mask.any():
             print(f"Rejected bet due to low edge: {int(low_edge_mask.sum())}")
@@ -1086,11 +1092,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         if low_confidence_mask.any():
             print(f"Rejected bet due to low confidence: {int(low_confidence_mask.sum())}")
 
-        final_bets = df[
-            ~low_edge_mask &
-            ~low_ev_mask &
-            ~low_confidence_mask
-        ].copy()
+        filtered_bets = df[
+            (df["edge"] > min_edge) &
+            (df["expected_value"] > min_expected_value) &
+            (df["model_probability"] > min_confidence)
+        ]
+        final_bets = filtered_bets.copy()
 
         final_bets = final_bets[
             (final_bets["odds"] > -300) &
