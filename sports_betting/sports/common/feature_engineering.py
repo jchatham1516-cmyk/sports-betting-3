@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from sports_betting.sports.common.injuries import load_injury_frame, normalize_status, summarize_team_injuries
+from sports_betting.sports.common.injuries import load_injury_frame, normalize_status, normalize_team_name, summarize_team_injuries
 
 SPORT_EFFICIENCY_FEATURES: dict[str, list[str]] = {
     "nba": [
@@ -84,10 +84,10 @@ def add_injury_features(games_df: pd.DataFrame, sport: str, data_root: Path) -> 
     print(f"Injuries rows: {len(injuries)}")
     team_summary = summarize_team_injuries(injuries, sport)
     out = games_df.copy()
-    out["home_team"] = out["home_team"].astype(str).str.strip().str.lower()
-    out["away_team"] = out["away_team"].astype(str).str.strip().str.lower()
+    out["home_team"] = out["home_team"].apply(normalize_team_name)
+    out["away_team"] = out["away_team"].apply(normalize_team_name)
     if not team_summary.empty:
-        team_summary["team"] = team_summary["team"].astype(str).str.strip().str.lower()
+        team_summary["team"] = team_summary["team"].apply(normalize_team_name)
 
     # Persist a team summary artifact for debugging and reporting.
     external = data_root / "external"

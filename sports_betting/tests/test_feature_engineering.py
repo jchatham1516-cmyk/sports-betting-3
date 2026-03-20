@@ -76,3 +76,26 @@ def test_enrich_with_context_features_loads_json_injuries(tmp_path: Path):
     out = enrich_with_context_features(games, "nba", root)
     assert out.loc[0, "injury_impact_home"] > 0
     assert out.loc[0, "injury_impact_away"] > 0
+
+
+def test_enrich_with_context_features_normalizes_accented_team_names(tmp_path: Path):
+    root = tmp_path / "sports_betting" / "data"
+    (root / "external").mkdir(parents=True)
+
+    injuries = pd.DataFrame(
+        [
+            {"team": "Montréal Canadiens", "player": "P1", "status": "out", "impact_rating": 1.5},
+            {"team": "Toronto Maple Leafs", "player": "P2", "status": "questionable", "impact_rating": 1.1},
+        ]
+    )
+    injuries.to_csv(root / "external" / "nhl_injuries.csv", index=False)
+
+    games = pd.DataFrame(
+        [
+            {"game_id": "1", "home_team": "Montreal Canadiens", "away_team": "Toronto Maple Leafs", "event_date": "2025-01-01T00:00:00Z"},
+        ]
+    )
+
+    out = enrich_with_context_features(games, "nhl", root)
+    assert out.loc[0, "injury_impact_home"] > 0
+    assert out.loc[0, "injury_impact_away"] > 0
