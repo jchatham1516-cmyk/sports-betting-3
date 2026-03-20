@@ -79,6 +79,9 @@ def train_nba_models(historical_df: pd.DataFrame) -> NBATrainingArtifact:
     """Train calibrated NBA models using a strict time-based validation split."""
     if historical_df.empty:
         raise ValueError("Cannot train NBA models on an empty dataframe.")
+    if "injury_impact_diff" not in historical_df.columns:
+        historical_df = historical_df.copy()
+        historical_df["injury_impact_diff"] = 0
 
     data = build_nba_features(historical_df)
     if "season" not in data.columns:
