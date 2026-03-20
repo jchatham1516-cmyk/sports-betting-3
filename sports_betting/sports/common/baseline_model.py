@@ -19,6 +19,22 @@ from sports_betting.sports.common.odds import american_to_implied_probability, e
 
 LOGGER = logging.getLogger(__name__)
 
+INJURY_IMPACT_WEIGHT = 1.5
+OPTIONAL_INJURY_FEATURES = [
+    "injury_impact",
+    "injury_impact_diff",
+    "injury_impact_home",
+    "injury_impact_away",
+    "injury_confidence_score",
+    "injury_data_stale_flag",
+    "starter_out_count",
+    "starter_out_count_home",
+    "starter_out_count_away",
+    "star_player_out_flag",
+    "star_player_out_home",
+    "star_player_out_away",
+]
+
 
 class DisciplinedBaselineModel(SportModel):
     """Shared baseline across sports with strict signal support and calibration."""
@@ -65,7 +81,18 @@ class DisciplinedBaselineModel(SportModel):
     def _build_features(self, df: pd.DataFrame, features: list[str]) -> pd.DataFrame:
         frame = df.reindex(columns=features, fill_value=0.0)
         x = frame.select_dtypes(include=[np.number])
-        return x.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+        x = x.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+        for column in OPTIONAL_INJURY_FEATURES:
+            if column in x.columns:
+                x[column] = x[column] * INJURY_IMPACT_WEIGHT
+        return x
+
+    def _expand_feature_set(self, df: pd.DataFrame, features: list[str]) -> list[str]:
+        expanded = list(features)
+        for column in OPTIONAL_INJURY_FEATURES:
+            if column in df.columns and column not in expanded:
+                expanded.append(column)
+        return expanded
 
     def _ensure_features(self, frame: pd.DataFrame, features: list[str]) -> pd.DataFrame:
         for col in features:
@@ -79,7 +106,7 @@ class DisciplinedBaselineModel(SportModel):
         return calibrated
 
     def _fit_market(self, df: pd.DataFrame, features: list[str], target_col: str, market: str) -> tuple[CalibratedClassifierCV, dict[str, float]]:
-        x = self._build_features(df, features)
+        x = self._build_features(df, self._expand_feature_set(df, features))
         y = df[target_col].astype(int)
 
         self.feature_columns[market] = list(x.columns)
@@ -169,7 +196,7 @@ class DisciplinedBaselineModel(SportModel):
         for col in columns:
             if col not in df.columns:
                 df[col] = 0.0
-        x_pred = df[columns].fillna(0.0)
+        x_pred = self._build_features(df, list(columns))
 
         return float(model.predict_proba(x_pred.values)[:, 1][0])
 
