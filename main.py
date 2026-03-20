@@ -1107,6 +1107,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         )
 
         # Recompute edge + EV once after all probability adjustments.
+        df["model_probability"] = df["model_probability"].fillna(0.5)
+        df["market_probability"] = df["market_probability"].fillna(0.5)
         df["edge"] = df["model_probability"] - df["market_probability"]
         df["payout"] = df["odds"].apply(get_payout)
         df["expected_value"] = (
