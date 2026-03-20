@@ -966,10 +966,15 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             ]].head(10))
             df = df[df["model_probability"].notna()].copy()
 
-        df["model_probability"] = df["model_probability"].clip(lower=0.01, upper=0.99)
         df["market_probability"] = df["odds"].apply(american_to_prob)
-        df["edge"] = np.nan
-        df["expected_value"] = np.nan
+        MAX_EDGE_CAP = 0.15
+        df["model_probability"] = np.where(
+            df["model_probability"] > df["market_probability"] + MAX_EDGE_CAP,
+            df["market_probability"] + MAX_EDGE_CAP,
+            df["model_probability"],
+        )
+        df["model_probability"] = df["model_probability"].clip(0.02, 0.98)
+
         df["edge"] = df["model_probability"] - df["market_probability"]
         df["payout"] = np.where(
             df["odds"] > 0,
@@ -986,18 +991,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 ["away_team", "home_team", "odds", "model_probability", "market_probability", "edge", "expected_value"]
             ].head(10)
         )
-        print(df[["odds", "model_probability", "market_probability", "edge", "expected_value"]].head())
-
-        df = df[
-            (df["expected_value"] <= 1.0)
-            & (df["edge"] <= 0.2)
-        ].copy()
-        df = df[df["odds"] > MAX_HEAVY_FAVORITE_ODDS].copy()
-        df = df[
-            (df["edge"] > MIN_EDGE)
-            & (df["expected_value"] > MIN_EV)
-            & (df["expected_value"] <= MAX_EV)
-        ].copy()
+        print(
+            df[["odds", "model_probability", "market_probability", "edge", "expected_value"]]
+            .sort_values(by="expected_value", ascending=False)
+            .head(10)
+        )
 
         print("EV CHECK:")
         print(df[["odds", "model_probability", "market_probability", "edge", "expected_value"]].head())
@@ -1010,7 +1008,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     else:
         bets = df.head(TOP_BETS_DAILY)
 
-    final_bets = bets.copy()
+    final_bets = df.copy()
     if not final_bets.empty and {"odds", "model_probability", "market_probability", "edge", "expected_value"}.issubset(final_bets.columns):
         print("FINAL EV CHECK:")
         print(final_bets[["odds", "model_probability", "market_probability", "edge", "expected_value"]])
