@@ -1082,7 +1082,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         low_edge_mask = df["edge"] <= min_edge
         low_ev_mask = df["expected_value"] <= 0
-        low_confidence_mask = df["model_probability"] <= min_confidence
+        high_ev_override_mask = (df["expected_value"] > 0.05) & (df["model_probability"] < 0.5)
+        low_confidence_mask = (df["model_probability"] <= min_confidence) & (~high_ev_override_mask)
 
         if low_edge_mask.any():
             print(f"Rejected bet due to low edge: {int(low_edge_mask.sum())}")
@@ -1090,11 +1091,16 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             print(f"Rejected bet due to low EV: {int(low_ev_mask.sum())}")
         if low_confidence_mask.any():
             print(f"Rejected bet due to low confidence: {int(low_confidence_mask.sum())}")
+        if high_ev_override_mask.any():
+            print("Allowed high EV underdog bet")
 
         filtered_bets = df[
             (df["expected_value"] > 0) &
             (df["edge"] > min_edge) &
-            (df["model_probability"] > min_confidence)
+            (
+                (df["model_probability"] > min_confidence) |
+                (df["expected_value"] > 0.05)
+            )
         ]
         final_bets = filtered_bets.copy()
 
