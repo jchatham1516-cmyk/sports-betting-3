@@ -339,18 +339,39 @@ def train_runtime_home_win_model(historical_df: pd.DataFrame, sport_name: str):
 
 def predict_runtime(model, games_df: pd.DataFrame):
     df = games_df.copy()
+    if "home_moneyline" not in df.columns:
+        if "home_ml" in df.columns:
+            df["home_moneyline"] = df["home_ml"]
+        else:
+            raise ValueError("Missing both home_moneyline and home_ml columns")
+
+    if "spread" not in df.columns:
+        if "home_spread" in df.columns:
+            df["spread"] = df["home_spread"]
+        else:
+            df["spread"] = 0.0
+
     df["implied_home_prob"] = df["home_moneyline"].apply(american_to_implied_prob)
     df["spread_value_signal"] = df["spread"] * df["implied_home_prob"]
 
-    x_frame = df[
+    X = df[
         [
             "implied_home_prob",
             "spread",
             "spread_value_signal",
         ]
-    ].copy().fillna(0)
+    ].copy()
 
-    return model.predict_proba(x_frame)[:, 1]
+    X = X.fillna(
+        {
+            "implied_home_prob": 0.5,
+            "spread": 0.0,
+            "spread_value_signal": 0.0,
+        }
+    )
+
+    print(f"[NBA] Prediction columns: {list(df.columns)}")
+    return model.predict_proba(X)[:, 1]
 
 
 def _build_runtime_moneyline_predictions(
