@@ -151,11 +151,13 @@ class DisciplinedBaselineModel(SportModel):
             raise RuntimeError(f"[{self.sport.upper()}] Model not trained/loaded")
 
         columns = self.feature_columns.get(market) if isinstance(self.feature_columns, dict) else self.feature_columns
-        if columns:
-            x_pred = df.reindex(columns=columns, fill_value=0.0)
-        else:
-            x_pred = df.select_dtypes(include=[np.number])
-        x_pred = x_pred.fillna(0.0)
+        if not columns:
+            raise RuntimeError(f"[{self.sport.upper()}] Missing stored feature columns for {market}")
+
+        for col in columns:
+            if col not in df.columns:
+                df[col] = 0.0
+        x_pred = df[columns].fillna(0.0)
 
         return float(model.predict_proba(x_pred.values)[:, 1][0])
 
