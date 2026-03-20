@@ -352,6 +352,7 @@ def train_runtime_home_win_model(historical_df: pd.DataFrame, sport_name: str):
 
 def predict_runtime(model, games_df: pd.DataFrame):
     df = games_df.copy()
+    df_full = df.copy()
     if "home_moneyline" not in df.columns:
         if "home_ml" in df.columns:
             df["home_moneyline"] = df["home_ml"]
@@ -414,7 +415,14 @@ def predict_runtime(model, games_df: pd.DataFrame):
         X_pred = X
 
     probs = runtime_model.predict_proba(X_pred)[:, 1]
-    return probs
+    model_probs = probs
+
+    # Keep full, non-feature columns intact for downstream bet readability/debugging.
+    df = df_full
+    df["model_prob"] = model_probs
+    df["edge"] = 0.0
+    df["expected_value"] = 0.0
+    return model_probs
 
 
 def _ensure_runtime_prediction_columns(daily: pd.DataFrame) -> pd.DataFrame:
@@ -635,6 +643,8 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
             {
                 "sport": sport_name,
                 "game": game,
+                "away_team": away_team,
+                "home_team": home_team,
                 "market": market,
                 "selection": selection_label,
                 "odds": american_odds,
@@ -859,6 +869,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         bets.extend(game_bets)
 
     bets_df = pd.DataFrame(bets)
+    print("Columns before bet selection:", bets_df.columns.tolist())
     if not bets_df.empty and "expected_value" in bets_df.columns:
         df_sorted = bets_df.sort_values(by="expected_value", ascending=False)
         bets = df_sorted.head(3)
