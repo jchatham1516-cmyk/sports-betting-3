@@ -1051,6 +1051,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         # Safe bet filtering: remove extreme longshots/heavy favorites before final selection.
         df = df[(df["odds"] > -300) & (df["odds"] < 300)].copy()
 
+        # Ensure required post-prediction features exist for runtime safety.
+        required_cols = ["injury_impact_diff"]
+        for col in required_cols:
+            if col not in df.columns:
+                df[col] = 0.0
+
         if "model_prob" in df.columns:
             df["model_prob"] = df["model_prob"].apply(calibrate_prob).clip(lower=0.01, upper=0.99)
 
@@ -1069,25 +1075,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             df = df[df["model_probability"].notna()].copy()
 
         df["market_probability"] = df["odds"].apply(american_to_prob)
-        MAX_EDGE_CAP = 0.15
-        df["model_probability"] = np.where(
-            df["model_probability"] > df["market_probability"] + MAX_EDGE_CAP,
-            df["market_probability"] + MAX_EDGE_CAP,
-            df["model_probability"],
-        )
-        df["model_probability"] = df["model_probability"].clip(0.02, 0.98)
-
-        # Penalize longshots to reduce inflated probabilities on big underdogs.
-        df["model_probability"] = np.where(
-            df["odds"] > 300,
-            df["model_probability"] * 0.6,
-            df["model_probability"],
-        )
-        df["model_probability"] = df["model_probability"].clip(0.02, 0.98)
-
-        # Slight probability boost after calibration and before injury adjustments.
-        df["model_probability"] = df["model_probability"] * 1.03
-        df["model_probability"] = df["model_probability"].clip(0.02, 0.98)
+        # Hard clamp immediately after prediction pipeline output.
+        df["model_probability"] = df["model_probability"].clip(0.05, 0.65)
 
         injuries = load_injuries()
 
@@ -1106,11 +1095,22 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         # Injury-adjusted probability is the final probability used in edge and EV.
         df["model_probability"] = df["model_prob"]
         df["model_probability"] = df["model_probability"].clip(0.05, 0.65)
+
+        # Regress toward market to reduce overconfidence.
+        df["model_probability"] = (
+            0.7 * df["model_probability"] +
+            0.3 * df["market_probability"]
+        )
+
+        # Recompute edge + EV once after all probability adjustments.
         df["edge"] = df["model_probability"] - df["market_probability"]
         df["payout"] = df["odds"].apply(get_payout)
         df["expected_value"] = (
             df["model_probability"] * df["payout"]
         ) - (1 - df["model_probability"])
+
+        # Remove unrealistic EV outliers before bet selection.
+        df = df[df["expected_value"] < 0.25].copy()
 
         print("[INJURY ADJUSTMENT APPLIED]")
         print(df[["away_team", "home_team", "model_probability", "edge", "expected_value"]].head())
@@ -1135,8 +1135,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     if not df.empty and {"expected_value", "edge", "model_probability"}.issubset(df.columns):
         df = df[
-            (df["expected_value"] > 0.01) &
-            (df["model_probability"] < 0.65)
+            (df["expected_value"] > 0.02) &
+            (df["model_probability"] < 0.60)
         ].copy()
         min_edge = MIN_EDGE
         min_expected_value = MIN_EV
