@@ -5,6 +5,15 @@ from bs4 import BeautifulSoup
 
 URL = "https://www.espn.com/nba/injuries"
 OUTPUT_PATH = "sports_betting/data/injuries/injuries.json"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.espn.com/",
+}
 
 
 def _safe_team_name(table) -> str:
@@ -22,8 +31,9 @@ def _safe_team_name(table) -> str:
 
 
 def fetch_espn_injuries():
-    response = requests.get(URL, timeout=30)
+    response = requests.get(URL, headers=HEADERS, timeout=30)
     response.raise_for_status()
+    print("[ESPN] Page fetched successfully")
     soup = BeautifulSoup(response.text, "html.parser")
 
     injuries = {}
@@ -37,27 +47,34 @@ def fetch_espn_injuries():
 
         for row in rows:
             cols = row.find_all("td")
-            if len(cols) < 4:
+            if len(cols) < 3:
                 continue
 
-            player = cols[0].text.strip()
-            status = cols[2].text.strip().lower()
+            player = cols[0].get_text(" ", strip=True)
+            status = cols[2].get_text(" ", strip=True)
 
             if player:
                 injuries[team][player] = status
 
     # Remove empty team buckets that come from non-team tables.
-    return {team: players for team, players in injuries.items() if players}
+    injuries = {team: players for team, players in injuries.items() if players}
+    print(f"[ESPN] Found {len(injuries)} teams with injuries")
+    return injuries
 
 
-def save_injuries():
+def run_injury_pipeline():
     injuries = fetch_espn_injuries()
 
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
         json.dump(injuries, f, indent=2)
 
-    print(f"[ESPN] Saved injuries for {len(injuries)} teams")
+    print(f"[ESPN] Saved injuries to {OUTPUT_PATH}")
+
+
+def save_injuries():
+    # Backward-compatible wrapper for existing callers.
+    run_injury_pipeline()
 
 
 if __name__ == "__main__":
-    save_injuries()
+    run_injury_pipeline()
