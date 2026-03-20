@@ -21,7 +21,7 @@ from sports_betting.sports.common.game_filters import current_sports_day_window,
 from sports_betting.scripts.build_nba_historical_dataset import NBA_HISTORICAL_COLUMNS
 
 
-ROOT = Path("sports_betting/data")
+ROOT = Path(__file__).resolve().parents[1] / "data"
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_SPORTS = ("nba", "nfl", "nhl")
 ALLOW_MINIMAL_DATASET = True
@@ -617,6 +617,8 @@ def format_odds_api_time(dt: datetime) -> str:
 def load_historical_and_daily(sport: str, today_only: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
     hist_path = historical_file_path(sport)
     daily_path = ROOT / "raw" / f"{sport}_daily.csv"
+    print(f"[{sport.upper()}] Looking for historical CSV at: {hist_path}")
+    print(f"[{sport.upper()}] Exists: {hist_path.exists()}")
 
     historical = load_csv_or_empty(hist_path)
     if not historical.empty:
@@ -641,7 +643,7 @@ def load_historical_and_daily(sport: str, today_only: bool = True) -> tuple[pd.D
 
     if historical.empty:
         LOGGER.warning(
-            "[%s] Historical CSV missing but model artifact is present at %s. Skipping in-run retraining.",
+            "[%s] Historical CSV missing but model artifact is present at %s. Runtime training unavailable; fallback artifact may be used.",
             sport.upper(),
             model_artifact_path(sport),
         )
