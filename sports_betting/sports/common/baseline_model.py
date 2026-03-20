@@ -63,7 +63,9 @@ class DisciplinedBaselineModel(SportModel):
         )
 
     def _build_features(self, df: pd.DataFrame, features: list[str]) -> pd.DataFrame:
-        return df.reindex(columns=features, fill_value=0.0).apply(pd.to_numeric, errors="coerce").fillna(0.0)
+        frame = df.reindex(columns=features, fill_value=0.0)
+        x = frame.select_dtypes(include=[np.number])
+        return x.apply(pd.to_numeric, errors="coerce").fillna(0.0)
 
     def _ensure_features(self, frame: pd.DataFrame, features: list[str]) -> pd.DataFrame:
         for col in features:
@@ -80,12 +82,8 @@ class DisciplinedBaselineModel(SportModel):
         x = self._build_features(df, features)
         y = df[target_col].astype(int)
 
-        if hasattr(x, "columns"):
-            self.feature_columns[market] = list(x.columns)
-            x_train = x.values
-        else:
-            self.feature_columns[market] = None
-            x_train = x
+        self.feature_columns[market] = list(x.columns)
+        x_train = x.values
 
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
         raw_probs = cross_val_predict(self._base_estimator(), x_train, y, cv=cv, method="predict_proba")[:, 1]
@@ -143,25 +141,23 @@ class DisciplinedBaselineModel(SportModel):
         self.total_model = artifact.get("total_model")
         self.metrics = artifact.get("metrics", {})
         self.feature_importance = artifact.get("feature_importance", {})
-        self.feature_columns = artifact.get("feature_columns", {})
+        feature_columns = artifact.get("feature_columns", {})
+        if isinstance(feature_columns, list):
+            feature_columns = {"moneyline": feature_columns, "spread": feature_columns, "total": feature_columns}
+        self.feature_columns = feature_columns
 
     def _predict_proba(self, model: CalibratedClassifierCV | None, df: pd.DataFrame, market: str) -> float:
         if model is None:
             raise RuntimeError(f"[{self.sport.upper()}] Model not trained/loaded")
 
-        if hasattr(self, "feature_columns") and self.feature_columns is not None:
-            columns = self.feature_columns.get(market)
-            if columns is not None:
-                missing = [col for col in columns if col not in df.columns]
-                if missing:
-                    raise ValueError(f"Missing features at prediction time: {missing}")
-                x_pred = df[columns].values
-            else:
-                x_pred = df.values
+        columns = self.feature_columns.get(market) if isinstance(self.feature_columns, dict) else self.feature_columns
+        if columns:
+            x_pred = df.reindex(columns=columns, fill_value=0.0)
         else:
-            x_pred = df.values
+            x_pred = df.select_dtypes(include=[np.number])
+        x_pred = x_pred.fillna(0.0)
 
-        return float(model.predict_proba(x_pred)[:, 1][0])
+        return float(model.predict_proba(x_pred.values)[:, 1][0])
 
     def _safe_probability(self, probability: float, market: str) -> float:
         lo, hi = self.PROBABILITY_BOUNDS[market]
