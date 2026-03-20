@@ -65,7 +65,14 @@ def train_runtime_model(df):
 
     model = LogisticRegression(max_iter=1000)
     model.feature_columns = feature_columns
-    model.fit(X, y)
+    # Save feature order if DataFrame
+    if hasattr(X, "columns"):
+        model.feature_columns = list(X.columns)
+        X_train = X.values
+    else:
+        X_train = X
+
+    model.fit(X_train, y)
 
     return model, scaler
 
@@ -79,9 +86,6 @@ def predict(model_bundle, games_df):
         model, scaler = model_bundle
 
     feature_columns = getattr(model, "feature_columns", FEATURE_COLUMNS)
-    for col in feature_columns:
-        if col not in df.columns:
-            df[col] = 0
     missing = [col for col in feature_columns if col not in df.columns]
     if missing:
         raise ValueError(f"Missing features at prediction time: {missing}")
@@ -90,4 +94,12 @@ def predict(model_bundle, games_df):
     if scaler is not None:
         X = scaler.transform(X)
 
-    return model.predict_proba(X.values if isinstance(X, pd.DataFrame) else X)[:, 1]
+    if hasattr(model, "feature_columns") and model.feature_columns is not None:
+        X_pred = X
+    elif hasattr(X, "values"):
+        X_pred = X.values
+    else:
+        X_pred = X
+
+    probs = model.predict_proba(X_pred)[:, 1]
+    return probs

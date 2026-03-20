@@ -113,8 +113,25 @@ def _fit_binary_classifier(frame: pd.DataFrame, target: str, features: list[str]
         }
 
     model = LogisticRegression(max_iter=1000)
-    model.fit(X, y)
-    prob = model.predict_proba(X)[:, 1]
+    # Save feature order if DataFrame
+    if hasattr(X, "columns"):
+        model.feature_columns = list(X.columns)
+        X_train = X.values
+    else:
+        model.feature_columns = None
+        X_train = X
+
+    model.fit(X_train, y)
+
+    if hasattr(model, "feature_columns") and model.feature_columns is not None:
+        missing = [col for col in model.feature_columns if col not in working.columns]
+        if missing:
+            raise ValueError(f"Missing features at prediction time: {missing}")
+        X_pred = working[model.feature_columns].values
+    else:
+        X_pred = X.values if hasattr(X, "values") else X
+
+    prob = model.predict_proba(X_pred)[:, 1]
     pred = (prob >= 0.5).astype(int)
     return {
         "rows": int(len(working)),

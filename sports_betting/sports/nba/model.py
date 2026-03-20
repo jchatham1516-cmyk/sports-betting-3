@@ -9,6 +9,10 @@ class NBAModel(DisciplinedBaselineModel):
     sport = "nba"
 
     WIN_FEATURES = [
+        "implied_home_prob",
+        "spread",
+        "spread_abs",
+        "is_favorite",
         "elo_diff",
         "rest_diff",
         "travel_fatigue_diff",

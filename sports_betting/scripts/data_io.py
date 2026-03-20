@@ -161,6 +161,23 @@ def _coalesce_numeric(df: pd.DataFrame, candidates: list[str], default: float = 
 
 def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFrame:
     out = df.copy()
+    if "home_moneyline" not in out.columns:
+        if "closing_moneyline_home" in out.columns:
+            out["home_moneyline"] = out["closing_moneyline_home"]
+        elif "home_odds" in out.columns:
+            out["home_moneyline"] = out["home_odds"]
+    if "implied_home_prob" not in out.columns and "home_moneyline" in out.columns:
+        out["implied_home_prob"] = _american_to_prob(out["home_moneyline"])
+    if "spread" not in out.columns:
+        if "closing_spread_home" in out.columns:
+            out["spread"] = out["closing_spread_home"]
+        elif "spread_line" in out.columns:
+            out["spread"] = out["spread_line"]
+    if "spread" in out.columns:
+        out["spread_abs"] = pd.to_numeric(out["spread"], errors="coerce").fillna(0.0).abs()
+    if "home_moneyline" in out.columns:
+        out["is_favorite"] = (pd.to_numeric(out["home_moneyline"], errors="coerce").fillna(0.0) < 0).astype(int)
+
     out["elo_diff"] = _coalesce_numeric(out, ["elo_diff"])
     out["rest_diff"] = _coalesce_numeric(out, ["rest_diff"])
     out["travel_distance"] = _coalesce_numeric(out, ["travel_distance", "travel_fatigue_diff", "travel_diff"])

@@ -65,8 +65,10 @@ if "implied_home_prob" not in games_df.columns:
     games_df["implied_home_prob"] = games_df["home_moneyline"].apply(
         lambda odds: ((-odds) / ((-odds) + 100)) if odds < 0 else (100 / (odds + 100))
     )
-games_df["spread_abs"] = games_df["spread"].abs()
-games_df["is_favorite"] = (games_df["home_moneyline"] < 0).astype(int)
+if "spread" in games_df.columns:
+    games_df["spread_abs"] = games_df["spread"].abs()
+if "home_moneyline" in games_df.columns:
+    games_df["is_favorite"] = (games_df["home_moneyline"] < 0).astype(int)
 
 print("Total games:", len(games_df))
 

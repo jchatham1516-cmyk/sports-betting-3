@@ -380,10 +380,6 @@ def predict_runtime(model, games_df: pd.DataFrame):
         runtime_model, scaler = model
 
     feature_columns = getattr(runtime_model, "feature_columns", NBA_RUNTIME_FEATURE_COLUMNS)
-    for col in feature_columns:
-        if col not in df.columns:
-            df[col] = 0
-
     missing = [col for col in feature_columns if col not in df.columns]
     if missing:
         raise ValueError(f"Missing features at prediction time: {missing}")
@@ -397,7 +393,16 @@ def predict_runtime(model, games_df: pd.DataFrame):
     print(f"[NBA] Prediction columns: {list(df.columns)}")
     if scaler is not None:
         X = scaler.transform(X)
-    return runtime_model.predict_proba(X.values if isinstance(X, pd.DataFrame) else X)[:, 1]
+
+    if hasattr(runtime_model, "feature_columns") and runtime_model.feature_columns is not None:
+        X_pred = X
+    elif hasattr(X, "values"):
+        X_pred = X.values
+    else:
+        X_pred = X
+
+    probs = runtime_model.predict_proba(X_pred)[:, 1]
+    return probs
 
 
 def _ensure_runtime_prediction_columns(daily: pd.DataFrame) -> pd.DataFrame:
