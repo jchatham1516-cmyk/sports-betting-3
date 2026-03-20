@@ -50,10 +50,14 @@ PREDICTION_COLUMNS = [
     "metadata",
 ]
 
-TOP_BETS_DAILY = 5
+TOP_BETS_DAILY = 6
 EDGE_THRESHOLD = 0.01
 FORCE_BETS = True
 LOGGER = logging.getLogger(__name__)
+MIN_EDGE = 0.02
+MIN_EV = 0.01
+MAX_EV = 0.15
+MAX_HEAVY_FAVORITE_ODDS = -300
 
 
 def estimate_elo_from_moneyline(ml):
@@ -104,6 +108,11 @@ def generate_sharp_edge(row):
     final_prob = max(0.05, min(0.95, final_prob))
 
     return final_prob
+
+
+def calibrate_prob(p: float) -> float:
+    """Shrink model probability toward 50% to reduce over-conservatism/noise."""
+    return 0.5 + (float(p) - 0.5) * 0.6
 
 
 def apply_smart_bet_filter(df):
@@ -960,6 +969,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             ]].head(10))
             df = df[df["model_probability"].notna()].copy()
 
+        df["model_probability"] = df["model_probability"].apply(calibrate_prob).clip(lower=0.01, upper=0.99)
         df["market_probability"] = df["odds"].apply(american_to_prob)
         df["payout"] = df["odds"].apply(get_payout)
         df["edge"] = df["model_probability"] - df["market_probability"]
@@ -970,17 +980,23 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             (df["expected_value"] <= 1.0)
             & (df["edge"] <= 0.2)
         ].copy()
+        df = df[df["odds"] > MAX_HEAVY_FAVORITE_ODDS].copy()
+        df = df[
+            (df["edge"] > MIN_EDGE)
+            & (df["expected_value"] > MIN_EV)
+            & (df["expected_value"] <= MAX_EV)
+        ].copy()
 
         print("EV CHECK:")
         print(df[["odds", "model_probability", "market_probability", "edge", "expected_value"]].head())
 
     if not df.empty and {"expected_value", "edge"}.issubset(df.columns):
-        bets = df[
-            (df["expected_value"] > 0.02) &
-            (df["edge"] > 0.01)
-        ].sort_values(by="expected_value", ascending=False).head(5)
+        bets = df.sort_values(by="expected_value", ascending=False).head(TOP_BETS_DAILY)
+        if len(bets) < 2:
+            fallback_df = df.sort_values(by=["expected_value", "edge"], ascending=False)
+            bets = fallback_df.head(min(2, len(fallback_df)))
     else:
-        bets = df.head(5)
+        bets = df.head(TOP_BETS_DAILY)
 
     final_bets = bets.copy()
     if not final_bets.empty and {"odds", "model_probability", "market_probability", "edge", "expected_value"}.issubset(final_bets.columns):
