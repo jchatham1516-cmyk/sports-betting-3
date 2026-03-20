@@ -6,6 +6,7 @@ import argparse
 import ast
 from collections import defaultdict
 import logging
+import random
 from dataclasses import asdict
 from pathlib import Path
 
@@ -49,6 +50,13 @@ EDGE_THRESHOLD = 0.01
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def estimate_elo_from_moneyline(ml):
+    if ml < 0:
+        return 1500 + min(abs(ml), 400) * 0.5
+    else:
+        return 1500 - min(ml, 400) * 0.5
 
 
 def generate_sharp_edge(row):
@@ -104,11 +112,45 @@ def apply_smart_bet_filter(df):
     results = []
 
     for _, row in df.iterrows():
+        home_ml = row.get("home_moneyline", row.get("home_odds", 0))
+        away_ml = row.get("away_moneyline", row.get("away_odds", 0))
+
+        elo_home = estimate_elo_from_moneyline(home_ml)
+        elo_away = estimate_elo_from_moneyline(away_ml)
+
+        row["elo_diff"] = elo_home - elo_away
+
+        # stronger teams usually have bigger spreads
+        spread = row.get("spread", 0)
+        row["net_rating_diff"] = -spread * 1.5
+
+        # until we have schedule data, simulate slight randomness
+        row["rest_diff"] = random.choice([-1, 0, 1])
+        row["travel_fatigue_diff"] = random.choice([-0.5, 0, 0.5])
+
+        # favorites slightly more impacted (public bias)
+        ml = row.get("moneyline", 0)
+        if ml < -200:
+            injury = -0.5
+        elif ml > 150:
+            injury = 0.3
+        else:
+            injury = 0
+        row["injury_impact_diff"] = injury
 
         model_prob = row.get("model_prob", 0)
         market_prob = row.get("market_prob", 0)
 
         row["model_prob"] = generate_sharp_edge(row)
+        feature_boost = (
+            0.02 * (row["elo_diff"] / 100)
+            + 0.015 * (row["net_rating_diff"] / 10)
+            + 0.01 * row["rest_diff"]
+            - 0.01 * row["travel_fatigue_diff"]
+            + 0.01 * row["injury_impact_diff"]
+        )
+        row["model_prob"] = row["model_prob"] + feature_boost
+        row["model_prob"] = max(0.05, min(0.95, row["model_prob"]))
         model_prob = row.get("model_prob", model_prob)
 
         if market_prob == 0:
