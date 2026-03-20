@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.isotonic import IsotonicRegression
 
 from sports_betting.backtesting.engine import summarize_backtest
 from sports_betting.config.settings import load_config
@@ -32,6 +33,7 @@ from sports_betting.sports.nba.simple_model import FEATURE_COLUMNS as NBA_RUNTIM
 from sports_betting.sports.nba.simple_model import train_runtime_model
 from sports_betting.sports.nfl.model import NFLModel
 from sports_betting.sports.nhl.model import NHLModel
+from tracking import log_bets
 
 
 PREDICTION_COLUMNS = [
@@ -113,6 +115,46 @@ def generate_sharp_edge(row):
 def calibrate_prob(p: float) -> float:
     """Shrink model probability toward 50% to reduce over-conservatism/noise."""
     return 0.5 + (float(p) - 0.5) * 0.6
+
+
+def fit_isotonic_model(historical_df: pd.DataFrame, runtime_model):
+    """Fit an isotonic calibrator from runtime model outputs vs. historical outcomes."""
+    if historical_df is None or historical_df.empty or runtime_model is None or "home_win" not in historical_df.columns:
+        return None
+    try:
+        y_train = pd.to_numeric(historical_df["home_win"], errors="coerce").dropna().astype(int)
+        if y_train.nunique() < 2:
+            return None
+        y_pred_proba_train = predict_runtime(runtime_model, historical_df.loc[y_train.index].copy())
+        iso_model = IsotonicRegression(out_of_bounds="clip")
+        iso_model.fit(y_pred_proba_train, y_train)
+        return iso_model
+    except Exception:
+        LOGGER.exception("Failed to fit isotonic calibration model")
+        return None
+
+
+def build_parlays(df: pd.DataFrame) -> pd.DataFrame:
+    parlays = []
+    if df is None or df.empty:
+        return pd.DataFrame(parlays)
+    df = df[df["expected_value"] > 0.05].reset_index(drop=True)
+    for i in range(len(df)):
+        for j in range(i + 1, len(df)):
+            b1 = df.iloc[i]
+            b2 = df.iloc[j]
+
+            if b1["game"] == b2["game"]:
+                continue
+
+            parlays.append(
+                {
+                    "legs": [b1["selection"], b2["selection"]],
+                    "avg_ev": (b1["expected_value"] + b2["expected_value"]) / 2,
+                }
+            )
+
+    return pd.DataFrame(parlays)
 
 
 def apply_smart_bet_filter(df):
@@ -788,6 +830,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         daily = _ensure_runtime_prediction_columns(daily)
         print("[DEBUG] Daily columns BEFORE prediction:", list(daily.columns))
         runtime_home_win_model = None
+        isotonic_model = None
         total_games_processed += len(daily)
         csv_path = historical_file_path(sport_name)
         print(f"[{sport_name.upper()}] Looking for historical CSV at: {csv_path}")
@@ -812,6 +855,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                     runtime_home_win_model = train_runtime_model(historical_df)
                     model.runtime_model = runtime_home_win_model
                     trained_in_run = runtime_home_win_model is not None
+                    if runtime_home_win_model is not None:
+                        isotonic_model = fit_isotonic_model(historical_df, runtime_home_win_model)
                 except Exception:
                     runtime_home_win_model = None
                     model.runtime_model = None
@@ -854,6 +899,13 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 logger.warning("[%s] Baseline model prediction failed: %s", sport_name.upper(), exc)
                 preds = []
         preds = _apply_runtime_home_win_probabilities(preds, daily, runtime_home_win_model)
+        if isotonic_model is not None and preds:
+            for pred in preds:
+                calibrated_probability = float(
+                    isotonic_model.predict([float(pred.model_probability)])[0]
+                )
+                pred.model_probability = float(np.clip(calibrated_probability, 0.01, 0.99))
+                pred.edge = pred.model_probability - float(pred.market_implied_probability)
         logger.info("%s games processed for %s (%s predictions generated)", len(daily), sport_name, len(preds))
 
         predictions_by_game_id: dict[str, list[dict]] = defaultdict(list)
@@ -949,6 +1001,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         return abs(odds) / (abs(odds) + 100)
 
     if not df.empty and {"odds", "model_probability"}.issubset(df.columns):
+        # Safe bet filtering: remove extreme longshots/heavy favorites before final selection.
+        df = df[(df["odds"] > -300) & (df["odds"] < 300)].copy()
+
         if "model_prob" in df.columns:
             df["model_prob"] = df["model_prob"].apply(calibrate_prob).clip(lower=0.01, upper=0.99)
 
@@ -994,6 +1049,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             df["model_probability"] * df["payout"]
         ) - (1 - df["model_probability"])
         df["expected_value"] = df["expected_value"].clip(-1, 0.5)
+        df["confidence"] = (df["edge"] * 0.6) + (df["expected_value"] * 0.4)
 
         print("[DEBUG] Top edges after calibration + EV recompute:")
         print(
@@ -1018,6 +1074,16 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         final_bets = final_bets.sort_values(by="expected_value", ascending=False).head(6)
     else:
         final_bets = df.head(6).copy()
+
+    def get_units(row):
+        if row["expected_value"] > 0.20:
+            return 2
+        elif row["expected_value"] > 0.10:
+            return 1.5
+        return 1
+
+    if not final_bets.empty and "expected_value" in final_bets.columns:
+        final_bets["units"] = final_bets.apply(get_units, axis=1)
 
     if not final_bets.empty and {"odds", "model_probability", "market_probability", "edge", "expected_value"}.issubset(final_bets.columns):
         print("FINAL EV CHECK:")
@@ -1045,6 +1111,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     recommendations_df = pd.DataFrame(final_bets_records)
     recommendations_df = recommendations_df.reindex(columns=RECOMMENDATION_COLUMNS)
     save_dataframe(recommendations_df, out_dir / "recommended_bets.csv")
+    log_bets(final_bets)
+
+    parlays_df = build_parlays(final_bets)
+    if not parlays_df.empty:
+        save_dataframe(parlays_df, out_dir / "recommended_parlays.csv")
 
     if final_bets_records:
         bt = recommendations_df.copy()
