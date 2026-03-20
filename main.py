@@ -9,19 +9,22 @@ import logging
 from dataclasses import asdict
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+from sklearn.linear_model import LogisticRegression
 
 from sports_betting.backtesting.engine import summarize_backtest
 from sports_betting.config.settings import load_config
 from sports_betting.scripts.data_io import (
+    historical_file_path,
     is_test_mode,
     load_historical_and_daily,
     model_artifact_path,
     validate_historical_requirements,
-    validate_model_artifacts_exist,
 )
 from sports_betting.sports.common.final_game_filter import filter_predictions_today
 from sports_betting.sports.common.logging_utils import setup_logging
+from sports_betting.sports.common.odds import expected_value
 from sports_betting.sports.common.reporting import save_dataframe
 from sports_betting.sports.nba.model import NBAModel
 from sports_betting.sports.nfl.model import NFLModel
@@ -46,6 +49,11 @@ PREDICTION_COLUMNS = [
 
 TOP_BETS_DAILY = 5
 EDGE_THRESHOLD = 0.01
+FEATURE_COLUMNS = [
+    "implied_home_prob",
+    "spread",
+    "spread_value_signal",
+]
 
 
 LOGGER = logging.getLogger(__name__)
@@ -294,6 +302,84 @@ def _american_to_decimal(odds: int) -> float:
     return 0.0
 
 
+def american_to_implied_prob(odds: float) -> float:
+    if odds < 0:
+        return (-odds) / ((-odds) + 100)
+    return 100 / (odds + 100)
+
+
+def _first_existing_column(frame: pd.DataFrame, columns: list[str], default: float = 0.0) -> pd.Series:
+    for column in columns:
+        if column in frame.columns:
+            return pd.to_numeric(frame[column], errors="coerce")
+    return pd.Series(np.full(len(frame), default), index=frame.index, dtype=float)
+
+
+def _build_runtime_feature_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    home_odds = _first_existing_column(frame, ["home_odds", "home_moneyline", "moneyline"], default=0.0)
+    spread = _first_existing_column(frame, ["spread", "spread_line"], default=0.0)
+    features = pd.DataFrame(index=frame.index)
+    features["implied_home_prob"] = home_odds.apply(american_to_implied_prob)
+    features["spread"] = spread
+    features["spread_value_signal"] = features["spread"] * features["implied_home_prob"]
+    features = features[FEATURE_COLUMNS].copy()
+    return features.fillna(
+        {
+            "implied_home_prob": 0.5,
+            "spread": 0.0,
+            "spread_value_signal": 0.0,
+        }
+    )
+
+
+def train_runtime_home_win_model(historical_df: pd.DataFrame, sport_name: str) -> LogisticRegression | None:
+    y = pd.to_numeric(historical_df.get("home_win"), errors="coerce").fillna(0).astype(int)
+    print(f"[{sport_name.upper()}] Historical CSV path: {historical_file_path(sport_name)}")
+    print(f"[{sport_name.upper()}] Training rows: {len(historical_df)}")
+
+    if len(historical_df) < 50 or y.nunique() < 2:
+        print(f"[{sport_name.upper()}] Runtime home-win model skipped (needs >=50 rows and 2 target classes).")
+        return None
+
+    X = _build_runtime_feature_frame(historical_df)
+    model = LogisticRegression(max_iter=1000, solver="liblinear", random_state=42)
+    model.fit(X, y)
+    print(f"[{sport_name.upper()}] Model trained successfully")
+    return model
+
+
+def _apply_runtime_home_win_probabilities(
+    preds: list,
+    daily_df: pd.DataFrame,
+    runtime_model: LogisticRegression | None,
+) -> list:
+    if runtime_model is None or daily_df.empty:
+        return preds
+
+    X = _build_runtime_feature_frame(daily_df)
+    home_probs = pd.Series(runtime_model.predict_proba(X)[:, 1], index=daily_df["game_id"].astype(str))
+    game_rows = daily_df.set_index(daily_df["game_id"].astype(str))
+
+    for pred in preds:
+        if pred.market != "moneyline":
+            continue
+        game_id = str(pred.game_id)
+        if game_id not in home_probs.index or game_id not in game_rows.index:
+            continue
+        game_row = game_rows.loc[game_id]
+        home_prob = float(np.clip(home_probs.loc[game_id], 0.01, 0.99))
+        is_home_side = str(pred.side) == str(game_row.get("home_team", ""))
+        model_probability = home_prob if is_home_side else 1.0 - home_prob
+        pred.model_probability = float(np.clip(model_probability, 0.01, 0.99))
+        pred.edge = pred.model_probability - float(pred.market_implied_probability)
+        odds = int(game_row["home_odds"] if is_home_side else game_row["away_odds"])
+        pred.expected_value = expected_value(pred.model_probability, odds)
+        if not isinstance(pred.metadata, dict):
+            pred.metadata = {}
+        pred.metadata["predicted_home_win_prob"] = home_prob
+    return preds
+
+
 def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_name: str, game: str) -> list[dict]:
     """Create candidate bets for a game from model prediction rows."""
     prediction_map: dict[tuple[str, str], dict] = {}
@@ -431,7 +517,6 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     live_mode = not is_test_mode()
     if live_mode:
         validate_historical_requirements(sports=sports_to_run, allow_model_artifacts=True, validate_schema=True)
-        validate_model_artifacts_exist(sports=sports_to_run)
 
     total_games_processed = 0
 
@@ -439,16 +524,37 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         logger.info("Running %s pipeline", sport_name)
         model = choose_model(sport_name)
         historical, daily = load_historical_and_daily(sport_name)
+        runtime_home_win_model = None
         total_games_processed += len(daily)
 
         artifact_path = model_artifact_path(sport_name)
-        if live_mode:
-            model.load_artifact(artifact_path)
-            logger.info("Loaded trained %s model artifact: %s", sport_name.upper(), artifact_path)
-        else:
-            model.train(historical)
+        if not historical.empty:
+            runtime_home_win_model = train_runtime_home_win_model(historical, sport_name)
+
+        trained_in_run = False
+        if not historical.empty:
+            try:
+                model.train(historical)
+                trained_in_run = True
+                logger.info("[%s] Runtime model training completed from historical CSV.", sport_name.upper())
+            except Exception:
+                logger.exception("[%s] Runtime training failed.", sport_name.upper())
+
+        if not trained_in_run:
+            if artifact_path.exists():
+                model.load_artifact(artifact_path)
+                logger.warning(
+                    "[%s] Falling back to model artifact because historical CSV was missing or runtime training failed: %s",
+                    sport_name.upper(),
+                    artifact_path,
+                )
+            else:
+                raise RuntimeError(
+                    f"[{sport_name.upper()}] Runtime training unavailable and no model artifact present at {artifact_path}."
+                )
 
         preds = model.predict_daily(daily)
+        preds = _apply_runtime_home_win_probabilities(preds, daily, runtime_home_win_model)
         logger.info("%s games processed for %s (%s predictions generated)", len(daily), sport_name, len(preds))
 
         predictions_by_game_id: dict[str, list[dict]] = defaultdict(list)
