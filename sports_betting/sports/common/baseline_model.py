@@ -51,6 +51,7 @@ class DisciplinedBaselineModel(SportModel):
         self.total_model: CalibratedClassifierCV | None = None
         self.metrics: dict[str, float] = {}
         self.feature_importance: dict[str, dict[str, float]] = {}
+        self.feature_columns: dict[str, list[str] | None] = {}
 
     def _base_estimator(self) -> HistGradientBoostingClassifier:
         return HistGradientBoostingClassifier(
@@ -70,7 +71,7 @@ class DisciplinedBaselineModel(SportModel):
                 frame[col] = 0.0
         return frame
 
-    def _calibrate(self, base, x: pd.DataFrame, y: pd.Series, method: str, cv) -> CalibratedClassifierCV:
+    def _calibrate(self, base, x: np.ndarray, y: pd.Series, method: str, cv) -> CalibratedClassifierCV:
         calibrated = CalibratedClassifierCV(base, method=method, cv=cv)
         calibrated.fit(x, y)
         return calibrated
@@ -78,14 +79,22 @@ class DisciplinedBaselineModel(SportModel):
     def _fit_market(self, df: pd.DataFrame, features: list[str], target_col: str, market: str) -> tuple[CalibratedClassifierCV, dict[str, float]]:
         x = self._build_features(df, features)
         y = df[target_col].astype(int)
+
+        if hasattr(x, "columns"):
+            self.feature_columns[market] = list(x.columns)
+            x_train = x.values
+        else:
+            self.feature_columns[market] = None
+            x_train = x
+
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        raw_probs = cross_val_predict(self._base_estimator(), x, y, cv=cv, method="predict_proba")[:, 1]
+        raw_probs = cross_val_predict(self._base_estimator(), x_train, y, cv=cv, method="predict_proba")[:, 1]
         raw_probs = np.clip(raw_probs, 0.01, 0.99)
 
         # Use isotonic when we have enough data, otherwise sigmoid (Platt-style) for stability.
         method = "isotonic" if len(df) >= 1200 else "sigmoid"
-        calibrated = self._calibrate(self._base_estimator(), x, y, method=method, cv=cv)
-        calibrated_probs = np.clip(calibrated.predict_proba(x)[:, 1], 0.01, 0.99)
+        calibrated = self._calibrate(self._base_estimator(), x_train, y, method=method, cv=cv)
+        calibrated_probs = np.clip(calibrated.predict_proba(x_train)[:, 1], 0.01, 0.99)
         lo, hi = self.PROBABILITY_BOUNDS[market]
         clamped_probs = np.clip(calibrated_probs, lo, hi)
 
@@ -119,6 +128,7 @@ class DisciplinedBaselineModel(SportModel):
                     "total_model": self.total_model,
                     "metrics": self.metrics,
                     "feature_importance": self.feature_importance,
+                    "feature_columns": self.feature_columns,
                 },
                 f,
             )
@@ -133,11 +143,25 @@ class DisciplinedBaselineModel(SportModel):
         self.total_model = artifact.get("total_model")
         self.metrics = artifact.get("metrics", {})
         self.feature_importance = artifact.get("feature_importance", {})
+        self.feature_columns = artifact.get("feature_columns", {})
 
-    def _predict_proba(self, model: CalibratedClassifierCV | None, x: pd.DataFrame) -> float:
+    def _predict_proba(self, model: CalibratedClassifierCV | None, df: pd.DataFrame, market: str) -> float:
         if model is None:
             raise RuntimeError(f"[{self.sport.upper()}] Model not trained/loaded")
-        return float(model.predict_proba(self._build_features(x, list(x.columns)))[:, 1][0])
+
+        if hasattr(self, "feature_columns") and self.feature_columns is not None:
+            columns = self.feature_columns.get(market)
+            if columns is not None:
+                missing = [col for col in columns if col not in df.columns]
+                if missing:
+                    raise ValueError(f"Missing features at prediction time: {missing}")
+                x_pred = df[columns].values
+            else:
+                x_pred = df.values
+        else:
+            x_pred = df.values
+
+        return float(model.predict_proba(x_pred)[:, 1][0])
 
     def _safe_probability(self, probability: float, market: str) -> float:
         lo, hi = self.PROBABILITY_BOUNDS[market]
@@ -218,7 +242,7 @@ class DisciplinedBaselineModel(SportModel):
 
             game_frame = pd.DataFrame([row])
             game_frame = self._ensure_features(game_frame, self.WIN_FEATURES)
-            p_home_ml = self._safe_probability(self._predict_proba(self.moneyline_model, game_frame[self.WIN_FEATURES]), "moneyline")
+            p_home_ml = self._safe_probability(self._predict_proba(self.moneyline_model, game_frame, "moneyline"), "moneyline")
             p_away_ml = self._safe_probability(1 - p_home_ml, "moneyline")
             mk_home = american_to_implied_probability(int(row["home_odds"]))
             mk_away = american_to_implied_probability(int(row["away_odds"]))
@@ -259,7 +283,7 @@ class DisciplinedBaselineModel(SportModel):
                 )
 
             game_frame = self._ensure_features(game_frame, self.SPREAD_FEATURES)
-            p_home_cover = self._safe_probability(self._predict_proba(self.spread_model, game_frame[self.SPREAD_FEATURES]), "spread")
+            p_home_cover = self._safe_probability(self._predict_proba(self.spread_model, game_frame, "spread"), "spread")
             p_away_cover = self._safe_probability(1 - p_home_cover, "spread")
             mk_hs = american_to_implied_probability(int(row["home_spread_odds"]))
             mk_as = american_to_implied_probability(int(row["away_spread_odds"]))
@@ -298,7 +322,7 @@ class DisciplinedBaselineModel(SportModel):
                 )
 
             game_frame = self._ensure_features(game_frame, self.TOTAL_FEATURES)
-            p_over = self._safe_probability(self._predict_proba(self.total_model, game_frame[self.TOTAL_FEATURES]), "total")
+            p_over = self._safe_probability(self._predict_proba(self.total_model, game_frame, "total"), "total")
             p_under = self._safe_probability(1 - p_over, "total")
             mk_over = american_to_implied_probability(int(row["over_odds"]))
             mk_under = american_to_implied_probability(int(row["under_odds"]))
