@@ -40,7 +40,7 @@ jobs:
       - name: Run main pipeline
         run: python main.py
         env:
-          SPORTTRADER_API_KEY: ${{ secrets.SPORTTRADER_API_KEY }}
+          SPORTRADAR_API_KEY: ${{ secrets.SPORTRADAR_API_KEY }}
 
       - name: Upload tracking file
         uses: actions/upload-artifact@v4

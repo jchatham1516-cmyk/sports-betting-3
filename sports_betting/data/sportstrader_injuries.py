@@ -4,11 +4,13 @@ import requests
 
 
 def fetch_sportstrader_injuries():
-    api_key = os.getenv("SPORTTRADER_API_KEY")
+    api_key = os.getenv("SPORTRADAR_API_KEY")
 
     if not api_key:
-        print("SPORTTRADER_API_KEY not found")
+        print("SPORTRADAR_API_KEY not found")
         return {}
+    else:
+        print("SPORTRADAR_API_KEY loaded successfully")
 
     url = "https://api.sportradar.com/nba/trial/v8/en/league/injuries.json"  # adjust if needed
 
@@ -17,6 +19,7 @@ def fetch_sportstrader_injuries():
     }
 
     try:
+        print(f"[SPORTSRADAR] Using API key: {api_key[:5]}***")
         print(f"[SPORTSRADAR] Requesting: {url}")
         response = requests.get(url, headers=headers, timeout=10)
 
