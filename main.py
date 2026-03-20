@@ -916,11 +916,16 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     if not df.empty and {"odds", "model_probability"}.issubset(df.columns):
         if {"selection", "home_team", "model_prob", "market"}.issubset(df.columns):
-            moneyline_mask = df["market"].eq("moneyline") & df["model_prob"].notna()
-            df.loc[moneyline_mask, "model_probability"] = np.where(
-                df.loc[moneyline_mask, "selection"] == df.loc[moneyline_mask, "home_team"],
-                df.loc[moneyline_mask, "model_prob"],
-                1 - df.loc[moneyline_mask, "model_prob"],
+            df["selection_clean"] = df["selection"].astype(str).str.lower().str.strip()
+            df["home_team_clean"] = df["home_team"].astype(str).str.lower().str.strip()
+            df["model_probability"] = np.where(
+                df["market"] == "moneyline",
+                np.where(
+                    df["selection_clean"] == df["home_team_clean"],
+                    df["model_prob"],
+                    1 - df["model_prob"],
+                ),
+                np.nan,
             )
             print(df[[
                 "selection",
@@ -928,6 +933,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 "model_prob",
                 "model_probability",
             ]].head(10))
+            df = df[df["model_probability"].notna()].copy()
 
         df["market_probability"] = df["odds"].apply(american_to_prob)
         df["payout"] = df["odds"].apply(get_payout)
