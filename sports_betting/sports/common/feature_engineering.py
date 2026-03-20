@@ -74,6 +74,11 @@ class TeamTravelState:
 
 
 def add_injury_features(games_df: pd.DataFrame, sport: str, data_root: Path) -> pd.DataFrame:
+    required_cols = ["home_team", "away_team"]
+    if not all(col in games_df.columns for col in required_cols):
+        print("[INJURY] Skipping injury features — missing team columns")
+        return games_df
+
     injuries = load_injury_frame(sport, data_root)
     print("[INJURY STATUS]")
     print(f"Injuries rows: {len(injuries)}")
