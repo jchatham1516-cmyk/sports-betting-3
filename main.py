@@ -678,6 +678,8 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
                 "market": market,
                 "selection": selection_label,
                 "odds": american_odds,
+                "home_odds": int(game_row["home_odds"]),
+                "away_odds": int(game_row["away_odds"]),
                 "model_prob": home_model_prob if market == "moneyline" and home_model_prob is not None else np.nan,
                 "model_probability": model_probability,
                 "market_probability": market_probability,
@@ -692,6 +694,35 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
 
     return bets
 
+
+
+def _align_moneyline_model_probability(df: pd.DataFrame) -> pd.DataFrame:
+    """Align model_prob (favorite win prob) onto home-team perspective for moneyline rows."""
+    required = {"market", "home_odds", "away_odds", "home_team", "away_team", "selection", "model_prob"}
+    if df.empty or not required.issubset(df.columns):
+        return df
+
+    out = df.copy()
+    moneyline_mask = out["market"] == "moneyline"
+    if not moneyline_mask.any():
+        return out
+
+    out.loc[moneyline_mask, "favorite_team"] = np.where(
+        out.loc[moneyline_mask, "home_odds"] < out.loc[moneyline_mask, "away_odds"],
+        out.loc[moneyline_mask, "home_team"],
+        out.loc[moneyline_mask, "away_team"],
+    )
+    out.loc[moneyline_mask, "model_prob_home"] = np.where(
+        out.loc[moneyline_mask, "favorite_team"] == out.loc[moneyline_mask, "home_team"],
+        out.loc[moneyline_mask, "model_prob"],
+        1 - out.loc[moneyline_mask, "model_prob"],
+    )
+    out.loc[moneyline_mask, "model_probability"] = np.where(
+        out.loc[moneyline_mask, "selection"] == out.loc[moneyline_mask, "home_team"],
+        out.loc[moneyline_mask, "model_prob_home"],
+        1 - out.loc[moneyline_mask, "model_prob_home"],
+    )
+    return out
 
 
 def _validate_exported_bets_against_sportsbook(game_id: str, game_row: dict, bets: list[dict]) -> tuple[bool, str | None]:
@@ -915,22 +946,16 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         return 100 / abs(odds)
 
     if not df.empty and {"odds", "model_probability"}.issubset(df.columns):
-        if {"selection", "home_team", "model_prob", "market"}.issubset(df.columns):
-            df["selection_clean"] = df["selection"].astype(str).str.lower().str.strip()
-            df["home_team_clean"] = df["home_team"].astype(str).str.lower().str.strip()
-            df["model_probability"] = np.where(
-                df["market"] == "moneyline",
-                np.where(
-                    df["selection_clean"] == df["home_team_clean"],
-                    df["model_prob"],
-                    1 - df["model_prob"],
-                ),
-                np.nan,
-            )
+        if {"selection", "home_team", "away_team", "home_odds", "away_odds", "model_prob", "market"}.issubset(df.columns):
+            df = _align_moneyline_model_probability(df)
+            df = df[df["market"] == "moneyline"].copy()
             print(df[[
                 "selection",
                 "home_team",
+                "away_team",
+                "favorite_team",
                 "model_prob",
+                "model_prob_home",
                 "model_probability",
             ]].head(10))
             df = df[df["model_probability"].notna()].copy()
@@ -941,6 +966,10 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         df["expected_value"] = (
             df["model_probability"] * df["payout"]
         ) - (1 - df["model_probability"])
+        df = df[
+            (df["expected_value"] <= 1.0)
+            & (df["edge"] <= 0.2)
+        ].copy()
 
         print("EV CHECK:")
         print(df[["odds", "model_probability", "market_probability", "edge", "expected_value"]].head())
