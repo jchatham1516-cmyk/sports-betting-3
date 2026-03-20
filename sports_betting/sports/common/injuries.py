@@ -166,6 +166,73 @@ def _fetch_primary_source(sport: str, data_root: Path) -> pd.DataFrame:
     return pd.DataFrame(normalized)
 
 
+def _normalize_team_name(team: object) -> str:
+    return str(team or "").strip().lower()
+
+
+def _load_json_injury_fallback(data_root: Path) -> pd.DataFrame:
+    candidate_paths = [
+        data_root / "injuries" / "injuries.json",
+        Path("sports_betting/data/injuries/injuries.json"),
+        data_root / "inputs" / "injuries.json",
+        Path("data/inputs/injuries.json"),
+    ]
+    path = next((p for p in candidate_paths if p.exists()), None)
+    if path is None:
+        return pd.DataFrame()
+
+    with path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    rows: list[dict[str, str]] = []
+    if isinstance(payload, dict):
+        for team, players in payload.items():
+            if isinstance(players, dict):
+                for player, status in players.items():
+                    rows.append(
+                        {
+                            "team": _normalize_team_name(team),
+                            "player_name": str(player or "").strip(),
+                            "status": normalize_status(status),
+                            "position": "",
+                            "expected_minutes_or_role": "",
+                            "source_timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                            "source": "espn-json",
+                        }
+                    )
+            elif isinstance(players, list):
+                for rec in players:
+                    if not isinstance(rec, dict):
+                        continue
+                    rows.append(
+                        {
+                            "team": _normalize_team_name(rec.get("team", team)),
+                            "player_name": str(rec.get("player") or rec.get("player_name") or rec.get("name") or "").strip(),
+                            "status": normalize_status(rec.get("status")),
+                            "position": str(rec.get("position", "")).strip(),
+                            "expected_minutes_or_role": str(rec.get("expected_minutes_or_role") or rec.get("role") or "").strip(),
+                            "source_timestamp": _timestamp_to_iso(rec.get("source_timestamp")),
+                            "source": "espn-json",
+                        }
+                    )
+    elif isinstance(payload, list):
+        for rec in payload:
+            if not isinstance(rec, dict):
+                continue
+            rows.append(
+                {
+                    "team": _normalize_team_name(rec.get("team")),
+                    "player_name": str(rec.get("player") or rec.get("player_name") or rec.get("name") or "").strip(),
+                    "status": normalize_status(rec.get("status")),
+                    "position": str(rec.get("position", "")).strip(),
+                    "expected_minutes_or_role": str(rec.get("expected_minutes_or_role") or rec.get("role") or "").strip(),
+                    "source_timestamp": _timestamp_to_iso(rec.get("source_timestamp")),
+                    "source": "espn-json",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def load_injury_frame(sport: str, data_root: Path) -> pd.DataFrame:
     """Get normalized injuries with API->CSV fallback and zero-crash behavior."""
     external = data_root / "external"
@@ -175,6 +242,8 @@ def load_injury_frame(sport: str, data_root: Path) -> pd.DataFrame:
     frame = _fetch_primary_source(sport, data_root)
     if frame.empty and csv_path.exists():
         frame = pd.read_csv(csv_path)
+    if frame.empty:
+        frame = _load_json_injury_fallback(data_root)
 
     if frame.empty:
         return pd.DataFrame(columns=["player_name", "team", "status", "position", "expected_minutes_or_role", "source_timestamp", "source"])
@@ -188,6 +257,7 @@ def load_injury_frame(sport: str, data_root: Path) -> pd.DataFrame:
     for legacy_col in ["qb", "starting_goalie", "is_starter", "is_star", "impact_rating", "unit"]:
         if legacy_col not in frame.columns:
             frame[legacy_col] = 0 if legacy_col != "unit" else ""
+    frame["team"] = frame["team"].map(_normalize_team_name)
     frame["status"] = frame["status"].map(normalize_status)
     frame["source_timestamp"] = frame["source_timestamp"].map(_timestamp_to_iso)
     frame["source"] = frame.get("source", "fallback")

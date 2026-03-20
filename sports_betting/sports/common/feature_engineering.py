@@ -79,6 +79,10 @@ def add_injury_features(games_df: pd.DataFrame, sport: str, data_root: Path) -> 
     print(f"Injuries rows: {len(injuries)}")
     team_summary = summarize_team_injuries(injuries, sport)
     out = games_df.copy()
+    out["home_team"] = out["home_team"].astype(str).str.strip().str.lower()
+    out["away_team"] = out["away_team"].astype(str).str.strip().str.lower()
+    if not team_summary.empty:
+        team_summary["team"] = team_summary["team"].astype(str).str.strip().str.lower()
 
     # Persist a team summary artifact for debugging and reporting.
     external = data_root / "external"
