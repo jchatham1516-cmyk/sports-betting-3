@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import ast
 from collections import defaultdict
+from datetime import datetime
 import logging
+import os
 from dataclasses import asdict
 from pathlib import Path
 
@@ -1096,14 +1098,23 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         final_bets = df.head(5).copy()
 
     def get_units(row):
-        if row["expected_value"] > 0.20:
+        if row["expected_value"] > 0.15:
             return 2
-        elif row["expected_value"] > 0.10:
+        elif row["expected_value"] > 0.05:
             return 1.5
-        return 1
+        else:
+            return 1
 
     if not final_bets.empty and "expected_value" in final_bets.columns:
         final_bets["units"] = final_bets.apply(get_units, axis=1)
+        os.makedirs("data/tracking", exist_ok=True)
+        file_path = "data/tracking/bet_history.csv"
+        tracking_df = final_bets.copy()
+        tracking_df["date"] = datetime.now().strftime("%Y-%m-%d")
+        if os.path.exists(file_path):
+            existing = pd.read_csv(file_path)
+            tracking_df = pd.concat([existing, tracking_df], ignore_index=True)
+        tracking_df.to_csv(file_path, index=False)
 
     if not final_bets.empty and {"odds", "model_probability", "market_probability", "edge", "expected_value"}.issubset(final_bets.columns):
         print("FINAL EV CHECK:")
@@ -1134,6 +1145,17 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             ]
         )
     )
+    print("\n🔥 FINAL BETS:")
+    print(final_bets[[
+        "away_team",
+        "home_team",
+        "odds",
+        "model_probability",
+        "market_probability",
+        "edge",
+        "expected_value",
+        "units"
+    ]])
 
     ranked_bets = final_bets.to_dict("records")
     final_bets_records = ranked_bets
