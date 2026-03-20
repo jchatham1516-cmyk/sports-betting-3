@@ -67,6 +67,17 @@ MIN_MODEL_PROBABILITY = 0.50
 MAX_BETS_PER_SPORT_PER_DAY = 5
 MAX_EV = 0.15
 MAX_HEAVY_FAVORITE_ODDS = -300
+REQUIRED_FEATURES = [
+    "injury_impact_diff",
+]
+
+
+def ensure_required_features(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for col in REQUIRED_FEATURES:
+        if col not in out.columns:
+            out[col] = 0.0
+    return out
 
 
 def estimate_elo_from_moneyline(ml):
@@ -134,7 +145,11 @@ def fit_isotonic_model(historical_df: pd.DataFrame, runtime_model):
             return None
         y_pred_proba_train = predict_runtime(runtime_model, historical_df.loc[y_train.index].copy())
         iso_model = IsotonicRegression(out_of_bounds="clip")
-        iso_model.fit(y_pred_proba_train, y_train)
+        try:
+            iso_model.fit(y_pred_proba_train, y_train)
+        except Exception:
+            print("Calibration failed — using raw probabilities")
+            return None
         return iso_model
     except Exception:
         LOGGER.exception("Failed to fit isotonic calibration model")
@@ -420,7 +435,7 @@ def train_runtime_home_win_model(historical_df: pd.DataFrame, sport_name: str):
 
 
 def predict_runtime(model, games_df: pd.DataFrame):
-    df = games_df.copy()
+    df = ensure_required_features(games_df)
     df_full = df.copy()
     if "home_moneyline" not in df.columns:
         if "home_ml" in df.columns:
@@ -493,7 +508,7 @@ def predict_runtime(model, games_df: pd.DataFrame):
 
 
 def _ensure_runtime_prediction_columns(daily: pd.DataFrame) -> pd.DataFrame:
-    out = daily.copy()
+    out = ensure_required_features(daily)
     if "home_moneyline" not in out.columns:
         if "home_odds" in out.columns:
             out["home_moneyline"] = out["home_odds"]
@@ -830,6 +845,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         model = choose_model(sport_name)
         model.runtime_model = None
         historical, daily = load_historical_and_daily(sport_name)
+        historical = ensure_required_features(historical)
+        daily = ensure_required_features(daily)
         daily = _ensure_runtime_prediction_columns(daily)
         if sport_name == "nba":
             try:
@@ -927,9 +944,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         if isotonic_model is not None and preds:
             for pred in preds:
                 calibrated_probability = float(
-                    isotonic_model.predict([float(pred.model_probability)])[0]
+                    isotonic_model.transform([float(pred.model_probability)])[0]
                 )
-                pred.model_probability = float(np.clip(calibrated_probability, 0.01, 0.99))
+                pred.model_probability = float(np.clip(calibrated_probability, 0.05, 0.65))
                 pred.edge = np.nan
         logger.info("%s games processed for %s (%s predictions generated)", len(daily), sport_name, len(preds))
 
@@ -1088,6 +1105,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         # Injury-adjusted probability is the final probability used in edge and EV.
         df["model_probability"] = df["model_prob"]
+        df["model_probability"] = df["model_probability"].clip(0.05, 0.65)
         df["edge"] = df["model_probability"] - df["market_probability"]
         df["payout"] = df["odds"].apply(get_payout)
         df["expected_value"] = (
@@ -1116,6 +1134,10 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print(df[["odds", "model_probability", "market_probability", "edge", "expected_value"]].head())
 
     if not df.empty and {"expected_value", "edge", "model_probability"}.issubset(df.columns):
+        df = df[
+            (df["expected_value"] > 0.01) &
+            (df["model_probability"] < 0.65)
+        ].copy()
         min_edge = MIN_EDGE
         min_expected_value = MIN_EV
         min_confidence = MIN_MODEL_PROBABILITY
