@@ -58,8 +58,10 @@ TOP_BETS_DAILY = 6
 EDGE_THRESHOLD = 0.01
 FORCE_BETS = True
 LOGGER = logging.getLogger(__name__)
-MIN_EDGE = 0.005
-MIN_EV = 0.005
+MIN_EDGE = 0.02
+MIN_EV = 0.01
+MIN_MODEL_PROBABILITY = 0.55
+MAX_BETS_PER_SPORT_PER_DAY = 5
 MAX_EV = 0.15
 MAX_HEAVY_FAVORITE_ODDS = -300
 
@@ -1072,17 +1074,23 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print("EV CHECK:")
         print(df[["odds", "model_probability", "market_probability", "edge", "expected_value"]].head())
 
-    if not df.empty and {"expected_value", "edge"}.issubset(df.columns):
-        final_bets = df[
-            (df["expected_value"] > MIN_EV) &
-            (df["edge"] > MIN_EDGE)
-        ].copy()
+    if not df.empty and {"expected_value", "edge", "model_probability"}.issubset(df.columns):
+        low_edge_mask = df["edge"] < MIN_EDGE
+        low_ev_mask = df["expected_value"] < MIN_EV
+        low_confidence_mask = df["model_probability"] < MIN_MODEL_PROBABILITY
 
-        near_value = df[
-            (df["expected_value"] > 0.0) &
-            (df["edge"] > 0.0)
-        ]
-        final_bets = pd.concat([final_bets, near_value]).drop_duplicates()
+        if low_edge_mask.any():
+            print(f"Rejected bet due to low edge: {int(low_edge_mask.sum())}")
+        if low_ev_mask.any():
+            print(f"Rejected bet due to low EV: {int(low_ev_mask.sum())}")
+        if low_confidence_mask.any():
+            print(f"Rejected bet due to low confidence: {int(low_confidence_mask.sum())}")
+
+        final_bets = df[
+            ~low_edge_mask &
+            ~low_ev_mask &
+            ~low_confidence_mask
+        ].copy()
 
         final_bets = final_bets[
             (final_bets["odds"] > -300) &
@@ -1093,9 +1101,18 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             final_bets = final_bets.sort_values(by="confidence", ascending=False)
         else:
             final_bets = final_bets.sort_values(by="expected_value", ascending=False)
-        final_bets = final_bets.head(5)
+
+        if "sport" in final_bets.columns:
+            final_bets = (
+                final_bets
+                .groupby("sport", group_keys=False, sort=False)
+                .head(MAX_BETS_PER_SPORT_PER_DAY)
+                .copy()
+            )
+        else:
+            final_bets = final_bets.head(MAX_BETS_PER_SPORT_PER_DAY)
     else:
-        final_bets = df.head(5).copy()
+        final_bets = df.head(MAX_BETS_PER_SPORT_PER_DAY).copy()
 
     def get_units(row):
         if row["expected_value"] > 0.15:
