@@ -883,13 +883,37 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     bets_df = pd.DataFrame(bets)
     print("Columns before bet selection:", bets_df.columns.tolist())
-    if not bets_df.empty and {"expected_value", "edge"}.issubset(bets_df.columns):
-        bets = bets_df[
-            (bets_df["expected_value"] > 0.02) &
-            (bets_df["edge"] > 0.01)
+
+    df = bets_df.copy()
+
+    def american_to_prob(odds):
+        if odds > 0:
+            return 100 / (odds + 100)
+        return abs(odds) / (abs(odds) + 100)
+
+    def get_payout(odds):
+        if odds > 0:
+            return odds / 100
+        return 100 / abs(odds)
+
+    if not df.empty and {"odds", "model_probability"}.issubset(df.columns):
+        df["market_probability"] = df["odds"].apply(american_to_prob)
+        df["payout"] = df["odds"].apply(get_payout)
+        df["edge"] = df["model_probability"] - df["market_probability"]
+        df["expected_value"] = (
+            df["model_probability"] * df["payout"]
+        ) - (1 - df["model_probability"])
+
+        print("EV CHECK:")
+        print(df[["odds", "model_probability", "market_probability", "edge", "expected_value"]].head())
+
+    if not df.empty and {"expected_value", "edge"}.issubset(df.columns):
+        bets = df[
+            (df["expected_value"] > 0.02) &
+            (df["edge"] > 0.01)
         ].sort_values(by="expected_value", ascending=False).head(5)
     else:
-        bets = bets_df.head(5)
+        bets = df.head(5)
 
     print("[FINAL BETS]")
     print(
