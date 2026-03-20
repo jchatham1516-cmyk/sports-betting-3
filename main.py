@@ -858,33 +858,19 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             continue
         bets.extend(game_bets)
 
-    filtered_bets = []
-    for bet in bets:
-        if bet["support_count"] < 2:
-            continue
-        if bet["market"] == "moneyline" and abs(int(bet["odds"])) >= 180 and bet["support_count"] < 4:
-            continue
-        if bet["market"] == "moneyline" and bet["model_probability"] < 0.46:
-            continue
-        filtered_bets.append(bet)
-
-    ranked_bets = sorted(filtered_bets, key=lambda x: (x["composite_score"], x["confidence"]), reverse=True)
-    strong_bets = ranked_bets[:TOP_BETS_DAILY] if not loaded_predictions_df.empty else []
-    fallback_bets = strong_bets
-    logger.info("Total bets exported: %s", len(strong_bets))
-
-    recommendations_df = pd.DataFrame(strong_bets)
-    recommendations_df = recommendations_df.reindex(columns=RECOMMENDATION_COLUMNS)
-    recommendations_df = filter_predictions_today(recommendations_df)
-    recommendations_df = apply_smart_bet_filter(recommendations_df)
-    strong_bets = recommendations_df.to_dict("records")
-
-    final_bets = []
-    if len(strong_bets) > 0:
-        final_bets = strong_bets
+    bets_df = pd.DataFrame(bets)
+    if not bets_df.empty and "expected_value" in bets_df.columns:
+        df_sorted = bets_df.sort_values(by="expected_value", ascending=False)
+        bets = df_sorted.head(3)
     else:
-        print("No strong bets → using fallback mode")
-        final_bets = fallback_bets
+        bets = bets_df.head(3)
+
+    print("[FORCED BETS]")
+    print(bets.reindex(columns=["away_team", "home_team", "edge", "expected_value"]))
+
+    ranked_bets = bets.to_dict("records")
+    final_bets = ranked_bets
+    logger.info("Total bets exported: %s", len(final_bets))
 
     recommendations_df = pd.DataFrame(final_bets)
     recommendations_df = recommendations_df.reindex(columns=RECOMMENDATION_COLUMNS)
