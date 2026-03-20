@@ -8,6 +8,7 @@ FEATURE_COLUMNS = [
     "spread_abs",
     "is_favorite",
     "elo_diff",
+    "injury_impact_diff",
 ]
 
 
