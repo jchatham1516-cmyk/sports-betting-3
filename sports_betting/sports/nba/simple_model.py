@@ -1,10 +1,16 @@
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
 import pandas as pd
 
 FEATURE_COLUMNS = [
     "implied_home_prob",
     "spread",
-    "spread_value_signal"
+    "spread_value_signal",
+    "elo_diff",
+    "rest_diff",
+    "injury_impact_diff",
+    "net_rating_diff",
+    "last5_net_rating_diff",
 ]
 
 
@@ -41,21 +47,40 @@ def train_runtime_model(df):
     if len(df) < 10:
         return None
 
-    X = df[FEATURE_COLUMNS].copy()
+    for col in FEATURE_COLUMNS:
+        if col not in df.columns:
+            df[col] = 0
+
+    X = df[FEATURE_COLUMNS].copy().fillna(0)
     y = pd.to_numeric(df["home_win"], errors="coerce").fillna(0).astype(int)
 
     if y.nunique() < 2:
         return None
 
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
+
     model = LogisticRegression(max_iter=1000)
     model.fit(X, y)
 
-    return model
+    return model, scaler
 
 
-def predict(model, games_df):
+def predict(model_bundle, games_df):
     df = prepare_df(games_df)
 
+    for col in FEATURE_COLUMNS:
+        if col not in df.columns:
+            df[col] = 0
+
     X = df[FEATURE_COLUMNS].copy().fillna(0)
+
+    scaler = None
+    model = model_bundle
+    if isinstance(model_bundle, tuple) and len(model_bundle) == 2:
+        model, scaler = model_bundle
+
+    if scaler is not None:
+        X = scaler.transform(X)
 
     return model.predict_proba(X)[:, 1]

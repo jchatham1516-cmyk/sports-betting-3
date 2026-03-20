@@ -28,6 +28,7 @@ from sports_betting.sports.common.odds import expected_value
 from sports_betting.sports.common.reporting import save_dataframe
 from sports_betting.sports.nba.model import NBAModel
 from sports_betting.sports.nba.simple_model import american_to_implied_prob
+from sports_betting.sports.nba.simple_model import FEATURE_COLUMNS as NBA_RUNTIME_FEATURE_COLUMNS
 from sports_betting.sports.nba.simple_model import train_runtime_model
 from sports_betting.sports.nfl.model import NFLModel
 from sports_betting.sports.nhl.model import NHLModel
@@ -368,24 +369,24 @@ def predict_runtime(model, games_df: pd.DataFrame):
     df["spread_value_signal"] = df["spread"] * df["implied_home_prob"]
     print("[NBA] Using real odds for prediction")
 
-    X = df[
-        [
-            "implied_home_prob",
-            "spread",
-            "spread_value_signal",
-        ]
-    ].copy()
+    for col in NBA_RUNTIME_FEATURE_COLUMNS:
+        if col not in df.columns:
+            df[col] = 0
 
-    X = X.fillna(
-        {
-            "implied_home_prob": 0.5,
-            "spread": 0.0,
-            "spread_value_signal": 0.0,
-        }
-    )
+    X = df[NBA_RUNTIME_FEATURE_COLUMNS].copy()
+
+    X = X.fillna(0.0)
+    if "implied_home_prob" in X.columns:
+        X["implied_home_prob"] = X["implied_home_prob"].replace(0.0, 0.5)
 
     print(f"[NBA] Prediction columns: {list(df.columns)}")
-    return model.predict_proba(X)[:, 1]
+    runtime_model = model
+    scaler = None
+    if isinstance(model, tuple) and len(model) == 2:
+        runtime_model, scaler = model
+    if scaler is not None:
+        X = scaler.transform(X)
+    return runtime_model.predict_proba(X)[:, 1]
 
 
 def _ensure_runtime_prediction_columns(daily: pd.DataFrame) -> pd.DataFrame:
