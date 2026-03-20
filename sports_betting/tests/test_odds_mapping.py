@@ -1,4 +1,6 @@
-from main import _build_game_candidate_bets, _validate_exported_bets_against_sportsbook
+from main import _align_moneyline_model_probability, _build_game_candidate_bets, _validate_exported_bets_against_sportsbook
+
+import pandas as pd
 
 
 def test_knicks_pacers_moneyline_mapping_stays_with_team():
@@ -53,3 +55,42 @@ def test_validate_exported_bets_warns_and_fails_on_moneyline_odds_mismatch():
 
     assert not is_valid
     assert "odds mismatch" in str(warning)
+
+
+def test_align_moneyline_probabilities_from_favorite_to_home_team():
+    df = pd.DataFrame(
+        [
+            {
+                "market": "moneyline",
+                "home_team": "Home",
+                "away_team": "Away",
+                "home_odds": 125,
+                "away_odds": -145,
+                "selection": "Home",
+                "model_prob": 0.62,
+                "model_probability": 0.5,
+                "odds": 125,
+            },
+            {
+                "market": "moneyline",
+                "home_team": "Home",
+                "away_team": "Away",
+                "home_odds": 125,
+                "away_odds": -145,
+                "selection": "Away",
+                "model_prob": 0.62,
+                "model_probability": 0.5,
+                "odds": -145,
+            },
+        ]
+    )
+
+    out = _align_moneyline_model_probability(df)
+
+    home_row = out[out["selection"] == "Home"].iloc[0]
+    away_row = out[out["selection"] == "Away"].iloc[0]
+
+    assert home_row["favorite_team"] == "Away"
+    assert abs(float(home_row["model_prob_home"]) - 0.38) < 1e-9
+    assert abs(float(home_row["model_probability"]) - 0.38) < 1e-9
+    assert abs(float(away_row["model_probability"]) - 0.62) < 1e-9
