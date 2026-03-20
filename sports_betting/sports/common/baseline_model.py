@@ -19,7 +19,7 @@ from sports_betting.sports.common.odds import american_to_implied_probability, e
 
 LOGGER = logging.getLogger(__name__)
 
-INJURY_IMPACT_WEIGHT = 1.5
+INJURY_IMPACT_WEIGHT = 2.0
 OPTIONAL_INJURY_FEATURES = [
     "injury_impact",
     "injury_impact_diff",
