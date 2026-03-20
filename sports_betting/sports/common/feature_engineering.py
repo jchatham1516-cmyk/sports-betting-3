@@ -125,6 +125,9 @@ def add_injury_features(games_df: pd.DataFrame, sport: str, data_root: Path) -> 
     away = team_summary.add_suffix("_away").rename(columns={"team_away": "away_team"})
     out = out.merge(home, on="home_team", how="left").merge(away, on="away_team", how="left").fillna(0.0)
 
+    for col in ["injury_impact_home", "injury_impact_away"]:
+        if col not in out.columns:
+            out[col] = 0.0
     out["injury_impact_diff"] = out["injury_impact_away"] - out["injury_impact_home"]
     out["offensive_injury_weight_diff"] = out.get("offensive_injury_weight_away", 0.0) - out.get("offensive_injury_weight_home", 0.0)
     out["defensive_injury_weight_diff"] = out.get("defensive_injury_weight_away", 0.0) - out.get("defensive_injury_weight_home", 0.0)
