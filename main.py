@@ -600,6 +600,21 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
         if key:
             prediction_map[key] = pred
 
+    home_moneyline_pred = prediction_map.get(("moneyline", "moneyline_home"), {})
+    home_model_prob_raw = home_moneyline_pred.get("model_probability")
+    if home_model_prob_raw is None:
+        home_metadata = home_moneyline_pred.get("metadata", {})
+        if isinstance(home_metadata, str):
+            try:
+                home_metadata = ast.literal_eval(home_metadata)
+            except (ValueError, SyntaxError):
+                home_metadata = {}
+        if isinstance(home_metadata, dict):
+            home_model_prob_raw = home_metadata.get("predicted_home_win_prob")
+    home_model_prob = None
+    if home_model_prob_raw is not None:
+        home_model_prob = float(np.clip(float(home_model_prob_raw), 0.01, 0.99))
+
     candidate_specs = [
         ("moneyline", "moneyline_home", int(game_row["home_odds"])),
         ("moneyline", "moneyline_away", int(game_row["away_odds"])),
@@ -617,6 +632,8 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
 
         pred_row = prediction_map.get((market, selection), {})
         model_probability = float(pred_row.get("model_probability", 0.5))
+        if market == "moneyline" and home_model_prob is not None:
+            model_probability = home_model_prob if selection == "moneyline_home" else 1.0 - home_model_prob
         market_probability = american_to_prob(american_odds)
         payout = get_payout(american_odds)
         edge = model_probability - market_probability
@@ -661,6 +678,7 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
                 "market": market,
                 "selection": selection_label,
                 "odds": american_odds,
+                "model_prob": home_model_prob if market == "moneyline" and home_model_prob is not None else np.nan,
                 "model_probability": model_probability,
                 "market_probability": market_probability,
                 "edge": edge,
@@ -897,6 +915,20 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         return 100 / abs(odds)
 
     if not df.empty and {"odds", "model_probability"}.issubset(df.columns):
+        if {"selection", "home_team", "model_prob", "market"}.issubset(df.columns):
+            moneyline_mask = df["market"].eq("moneyline") & df["model_prob"].notna()
+            df.loc[moneyline_mask, "model_probability"] = np.where(
+                df.loc[moneyline_mask, "selection"] == df.loc[moneyline_mask, "home_team"],
+                df.loc[moneyline_mask, "model_prob"],
+                1 - df.loc[moneyline_mask, "model_prob"],
+            )
+            print(df[[
+                "selection",
+                "home_team",
+                "model_prob",
+                "model_probability",
+            ]].head(10))
+
         df["market_probability"] = df["odds"].apply(american_to_prob)
         df["payout"] = df["odds"].apply(get_payout)
         df["edge"] = df["model_probability"] - df["market_probability"]
@@ -916,18 +948,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         bets = df.head(5)
 
     final_bets = bets.copy()
-    if not final_bets.empty and {"odds", "model_probability"}.issubset(final_bets.columns):
-        final_bets["market_probability"] = final_bets["odds"].apply(american_to_prob)
-        final_bets["payout"] = final_bets["odds"].apply(get_payout)
-
-        final_bets["edge"] = (
-            final_bets["model_probability"] - final_bets["market_probability"]
-        )
-
-        final_bets["expected_value"] = (
-            final_bets["model_probability"] * final_bets["payout"]
-        ) - (1 - final_bets["model_probability"])
-
+    if not final_bets.empty and {"odds", "model_probability", "market_probability", "edge", "expected_value"}.issubset(final_bets.columns):
         print("FINAL EV CHECK:")
         print(final_bets[["odds", "model_probability", "market_probability", "edge", "expected_value"]])
 
