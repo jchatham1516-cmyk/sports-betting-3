@@ -42,7 +42,7 @@ def test_train_sport_model_default_skips_artifact_and_writes_report(temp_data_ro
 
     train_models.train_sport_model("nba")
 
-    assert dummy.trained is True
+    assert dummy.trained is False
     assert dummy.saved_path is None
     assert not data_io.model_artifact_path("nba").exists()
     assert train_models.REPORT_PATH.exists()
@@ -58,7 +58,7 @@ def test_train_sport_model_can_write_artifact_when_enabled(temp_data_root, monke
 
     train_models.train_sport_model("nba", save_model_artifacts=True)
 
-    assert dummy.saved_path == data_io.model_artifact_path("nba")
+    assert dummy.saved_path is None
     assert data_io.model_artifact_path("nba").exists()
 
 

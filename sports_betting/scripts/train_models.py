@@ -19,6 +19,7 @@ from sports_betting.scripts.data_io import (
     load_nhl_historical_dataset,
     model_artifact_path,
 )
+from sports_betting.sports.nba.simple_model import train_runtime_model
 
 SAVE_MODEL_ARTIFACTS = False
 REPORT_PATH = Path("sports_betting/data/models/nba_model_training_report.txt")
@@ -154,12 +155,27 @@ def train_sport_model(sport: str, build_historical: bool = False, save_model_art
         print(f"[NBA] wrote training report -> {REPORT_PATH}")
 
     model = choose_model(sport)
-    model.train(historical)
+    runtime_model = None
+    try:
+        runtime_model = train_runtime_model(historical) if sport == "nba" else None
+    except Exception:
+        runtime_model = None
+
+    if sport != "nba":
+        model.train(historical)
 
     if save_model_artifacts:
         artifact_path = model_artifact_path(sport)
-        model.save_artifact(artifact_path)
-        print(f"[{sport.upper()}] Trained model artifact written to: {artifact_path}")
+        if sport == "nba":
+            if runtime_model is not None:
+                artifact_path.parent.mkdir(parents=True, exist_ok=True)
+                pd.to_pickle(runtime_model, artifact_path)
+                print(f"[{sport.upper()}] Runtime model artifact written to: {artifact_path}")
+            else:
+                print(f"[{sport.upper()}] Runtime model unavailable; falling back to implied probability.")
+        else:
+            model.save_artifact(artifact_path)
+            print(f"[{sport.upper()}] Trained model artifact written to: {artifact_path}")
     else:
         print(f"[{sport.upper()}] SAVE_MODEL_ARTIFACTS=False; skipping binary artifact serialization.")
 

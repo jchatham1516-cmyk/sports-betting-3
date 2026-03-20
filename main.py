@@ -11,7 +11,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
 
 from sports_betting.backtesting.engine import summarize_backtest
 from sports_betting.config.settings import load_config
@@ -27,6 +26,8 @@ from sports_betting.sports.common.logging_utils import setup_logging
 from sports_betting.sports.common.odds import expected_value
 from sports_betting.sports.common.reporting import save_dataframe
 from sports_betting.sports.nba.model import NBAModel
+from sports_betting.sports.nba.simple_model import predict as predict_runtime_model
+from sports_betting.sports.nba.simple_model import train_runtime_model
 from sports_betting.sports.nfl.model import NFLModel
 from sports_betting.sports.nhl.model import NHLModel
 
@@ -49,13 +50,6 @@ PREDICTION_COLUMNS = [
 
 TOP_BETS_DAILY = 5
 EDGE_THRESHOLD = 0.01
-FEATURE_COLUMNS = [
-    "implied_home_prob",
-    "spread",
-    "spread_value_signal",
-]
-
-
 LOGGER = logging.getLogger(__name__)
 
 
@@ -302,12 +296,6 @@ def _american_to_decimal(odds: int) -> float:
     return 0.0
 
 
-def american_to_implied_prob(odds: float) -> float:
-    if odds < 0:
-        return (-odds) / ((-odds) + 100)
-    return 100 / (odds + 100)
-
-
 def _first_existing_column(frame: pd.DataFrame, columns: list[str], default: float = 0.0) -> pd.Series:
     for column in columns:
         if column in frame.columns:
@@ -315,26 +303,7 @@ def _first_existing_column(frame: pd.DataFrame, columns: list[str], default: flo
     return pd.Series(np.full(len(frame), default), index=frame.index, dtype=float)
 
 
-def _build_runtime_feature_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    engineered = frame.copy()
-    if "home_moneyline" not in engineered.columns:
-        engineered["home_moneyline"] = _first_existing_column(engineered, ["home_odds", "moneyline"], default=0.0)
-    if "spread" not in engineered.columns:
-        engineered["spread"] = _first_existing_column(engineered, ["spread_line"], default=0.0)
-    engineered["implied_home_prob"] = pd.to_numeric(engineered["home_moneyline"], errors="coerce").apply(american_to_implied_prob)
-    engineered["spread"] = pd.to_numeric(engineered["spread"], errors="coerce")
-    engineered["spread_value_signal"] = engineered["spread"] * engineered["implied_home_prob"]
-    X = engineered[FEATURE_COLUMNS].copy()
-    return X.fillna(
-        {
-            "implied_home_prob": 0.5,
-            "spread": 0.0,
-            "spread_value_signal": 0.0,
-        }
-    )
-
-
-def train_runtime_home_win_model(historical_df: pd.DataFrame, sport_name: str) -> LogisticRegression | None:
+def train_runtime_home_win_model(historical_df: pd.DataFrame, sport_name: str):
     try:
         assert "home_moneyline" in historical_df.columns
         assert "spread" in historical_df.columns
@@ -350,18 +319,19 @@ def train_runtime_home_win_model(historical_df: pd.DataFrame, sport_name: str) -
     print(f"[{sport_name.upper()}] Attempting runtime model training...")
     print(f"[{sport_name.upper()}] Training rows: {len(historical_df)}")
 
-    if len(historical_df) < 20:
+    if len(historical_df) < 10:
         print(f"[{sport_name.upper()}] WARNING: Very small dataset")
-        print(f"[{sport_name.upper()}] Runtime home-win model skipped (needs >=20 rows).")
+        print(f"[{sport_name.upper()}] Runtime home-win model skipped (needs >=10 rows).")
         return None
 
     if y.nunique() < 2:
         print(f"[{sport_name.upper()}] Runtime home-win model skipped (target requires 2 classes).")
         return None
 
-    X = _build_runtime_feature_frame(historical_df)
-    model = LogisticRegression(max_iter=1000, solver="liblinear", random_state=42)
-    model.fit(X, y)
+    model = train_runtime_model(historical_df)
+    if model is None:
+        print(f"[{sport_name.upper()}] Runtime home-win model skipped (insufficient signal).")
+        return None
     print(f"[{sport_name.upper()}] Model trained successfully")
     return model
 
@@ -369,13 +339,20 @@ def train_runtime_home_win_model(historical_df: pd.DataFrame, sport_name: str) -
 def _apply_runtime_home_win_probabilities(
     preds: list,
     daily_df: pd.DataFrame,
-    runtime_model: LogisticRegression | None,
+    runtime_model,
 ) -> list:
-    if runtime_model is None or daily_df.empty:
+    if daily_df.empty:
         return preds
 
-    X = _build_runtime_feature_frame(daily_df)
-    home_probs = pd.Series(runtime_model.predict_proba(X)[:, 1], index=daily_df["game_id"].astype(str))
+    if runtime_model is not None:
+        home_probs = pd.Series(predict_runtime_model(runtime_model, daily_df), index=daily_df["game_id"].astype(str))
+    else:
+        implied = pd.to_numeric(_first_existing_column(daily_df, ["home_odds", "home_moneyline"], default=0.0), errors="coerce")
+        home_probs = implied.apply(
+            lambda odds: abs(odds) / (abs(odds) + 100) if odds < 0 else 100 / (odds + 100) if odds > 0 else 0.5
+        )
+        home_probs.index = daily_df["game_id"].astype(str)
+
     game_rows = daily_df.set_index(daily_df["game_id"].astype(str))
 
     for pred in preds:
@@ -563,10 +540,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 print(f"[{sport_name.upper()}] Historical rows loaded: {len(historical_df)}")
                 if len(historical_df) < 20:
                     print(f"[{sport_name.upper()}] WARNING: Very small dataset")
-                if not historical_df.empty:
-                    runtime_home_win_model = train_runtime_home_win_model(historical_df, sport_name)
-                model.train(historical)
-                trained_in_run = True
+                try:
+                    runtime_home_win_model = train_runtime_model(historical_df)
+                    trained_in_run = runtime_home_win_model is not None
+                except Exception:
+                    runtime_home_win_model = None
+                    trained_in_run = False
                 logger.info("[%s] Runtime model training completed from historical CSV.", sport_name.upper())
             except Exception:
                 logger.exception("[%s] Runtime training failed.", sport_name.upper())
