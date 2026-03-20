@@ -39,9 +39,6 @@ def fetch_nba_injuries() -> pd.DataFrame:
 
 def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> pd.DataFrame:
     out = df_games.copy()
-    OUT_STATUSES = ["Out", "Out for season"]
-    QUESTIONABLE_STATUSES = ["Questionable", "Doubtful"]
-
     injuries = df_injuries.copy()
     if injuries.empty:
         injuries = pd.DataFrame(columns=["team", "player", "status"])
@@ -50,25 +47,15 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
     if "status" not in injuries.columns:
         injuries["status"] = ""
 
+    out["home_team"] = out.get("home_team", "").astype(str).apply(_normalize_team_name)
+    out["away_team"] = out.get("away_team", "").astype(str).apply(_normalize_team_name)
     injuries["team"] = injuries["team"].apply(_normalize_team_name)
-    injuries["status"] = injuries["status"].astype(str)
-    out["home_team"] = out.get("home_team", "").astype(str)
-    out["away_team"] = out.get("away_team", "").astype(str)
-    out["_home_team_norm"] = out["home_team"].apply(_normalize_team_name)
-    out["_away_team_norm"] = out["away_team"].apply(_normalize_team_name)
 
-    def get_team_impact(team: str) -> float:
-        team_injuries = injuries[injuries["team"] == team]
+    injury_map = injuries.groupby("team").size().to_dict()
 
-        out_count = team_injuries[team_injuries["status"].isin(OUT_STATUSES)].shape[0]
-        questionable_count = team_injuries[team_injuries["status"].isin(QUESTIONABLE_STATUSES)].shape[0]
+    out["injury_impact_home"] = out["home_team"].map(injury_map).fillna(0)
+    out["injury_impact_away"] = out["away_team"].map(injury_map).fillna(0)
 
-        return (out_count * 1.0) + (questionable_count * 0.5)
-
-    out["injury_impact_home"] = out["_home_team_norm"].apply(get_team_impact)
-    out["injury_impact_away"] = out["_away_team_norm"].apply(get_team_impact)
-
-    out["injury_impact_diff"] = out["injury_impact_home"] - out["injury_impact_away"]
-    out = out.drop(columns=["_home_team_norm", "_away_team_norm"])
+    out["injury_impact_diff"] = out["injury_impact_away"] - out["injury_impact_home"]
 
     return out
