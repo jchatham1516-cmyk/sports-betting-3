@@ -21,6 +21,7 @@ from sports_betting.config.settings import load_config
 from sports_betting.data.fetch_injuries import compute_injury_impact, fetch_nba_injuries
 from sports_betting.data.load_injuries import load_injuries, get_team_injury_penalty
 from sports_betting.models.entities import Prediction
+from sports_betting.scripts.injuries import run_injury_pipeline
 from sports_betting.scripts.data_io import (
     historical_file_path,
     is_test_mode,
@@ -841,6 +842,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     total_games_processed = 0
 
+    injury_data = run_injury_pipeline()
+
     for sport_name in sports_to_run:
         logger.info("Running %s pipeline", sport_name)
         model = choose_model(sport_name)
@@ -1079,13 +1082,6 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         # Hard clamp immediately after prediction pipeline output.
         df["model_probability"] = df["model_probability"].clip(0.05, 0.65)
 
-        subprocess.run(
-            [
-                "python",
-                "sports_betting/data/injuries/fetch_espn_injuries.py",
-            ],
-            check=False,
-        )
         injuries = load_injuries()
 
         def apply_injury_adjustment(row):
