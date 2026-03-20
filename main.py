@@ -346,15 +346,19 @@ def predict_runtime(model, games_df: pd.DataFrame):
             df["home_moneyline"] = df["moneyline_home"]
         elif "odds_home" in df.columns:
             df["home_moneyline"] = df["odds_home"]
-        else:
-            print("[WARNING] Missing home_moneyline — using neutral probability")
-            df["home_moneyline"] = 0
+        elif "home_odds" in df.columns:
+            df["home_moneyline"] = df["home_odds"]
+
+    if "home_moneyline" not in df.columns:
+        raise ValueError("home_moneyline is required for runtime prediction")
 
     if "spread" not in df.columns:
         if "home_spread" in df.columns:
             df["spread"] = df["home_spread"]
         elif "spread_home" in df.columns:
             df["spread"] = df["spread_home"]
+        elif "spread_line" in df.columns:
+            df["spread"] = df["spread_line"]
         else:
             df["spread"] = 0.0
 
@@ -362,6 +366,7 @@ def predict_runtime(model, games_df: pd.DataFrame):
     df["spread"] = pd.to_numeric(df["spread"], errors="coerce").fillna(0)
     df["implied_home_prob"] = df["home_moneyline"].apply(american_to_implied_prob)
     df["spread_value_signal"] = df["spread"] * df["implied_home_prob"]
+    print("[NBA] Using real odds for prediction")
 
     X = df[
         [
@@ -385,6 +390,14 @@ def predict_runtime(model, games_df: pd.DataFrame):
 
 def _ensure_runtime_prediction_columns(daily: pd.DataFrame) -> pd.DataFrame:
     out = daily.copy()
+    if "home_moneyline" not in out.columns:
+        if "home_odds" in out.columns:
+            out["home_moneyline"] = out["home_odds"]
+
+    if "spread" not in out.columns:
+        if "spread_line" in out.columns:
+            out["spread"] = out["spread_line"]
+
     if "home_moneyline" not in out.columns:
         if "home_ml" in out.columns:
             out["home_moneyline"] = out["home_ml"]
@@ -707,6 +720,13 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         if hasattr(model, "runtime_model") and model.runtime_model is not None:
             print(f"[{sport_name.upper()}] Using runtime model for predictions")
+            if "home_moneyline" not in daily.columns:
+                if "home_odds" in daily.columns:
+                    daily["home_moneyline"] = daily["home_odds"]
+
+            if "spread" not in daily.columns:
+                if "spread_line" in daily.columns:
+                    daily["spread"] = daily["spread_line"]
             preds = _build_runtime_moneyline_predictions(daily, model.runtime_model, sport_name)
         else:
             print(f"[{sport_name.upper()}] Using baseline model for predictions")
