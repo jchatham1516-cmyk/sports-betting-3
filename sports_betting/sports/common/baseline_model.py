@@ -144,6 +144,10 @@ class DisciplinedBaselineModel(SportModel):
         feature_columns = artifact.get("feature_columns", {})
         if isinstance(feature_columns, list):
             feature_columns = {"moneyline": feature_columns, "spread": feature_columns, "total": feature_columns}
+        if feature_columns is None or (
+            isinstance(feature_columns, dict) and not feature_columns.get("moneyline")
+        ):
+            raise ValueError(f"[{self.sport.upper()}] Missing stored feature columns for moneyline")
         self.feature_columns = feature_columns
 
     def _predict_proba(self, model: CalibratedClassifierCV | None, df: pd.DataFrame, market: str) -> float:
@@ -152,7 +156,7 @@ class DisciplinedBaselineModel(SportModel):
 
         columns = self.feature_columns.get(market) if isinstance(self.feature_columns, dict) else self.feature_columns
         if not columns:
-            raise RuntimeError(f"[{self.sport.upper()}] Missing stored feature columns for {market}")
+            raise ValueError(f"[{self.sport.upper()}] Missing stored feature columns for {market}")
 
         for col in columns:
             if col not in df.columns:

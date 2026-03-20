@@ -4,6 +4,7 @@ import os
 import pickle
 
 import numpy as np
+import pandas as pd
 from sklearn.linear_model import LogisticRegression
 
 from sports_betting.sports.nba.model import NBAModel
@@ -18,38 +19,36 @@ MODEL_CLASSES = {
 }
 
 
-def fitted_model(feature_count: int) -> LogisticRegression:
-    """Build a tiny fitted binary classifier with a specific feature count."""
+def fitted_model(feature_names: list[str]) -> LogisticRegression:
+    """Build a tiny fitted binary classifier with a specific feature names/order."""
+    feature_count = len(feature_names)
     x = np.vstack([np.zeros(feature_count), np.ones(feature_count)])
+    x_df = pd.DataFrame(x, columns=feature_names)
     y = np.array([0, 1])
     model = LogisticRegression(random_state=42, solver="liblinear")
-    # Save feature order if DataFrame
-    if hasattr(x, "columns"):
-        model.feature_columns = list(x.columns)
-        x_train = x.values
-    else:
-        model.feature_columns = None
-        x_train = x
+    model.feature_columns = list(x_df.columns)
+    x_train = x_df.values
     model.fit(x_train, y)
     return model
 
 
 def build_payload(sport: str, model_cls: type[NBAModel]) -> dict:
     """Create payload keys expected by load_artifact() and prediction paths."""
-    win_feature_count = len(model_cls.WIN_FEATURES)
-    spread_feature_count = len(model_cls.SPREAD_FEATURES)
-    total_feature_count = len(model_cls.TOTAL_FEATURES)
-
     return {
         "sport": sport,
-        "moneyline_model": fitted_model(win_feature_count),
-        "spread_model": fitted_model(spread_feature_count),
-        "total_model": fitted_model(total_feature_count),
+        "moneyline_model": fitted_model(model_cls.WIN_FEATURES),
+        "spread_model": fitted_model(model_cls.SPREAD_FEATURES),
+        "total_model": fitted_model(model_cls.TOTAL_FEATURES),
         "moneyline_cal": None,
         "spread_cal": None,
         "total_cal": None,
         "metrics": {},
         "feature_importance": {},
+        "feature_columns": {
+            "moneyline": list(model_cls.WIN_FEATURES),
+            "spread": list(model_cls.SPREAD_FEATURES),
+            "total": list(model_cls.TOTAL_FEATURES),
+        },
     }
 
 
