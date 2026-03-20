@@ -6,6 +6,7 @@ import os
 
 import json
 import logging
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -62,6 +63,12 @@ class InjurySource:
 
 def normalize_status(status: str) -> str:
     return STATUS_MAP.get(str(status or "").strip().lower(), "questionable")
+
+
+def normalize_team_name(name: object) -> str:
+    normalized = unicodedata.normalize("NFKD", str(name or ""))
+    ascii_name = normalized.encode("ascii", "ignore").decode("utf-8")
+    return ascii_name.lower().strip()
 
 
 def _to_float(value: object, default: float = 0.0) -> float:
@@ -167,7 +174,7 @@ def _fetch_primary_source(sport: str, data_root: Path) -> pd.DataFrame:
 
 
 def _normalize_team_name(team: object) -> str:
-    return str(team or "").strip().lower()
+    return normalize_team_name(team)
 
 
 def _load_json_injury_fallback(data_root: Path) -> pd.DataFrame:
