@@ -316,14 +316,16 @@ def _first_existing_column(frame: pd.DataFrame, columns: list[str], default: flo
 
 
 def _build_runtime_feature_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    home_odds = _first_existing_column(frame, ["home_odds", "home_moneyline", "moneyline"], default=0.0)
-    spread = _first_existing_column(frame, ["spread", "spread_line"], default=0.0)
-    features = pd.DataFrame(index=frame.index)
-    features["implied_home_prob"] = home_odds.apply(american_to_implied_prob)
-    features["spread"] = spread
-    features["spread_value_signal"] = features["spread"] * features["implied_home_prob"]
-    features = features[FEATURE_COLUMNS].copy()
-    return features.fillna(
+    engineered = frame.copy()
+    if "home_moneyline" not in engineered.columns:
+        engineered["home_moneyline"] = _first_existing_column(engineered, ["home_odds", "moneyline"], default=0.0)
+    if "spread" not in engineered.columns:
+        engineered["spread"] = _first_existing_column(engineered, ["spread_line"], default=0.0)
+    engineered["implied_home_prob"] = pd.to_numeric(engineered["home_moneyline"], errors="coerce").apply(american_to_implied_prob)
+    engineered["spread"] = pd.to_numeric(engineered["spread"], errors="coerce")
+    engineered["spread_value_signal"] = engineered["spread"] * engineered["implied_home_prob"]
+    X = engineered[FEATURE_COLUMNS].copy()
+    return X.fillna(
         {
             "implied_home_prob": 0.5,
             "spread": 0.0,
@@ -333,12 +335,28 @@ def _build_runtime_feature_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def train_runtime_home_win_model(historical_df: pd.DataFrame, sport_name: str) -> LogisticRegression | None:
+    try:
+        assert "home_moneyline" in historical_df.columns
+        assert "spread" in historical_df.columns
+        assert "home_win" in historical_df.columns
+    except AssertionError:
+        print(
+            f"[{sport_name.upper()}] Missing required training columns. "
+            f"Available columns: {list(historical_df.columns)}"
+        )
+        return None
+
     y = pd.to_numeric(historical_df.get("home_win"), errors="coerce").fillna(0).astype(int)
-    print(f"[{sport_name.upper()}] Historical CSV path: {historical_file_path(sport_name)}")
+    print(f"[{sport_name.upper()}] Attempting runtime model training...")
     print(f"[{sport_name.upper()}] Training rows: {len(historical_df)}")
 
-    if len(historical_df) < 50 or y.nunique() < 2:
-        print(f"[{sport_name.upper()}] Runtime home-win model skipped (needs >=50 rows and 2 target classes).")
+    if len(historical_df) < 20:
+        print(f"[{sport_name.upper()}] WARNING: Very small dataset")
+        print(f"[{sport_name.upper()}] Runtime home-win model skipped (needs >=20 rows).")
+        return None
+
+    if y.nunique() < 2:
+        print(f"[{sport_name.upper()}] Runtime home-win model skipped (target requires 2 classes).")
         return None
 
     X = _build_runtime_feature_frame(historical_df)
@@ -526,25 +544,41 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         historical, daily = load_historical_and_daily(sport_name)
         runtime_home_win_model = None
         total_games_processed += len(daily)
+        csv_path = historical_file_path(sport_name)
+        print(f"[{sport_name.upper()}] Looking for historical CSV at: {csv_path}")
+        print(f"[{sport_name.upper()}] Exists: {csv_path.exists()}")
 
         artifact_path = model_artifact_path(sport_name)
-        if not historical.empty:
-            runtime_home_win_model = train_runtime_home_win_model(historical, sport_name)
-
         trained_in_run = False
-        if not historical.empty:
+        if csv_path.exists():
             try:
+                historical_df = pd.read_csv(csv_path)
+                if "home_moneyline" not in historical_df.columns and "closing_moneyline_home" in historical_df.columns:
+                    historical_df["home_moneyline"] = historical_df["closing_moneyline_home"]
+                if "spread" not in historical_df.columns:
+                    if "spread_line" in historical_df.columns:
+                        historical_df["spread"] = historical_df["spread_line"]
+                    elif "closing_spread_home" in historical_df.columns:
+                        historical_df["spread"] = historical_df["closing_spread_home"]
+                print(f"[{sport_name.upper()}] Historical rows loaded: {len(historical_df)}")
+                if len(historical_df) < 20:
+                    print(f"[{sport_name.upper()}] WARNING: Very small dataset")
+                if not historical_df.empty:
+                    runtime_home_win_model = train_runtime_home_win_model(historical_df, sport_name)
                 model.train(historical)
                 trained_in_run = True
                 logger.info("[%s] Runtime model training completed from historical CSV.", sport_name.upper())
             except Exception:
                 logger.exception("[%s] Runtime training failed.", sport_name.upper())
+                print(f"[{sport_name.upper()}] Training failed → using fallback model")
+        else:
+            print(f"[{sport_name.upper()}] Historical CSV missing at {csv_path}")
 
         if not trained_in_run:
             if artifact_path.exists():
                 model.load_artifact(artifact_path)
                 logger.warning(
-                    "[%s] Falling back to model artifact because historical CSV was missing or runtime training failed: %s",
+                    "[%s] Falling back to model artifact because runtime training failed or historical CSV is missing: %s",
                     sport_name.upper(),
                     artifact_path,
                 )
