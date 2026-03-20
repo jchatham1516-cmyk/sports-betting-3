@@ -52,6 +52,7 @@ PREDICTION_COLUMNS = [
 
 TOP_BETS_DAILY = 5
 EDGE_THRESHOLD = 0.01
+FORCE_BETS = True
 LOGGER = logging.getLogger(__name__)
 
 
@@ -215,19 +216,30 @@ def apply_smart_bet_filter(df):
     if len(df) == 0:
         return df
 
+    sort_key = "expected_value" if "expected_value" in df.columns else "edge"
+    df_sorted = df.sort_values(by=sort_key, ascending=False)
+
+    print("[DEBUG] Top edges:")
+    debug_cols = ["away_team", "home_team", "edge", "expected_value"]
+    available_debug_cols = [col for col in debug_cols if col in df_sorted.columns]
+    print(df_sorted[available_debug_cols].head(10))
+
+    if FORCE_BETS:
+        return df_sorted.head(3)
+
     # PRIMARY FILTER (normal mode)
     filtered = df[
         (df["edge"] > EDGE_THRESHOLD) &
+        (df["expected_value"] > 0) &
         (df["adjusted_prob"].between(0.50, 0.75))
     ]
 
     # 🔥 FALLBACK MODE (CRITICAL)
     if len(filtered) == 0:
         print("No strong bets → using fallback mode")
+        return df_sorted.head(5)
 
-        return df.sort_values("edge", ascending=False).head(5)
-
-    return filtered.sort_values("edge", ascending=False).head(5)
+    return filtered.sort_values(by=sort_key, ascending=False).head(5)
 
 
 def _normalize_team_name(name: str | None) -> str:
