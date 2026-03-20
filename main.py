@@ -975,6 +975,15 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         )
         df["model_probability"] = df["model_probability"].clip(0.02, 0.98)
 
+        # Penalize longshots to reduce inflated probabilities on big underdogs.
+        df["model_probability"] = np.where(
+            df["odds"] > 300,
+            df["model_probability"] * 0.6,
+            df["model_probability"],
+        )
+        df["model_probability"] = df["model_probability"].clip(0.02, 0.98)
+
+        # Recompute edge and EV after longshot penalty.
         df["edge"] = df["model_probability"] - df["market_probability"]
         df["payout"] = np.where(
             df["odds"] > 0,
@@ -984,6 +993,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         df["expected_value"] = (
             df["model_probability"] * df["payout"]
         ) - (1 - df["model_probability"])
+        df["expected_value"] = df["expected_value"].clip(-1, 0.5)
 
         print("[DEBUG] Top edges after calibration + EV recompute:")
         print(
@@ -1001,14 +1011,14 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print(df[["odds", "model_probability", "market_probability", "edge", "expected_value"]].head())
 
     if not df.empty and {"expected_value", "edge"}.issubset(df.columns):
-        bets = df.sort_values(by="expected_value", ascending=False).head(TOP_BETS_DAILY)
-        if len(bets) < 2:
-            fallback_df = df.sort_values(by=["expected_value", "edge"], ascending=False)
-            bets = fallback_df.head(min(2, len(fallback_df)))
+        final_bets = df[
+            (df["expected_value"] > 0.02) &
+            (df["edge"] > 0.01)
+        ].copy()
+        final_bets = final_bets.sort_values(by="expected_value", ascending=False).head(6)
     else:
-        bets = df.head(TOP_BETS_DAILY)
+        final_bets = df.head(6).copy()
 
-    final_bets = df.copy()
     if not final_bets.empty and {"odds", "model_probability", "market_probability", "edge", "expected_value"}.issubset(final_bets.columns):
         print("FINAL EV CHECK:")
         print(final_bets[["odds", "model_probability", "market_probability", "edge", "expected_value"]])
