@@ -8,6 +8,7 @@ from collections import defaultdict
 from datetime import datetime
 import logging
 import os
+import subprocess
 from dataclasses import asdict
 from pathlib import Path
 
@@ -1078,6 +1079,13 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         # Hard clamp immediately after prediction pipeline output.
         df["model_probability"] = df["model_probability"].clip(0.05, 0.65)
 
+        subprocess.run(
+            [
+                "python",
+                "sports_betting/data/injuries/fetch_espn_injuries.py",
+            ],
+            check=False,
+        )
         injuries = load_injuries()
 
         def apply_injury_adjustment(row):
