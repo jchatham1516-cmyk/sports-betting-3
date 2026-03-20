@@ -193,8 +193,10 @@ def _build_features(games: pd.DataFrame, elo_config: EloConfig) -> pd.DataFrame:
     output = output.sort_values(["event_date", "game_id"]).reset_index(drop=True)
     if "implied_home_prob" not in output.columns:
         output["implied_home_prob"] = output["home_moneyline"].apply(american_to_implied_prob)
-    output["spread_abs"] = output["spread"].abs()
-    output["is_favorite"] = (output["home_moneyline"] < 0).astype(int)
+    if "spread" in output.columns:
+        output["spread_abs"] = output["spread"].abs()
+    if "home_moneyline" in output.columns:
+        output["is_favorite"] = (output["home_moneyline"] < 0).astype(int)
     return output
 
 

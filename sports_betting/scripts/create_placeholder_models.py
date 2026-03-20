@@ -23,7 +23,14 @@ def fitted_model(feature_count: int) -> LogisticRegression:
     x = np.vstack([np.zeros(feature_count), np.ones(feature_count)])
     y = np.array([0, 1])
     model = LogisticRegression(random_state=42, solver="liblinear")
-    model.fit(x, y)
+    # Save feature order if DataFrame
+    if hasattr(x, "columns"):
+        model.feature_columns = list(x.columns)
+        x_train = x.values
+    else:
+        model.feature_columns = None
+        x_train = x
+    model.fit(x_train, y)
     return model
 
 

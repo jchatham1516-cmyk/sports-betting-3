@@ -23,6 +23,14 @@ def train_nba_model():
     y = df["home_win"]
 
     model = LogisticRegression()
-    model.fit(X, y)
+    # Save feature order if DataFrame
+    if hasattr(X, "columns"):
+        model.feature_columns = list(X.columns)
+        X_train = X.values
+    else:
+        model.feature_columns = None
+        X_train = X
+
+    model.fit(X_train, y)
 
     return model
