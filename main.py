@@ -58,9 +58,10 @@ TOP_BETS_DAILY = 6
 EDGE_THRESHOLD = 0.01
 FORCE_BETS = True
 LOGGER = logging.getLogger(__name__)
-MIN_EDGE = 0.015
-MIN_EV = 0.01
-MIN_MODEL_PROBABILITY = 0.52
+# Temporary loose-filter thresholds for early-stage model learning/data collection.
+MIN_EDGE = 0.003
+MIN_EV = 0.002
+MIN_MODEL_PROBABILITY = 0.50
 MAX_BETS_PER_SPORT_PER_DAY = 5
 MAX_EV = 0.15
 MAX_HEAVY_FAVORITE_ODDS = -300
@@ -1078,11 +1079,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         min_edge = MIN_EDGE
         min_expected_value = MIN_EV
         min_confidence = MIN_MODEL_PROBABILITY
-        print("[FILTER SETTINGS]")
+        print("[LOOSE FILTER MODE ENABLED]")
         print(f"min_edge={min_edge}, min_ev={min_expected_value}, min_conf={min_confidence}")
 
         low_edge_mask = df["edge"] <= min_edge
-        low_ev_mask = df["expected_value"] <= min_expected_value
+        low_ev_mask = df["expected_value"] <= 0
         low_confidence_mask = df["model_probability"] <= min_confidence
 
         if low_edge_mask.any():
@@ -1093,8 +1094,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             print(f"Rejected bet due to low confidence: {int(low_confidence_mask.sum())}")
 
         filtered_bets = df[
+            (df["expected_value"] > 0) &
             (df["edge"] > min_edge) &
-            (df["expected_value"] > min_expected_value) &
             (df["model_probability"] > min_confidence)
         ]
         final_bets = filtered_bets.copy()
