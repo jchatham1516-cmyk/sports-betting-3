@@ -1107,14 +1107,20 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     if not final_bets.empty and "expected_value" in final_bets.columns:
         final_bets["units"] = final_bets.apply(get_units, axis=1)
-        os.makedirs("data/tracking", exist_ok=True)
         file_path = "data/tracking/bet_history.csv"
+        file_path = os.path.abspath(file_path)
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
         tracking_df = final_bets.copy()
         tracking_df["date"] = datetime.now().strftime("%Y-%m-%d")
         if os.path.exists(file_path):
             existing = pd.read_csv(file_path)
             tracking_df = pd.concat([existing, tracking_df], ignore_index=True)
         tracking_df.to_csv(file_path, index=False)
+        print("\n[TRACKING DEBUG]")
+        print("Saved tracking file to:", file_path)
+        print("File exists:", os.path.exists(file_path))
+        print("Current working directory:", os.getcwd())
+        print("Absolute path:", file_path)
 
     if not final_bets.empty and {"odds", "model_probability", "market_probability", "edge", "expected_value"}.issubset(final_bets.columns):
         print("FINAL EV CHECK:")
