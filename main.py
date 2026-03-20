@@ -54,8 +54,8 @@ TOP_BETS_DAILY = 6
 EDGE_THRESHOLD = 0.01
 FORCE_BETS = True
 LOGGER = logging.getLogger(__name__)
-MIN_EDGE = 0.02
-MIN_EV = 0.01
+MIN_EDGE = 0.01
+MIN_EV = 0.005
 MAX_EV = 0.15
 MAX_HEAVY_FAVORITE_ODDS = -300
 
@@ -968,6 +968,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         df["model_probability"] = df["model_probability"].clip(lower=0.01, upper=0.99)
         df["market_probability"] = df["odds"].apply(american_to_prob)
+        df["edge"] = np.nan
+        df["expected_value"] = np.nan
         df["edge"] = df["model_probability"] - df["market_probability"]
         df["payout"] = np.where(
             df["odds"] > 0,
@@ -977,6 +979,15 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         df["expected_value"] = (
             df["model_probability"] * df["payout"]
         ) - (1 - df["model_probability"])
+
+        print("[DEBUG] Top edges after calibration + EV recompute:")
+        print(
+            df.sort_values(by="expected_value", ascending=False)[
+                ["away_team", "home_team", "odds", "model_probability", "market_probability", "edge", "expected_value"]
+            ].head(10)
+        )
+        print(df[["odds", "model_probability", "market_probability", "edge", "expected_value"]].head())
+
         df = df[
             (df["expected_value"] <= 1.0)
             & (df["edge"] <= 0.2)
