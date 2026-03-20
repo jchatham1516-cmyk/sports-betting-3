@@ -33,8 +33,8 @@ jobs:
       - name: Create runtime-only placeholder model artifacts
         run: python -m sports_betting.scripts.create_placeholder_models
 
-      - name: Run predictions
-        run: python main.py
+      - name: Build NBA dataset
+        run: python sports_betting/scripts/build_nba_historical.py
 
       - name: Upload prediction outputs
         uses: actions/upload-artifact@v6
