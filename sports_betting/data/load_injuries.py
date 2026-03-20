@@ -1,29 +1,24 @@
 import json
 import os
 
-from sports_betting.data.sportstrader_injuries import fetch_sportstrader_injuries
-
 
 def normalize_team_name(name):
     return str(name).lower().strip()
 
 
 def load_injuries():
-    # Try API first
-    api_data = fetch_sportstrader_injuries()
+    path = "sports_betting/data/injuries/injuries.json"
+    fallback_path = "sports_betting/data/inputs/injuries.json"
 
-    if api_data:
-        injuries = api_data
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            injuries = json.load(f)
+    elif os.path.exists(fallback_path):
+        with open(fallback_path, "r", encoding="utf-8") as f:
+            injuries = json.load(f)
     else:
-        # Fallback to manual file
-        path = "sports_betting/data/inputs/injuries.json"
-
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                injuries = json.load(f)
-        else:
-            print("No injury data available — using empty dict")
-            injuries = {}
+        print("No injury data available — using empty dict")
+        injuries = {}
 
     print("[INJURY STATUS]")
     print(f"Teams with injuries: {len(injuries)}")
