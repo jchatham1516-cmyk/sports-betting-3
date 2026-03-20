@@ -608,7 +608,7 @@ def fetch_live_daily_odds(sport: str, today_only: bool = True) -> pd.DataFrame:
 
     daily = pd.DataFrame(records)
     if daily.empty:
-        print(f"[{sport.upper()}] No games available today — skipping.")
+        print(f"[{sport.upper()}] No games available in the next 48 hours — skipping.")
         return pd.DataFrame()
 
     daily["event_date"] = pd.to_datetime(daily["event_date"], utc=True, errors="coerce")

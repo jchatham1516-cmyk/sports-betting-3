@@ -131,7 +131,7 @@ def test_load_nba_historical_dataset_fills_optional_columns(temp_data_root):
     assert float(df.loc[0, "closing_spread_home"]) == -2.5
 
 
-def test_fetch_live_daily_odds_filters_out_tomorrow_games(monkeypatch):
+def test_fetch_live_daily_odds_includes_tomorrow_games_in_default_window(monkeypatch):
     class _Resp:
         def __init__(self, payload):
             self._payload = payload
@@ -147,11 +147,11 @@ def test_fetch_live_daily_odds_filters_out_tomorrow_games(monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return False
 
-    today_et = datetime.now(EASTERN).date()
-    tomorrow_et = today_et + timedelta(days=1)
+    now_utc = pd.Timestamp.utcnow()
+    in_two_hours = now_utc + pd.Timedelta(hours=2)
+    in_twenty_six_hours = now_utc + pd.Timedelta(hours=26)
 
-    def _event(event_id: str, game_day_et, home: str, away: str):
-        commence_utc = pd.Timestamp(f"{game_day_et.isoformat()} 19:00:00", tz=EASTERN).tz_convert("UTC")
+    def _event(event_id: str, commence_utc: pd.Timestamp, home: str, away: str):
         return {
             "id": event_id,
             "home_team": home,
@@ -185,11 +185,11 @@ def test_fetch_live_daily_odds_filters_out_tomorrow_games(monkeypatch):
                     ],
                 }
             ],
-        }
+    }
 
     payload = [
-        _event("today_game", today_et, "Home Team A", "Away Team A"),
-        _event("tomorrow_game", tomorrow_et, "Home Team B", "Away Team B"),
+        _event("today_game", in_two_hours, "Home Team A", "Away Team A"),
+        _event("tomorrow_game", in_twenty_six_hours, "Home Team B", "Away Team B"),
     ]
 
     monkeypatch.setenv("ODDS_API_KEY", "demo")
@@ -197,7 +197,7 @@ def test_fetch_live_daily_odds_filters_out_tomorrow_games(monkeypatch):
 
     daily = data_io.fetch_live_daily_odds("nba")
 
-    assert daily["game_id"].tolist() == ["today_game"]
+    assert sorted(daily["game_id"].tolist()) == ["today_game", "tomorrow_game"]
 
 
 def test_fetch_live_daily_odds_can_include_future_games_when_requested(monkeypatch):
