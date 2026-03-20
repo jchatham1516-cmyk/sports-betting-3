@@ -310,6 +310,18 @@ def _american_to_decimal(odds: int) -> float:
     return 0.0
 
 
+def american_to_prob(odds: int) -> float:
+    if odds > 0:
+        return 100 / (odds + 100)
+    return abs(odds) / (abs(odds) + 100)
+
+
+def get_payout(odds: int) -> float:
+    if odds > 0:
+        return odds / 100
+    return 100 / abs(odds)
+
+
 def _first_existing_column(frame: pd.DataFrame, columns: list[str], default: float = 0.0) -> pd.Series:
     for column in columns:
         if column in frame.columns:
@@ -605,9 +617,10 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
 
         pred_row = prediction_map.get((market, selection), {})
         model_probability = float(pred_row.get("model_probability", 0.5))
-        market_probability = 1 / decimal_odds
+        market_probability = american_to_prob(american_odds)
+        payout = get_payout(american_odds)
         edge = model_probability - market_probability
-        expected_value = (model_probability * (decimal_odds - 1)) - (1 - model_probability)
+        expected_value = (model_probability * payout) - (1 - model_probability)
         metadata = pred_row.get("metadata", {})
         if isinstance(metadata, str):
             try:
@@ -870,14 +883,28 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     bets_df = pd.DataFrame(bets)
     print("Columns before bet selection:", bets_df.columns.tolist())
-    if not bets_df.empty and "expected_value" in bets_df.columns:
-        df_sorted = bets_df.sort_values(by="expected_value", ascending=False)
-        bets = df_sorted.head(3)
+    if not bets_df.empty and {"expected_value", "edge"}.issubset(bets_df.columns):
+        bets = bets_df[
+            (bets_df["expected_value"] > 0.02) &
+            (bets_df["edge"] > 0.01)
+        ].sort_values(by="expected_value", ascending=False).head(5)
     else:
-        bets = bets_df.head(3)
+        bets = bets_df.head(5)
 
-    print("[FORCED BETS]")
-    print(bets.reindex(columns=["away_team", "home_team", "edge", "expected_value"]))
+    print("[FINAL BETS]")
+    print(
+        bets.reindex(
+            columns=[
+                "away_team",
+                "home_team",
+                "odds",
+                "model_probability",
+                "market_probability",
+                "edge",
+                "expected_value",
+            ]
+        )
+    )
 
     ranked_bets = bets.to_dict("records")
     final_bets = ranked_bets
