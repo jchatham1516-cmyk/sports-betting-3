@@ -6,7 +6,6 @@ import argparse
 import ast
 from collections import defaultdict
 import logging
-import random
 from dataclasses import asdict
 from pathlib import Path
 
@@ -124,29 +123,43 @@ def apply_smart_bet_filter(df):
         spread = row.get("spread", 0)
         row["net_rating_diff"] = -spread * 1.5
 
-        # until we have schedule data, simulate slight randomness
-        row["rest_diff"] = random.choice([-1, 0, 1])
-        row["travel_fatigue_diff"] = random.choice([-0.5, 0, 0.5])
-
-        # favorites slightly more impacted (public bias)
-        ml = row.get("moneyline", 0)
-        if ml < -200:
-            injury = -0.5
-        elif ml > 150:
-            injury = 0.3
+        # REST PROXY (based on spread = stronger teams handle fatigue better)
+        spread = abs(row.get("spread", 0))
+        if spread >= 8:
+            row["rest_diff"] = 1
+        elif spread <= 3:
+            row["rest_diff"] = -1
         else:
-            injury = 0
-        row["injury_impact_diff"] = injury
+            row["rest_diff"] = 0
+
+        # TRAVEL FATIGUE (underdogs more affected)
+        ml = row.get("moneyline", 0)
+        if ml > 150:
+            row["travel_fatigue_diff"] = 0.5
+        elif ml < -200:
+            row["travel_fatigue_diff"] = -0.5
+        else:
+            row["travel_fatigue_diff"] = 0
+
+        # better structured injury proxy
+        if ml < -300:
+            row["injury_impact_diff"] = -0.3  # favorites overpriced risk
+        elif 120 < ml < 250:
+            row["injury_impact_diff"] = 0.2   # dogs undervalued
+        else:
+            row["injury_impact_diff"] = 0
 
         model_prob = row.get("model_prob", 0)
         market_prob = row.get("market_prob", 0)
 
         row["model_prob"] = generate_sharp_edge(row)
+        # normalize elo_diff impact
+        elo_effect = row["elo_diff"] / 150
         feature_boost = (
-            0.02 * (row["elo_diff"] / 100)
-            + 0.015 * (row["net_rating_diff"] / 10)
-            + 0.01 * row["rest_diff"]
-            - 0.01 * row["travel_fatigue_diff"]
+            0.03 * elo_effect
+            + 0.02 * (row["net_rating_diff"] / 10)
+            + 0.015 * row["rest_diff"]
+            - 0.015 * row["travel_fatigue_diff"]
             + 0.01 * row["injury_impact_diff"]
         )
         row["model_prob"] = row["model_prob"] + feature_boost
@@ -158,7 +171,7 @@ def apply_smart_bet_filter(df):
 
         # Blend model + market (very important)
         adjusted_prob = 0.7 * market_prob + 0.3 * model_prob
-        edge = (model_prob - market_prob) * 1.25
+        edge = (model_prob - market_prob) * 1.4
 
         row["adjusted_prob"] = adjusted_prob
         row["edge"] = edge
