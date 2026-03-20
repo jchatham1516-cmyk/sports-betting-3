@@ -915,9 +915,25 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     else:
         bets = df.head(5)
 
+    final_bets = bets.copy()
+    if not final_bets.empty and {"odds", "model_probability"}.issubset(final_bets.columns):
+        final_bets["market_probability"] = final_bets["odds"].apply(american_to_prob)
+        final_bets["payout"] = final_bets["odds"].apply(get_payout)
+
+        final_bets["edge"] = (
+            final_bets["model_probability"] - final_bets["market_probability"]
+        )
+
+        final_bets["expected_value"] = (
+            final_bets["model_probability"] * final_bets["payout"]
+        ) - (1 - final_bets["model_probability"])
+
+        print("FINAL EV CHECK:")
+        print(final_bets[["odds", "model_probability", "market_probability", "edge", "expected_value"]])
+
     print("[FINAL BETS]")
     print(
-        bets.reindex(
+        final_bets.reindex(
             columns=[
                 "away_team",
                 "home_team",
@@ -930,15 +946,15 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         )
     )
 
-    ranked_bets = bets.to_dict("records")
-    final_bets = ranked_bets
-    logger.info("Total bets exported: %s", len(final_bets))
+    ranked_bets = final_bets.to_dict("records")
+    final_bets_records = ranked_bets
+    logger.info("Total bets exported: %s", len(final_bets_records))
 
-    recommendations_df = pd.DataFrame(final_bets)
+    recommendations_df = pd.DataFrame(final_bets_records)
     recommendations_df = recommendations_df.reindex(columns=RECOMMENDATION_COLUMNS)
     save_dataframe(recommendations_df, out_dir / "recommended_bets.csv")
 
-    if final_bets:
+    if final_bets_records:
         bt = recommendations_df.copy()
         bt["recommended_units"] = 1.0
         bt["result_units"] = bt["expected_value"] * bt["recommended_units"]
@@ -946,19 +962,19 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         bt_summary = summarize_backtest(bt)
         save_dataframe(pd.DataFrame([asdict(bt_summary)]), out_dir / "backtest_summary.csv")
 
-    if len(final_bets) == 0:
+    if len(final_bets_records) == 0:
         print("No bets exported today")
     else:
-        print(f"Exporting {len(final_bets)} bets")
-    card = "Top model bets exported from predictions." if final_bets else "No bets exported today"
+        print(f"Exporting {len(final_bets_records)} bets")
+    card = "Top model bets exported from predictions." if final_bets_records else "No bets exported today"
     report_lines = [
         f"Output directory: {out_dir.resolve()}",
         f"Games processed: {total_games_processed}",
         f"Total ranked recommendations available: {len(ranked_bets)}",
-        f"Total recommendations exported (top {TOP_BETS_DAILY}): {len(final_bets)}",
+        f"Total recommendations exported (top {TOP_BETS_DAILY}): {len(final_bets_records)}",
         "",
     ]
-    if final_bets:
+    if final_bets_records:
         report_lines.append("Top model bets exported from predictions.")
     else:
         report_lines.append("No bets exported today")
