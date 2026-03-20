@@ -40,6 +40,12 @@ jobs:
       - name: Run main pipeline
         run: python main.py
 
+      - name: Upload tracking file
+        uses: actions/upload-artifact@v4
+        with:
+          name: bet-history
+          path: data/tracking/bet_history.csv
+
       - name: Upload prediction outputs
         uses: actions/upload-artifact@v6
         with:
