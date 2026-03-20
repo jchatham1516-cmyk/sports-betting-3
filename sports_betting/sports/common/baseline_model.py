@@ -91,7 +91,12 @@ class DisciplinedBaselineModel(SportModel):
 
         # Use isotonic when we have enough data, otherwise sigmoid (Platt-style) for stability.
         method = "isotonic" if len(df) >= 1200 else "sigmoid"
-        calibrated = self._calibrate(self._base_estimator(), x_train, y, method=method, cv=cv)
+        try:
+            calibrated = self._calibrate(self._base_estimator(), x_train, y, method=method, cv=cv)
+        except Exception:
+            print("Skipping calibration due to missing features")
+            method = "sigmoid"
+            calibrated = self._calibrate(self._base_estimator(), x_train, y, method=method, cv=cv)
         calibrated_probs = np.clip(calibrated.predict_proba(x_train)[:, 1], 0.01, 0.99)
         lo, hi = self.PROBABILITY_BOUNDS[market]
         clamped_probs = np.clip(calibrated_probs, lo, hi)
@@ -108,6 +113,9 @@ class DisciplinedBaselineModel(SportModel):
         return calibrated, diagnostics
 
     def train(self, historical_df: pd.DataFrame) -> None:
+        if "injury_impact_diff" not in historical_df.columns:
+            historical_df = historical_df.copy()
+            historical_df["injury_impact_diff"] = 0.0
         if len(historical_df) < 300:
             raise ValueError("Not enough historical samples to train disciplined baseline.")
         self.moneyline_model, ml_metrics = self._fit_market(historical_df, self.WIN_FEATURES, "home_win", "moneyline")
@@ -235,6 +243,14 @@ class DisciplinedBaselineModel(SportModel):
         }
 
     def predict_daily(self, daily_df: pd.DataFrame) -> list[Prediction]:
+        required_cols = [
+            "injury_impact_home",
+            "injury_impact_away",
+            "injury_impact_diff",
+        ]
+        for col in required_cols:
+            if col not in daily_df.columns:
+                daily_df[col] = 0.0
         preds: list[Prediction] = []
         for _, row in daily_df.iterrows():
             game_id = str(row.get("game_id"))

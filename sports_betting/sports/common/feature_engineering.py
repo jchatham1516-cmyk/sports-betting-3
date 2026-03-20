@@ -75,6 +75,8 @@ class TeamTravelState:
 
 def add_injury_features(games_df: pd.DataFrame, sport: str, data_root: Path) -> pd.DataFrame:
     injuries = load_injury_frame(sport, data_root)
+    print("[INJURY STATUS]")
+    print(f"Injuries rows: {len(injuries)}")
     team_summary = summarize_team_injuries(injuries, sport)
     out = games_df.copy()
 
@@ -110,6 +112,7 @@ def add_injury_features(games_df: pd.DataFrame, sport: str, data_root: Path) -> 
     ]
 
     if team_summary.empty:
+        print("No injury data available — using zeros")
         for col in default_cols:
             out[col] = 0.0
         return out

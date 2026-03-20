@@ -163,6 +163,8 @@ def train_sport_model(sport: str, build_historical: bool = False, save_model_art
 
     loader = SPORT_DATASET_LOADERS.get(sport, lambda: load_historical_dataset(sport))
     historical = loader()
+    if "injury_impact_diff" not in historical.columns:
+        historical["injury_impact_diff"] = 0
 
     if sport == "nba":
         report_text = _train_nba_text_report(historical)

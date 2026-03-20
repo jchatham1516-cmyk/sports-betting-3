@@ -11,6 +11,12 @@ FEATURE_COLUMNS = [
     "injury_impact_diff",
 ]
 
+REQUIRED_INJURY_COLUMNS = [
+    "injury_impact_home",
+    "injury_impact_away",
+    "injury_impact_diff",
+]
+
 
 def american_to_implied_prob(odds):
     if odds < 0:
@@ -20,6 +26,9 @@ def american_to_implied_prob(odds):
 
 def prepare_df(df):
     df = df.copy()
+    for col in REQUIRED_INJURY_COLUMNS:
+        if col not in df.columns:
+            df[col] = 0
     if "home_moneyline" not in df.columns:
         if "home_odds" in df.columns:
             df["home_moneyline"] = df["home_odds"]
@@ -41,11 +50,17 @@ def prepare_df(df):
     df["spread_abs"] = df["spread"].abs()
     df["is_favorite"] = (df["home_moneyline"] < 0).astype(int)
     df["spread_value_signal"] = df["spread"] * df["implied_home_prob"]
+    if "injury_impact_diff" not in df.columns:
+        df["injury_impact_diff"] = pd.to_numeric(df["injury_impact_home"], errors="coerce").fillna(0) - pd.to_numeric(df["injury_impact_away"], errors="coerce").fillna(0)
+    else:
+        df["injury_impact_diff"] = pd.to_numeric(df["injury_impact_diff"], errors="coerce").fillna(0)
     return df
 
 
 def train_runtime_model(df):
     df = prepare_df(df)
+    if "injury_impact_diff" not in df.columns:
+        df["injury_impact_diff"] = 0
 
     if len(df) < 10:
         return None
@@ -80,6 +95,9 @@ def train_runtime_model(df):
 
 def predict(model_bundle, games_df):
     df = prepare_df(games_df)
+    for col in REQUIRED_INJURY_COLUMNS:
+        if col not in df.columns:
+            df[col] = 0
 
     scaler = None
     model = model_bundle
