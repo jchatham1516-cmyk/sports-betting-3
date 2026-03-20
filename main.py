@@ -14,6 +14,7 @@ import pandas as pd
 
 from sports_betting.backtesting.engine import summarize_backtest
 from sports_betting.config.settings import load_config
+from sports_betting.models.entities import Prediction
 from sports_betting.scripts.data_io import (
     historical_file_path,
     is_test_mode,
@@ -26,7 +27,7 @@ from sports_betting.sports.common.logging_utils import setup_logging
 from sports_betting.sports.common.odds import expected_value
 from sports_betting.sports.common.reporting import save_dataframe
 from sports_betting.sports.nba.model import NBAModel
-from sports_betting.sports.nba.simple_model import predict as predict_runtime_model
+from sports_betting.sports.nba.simple_model import american_to_implied_prob
 from sports_betting.sports.nba.simple_model import train_runtime_model
 from sports_betting.sports.nfl.model import NFLModel
 from sports_betting.sports.nhl.model import NHLModel
@@ -336,6 +337,84 @@ def train_runtime_home_win_model(historical_df: pd.DataFrame, sport_name: str):
     return model
 
 
+def predict_runtime(model, games_df: pd.DataFrame):
+    df = games_df.copy()
+    df["implied_home_prob"] = df["home_moneyline"].apply(american_to_implied_prob)
+    df["spread_value_signal"] = df["spread"] * df["implied_home_prob"]
+
+    x_frame = df[
+        [
+            "implied_home_prob",
+            "spread",
+            "spread_value_signal",
+        ]
+    ].copy().fillna(0)
+
+    return model.predict_proba(x_frame)[:, 1]
+
+
+def _build_runtime_moneyline_predictions(
+    daily_df: pd.DataFrame,
+    runtime_model,
+    sport_name: str,
+) -> list[Prediction]:
+    if daily_df.empty or runtime_model is None:
+        return []
+
+    runtime_df = daily_df.copy()
+    runtime_df["predicted_home_win_prob"] = predict_runtime(runtime_model, runtime_df)
+    if "model_prob" not in runtime_df.columns:
+        runtime_df["model_prob"] = runtime_df["predicted_home_win_prob"]
+
+    preds: list[Prediction] = []
+    for _, row in runtime_df.iterrows():
+        game_id = str(row.get("game_id"))
+        home_team = str(row.get("home_team"))
+        away_team = str(row.get("away_team"))
+        game_txt = f"{away_team} @ {home_team}"
+
+        home_prob = float(np.clip(row["predicted_home_win_prob"], 0.01, 0.99))
+        away_prob = float(np.clip(1.0 - home_prob, 0.01, 0.99))
+        home_market_prob = american_to_implied_prob(int(row["home_odds"]))
+        away_market_prob = american_to_implied_prob(int(row["away_odds"]))
+
+        preds.extend(
+            [
+                Prediction(
+                    game_id=game_id,
+                    sport=sport_name,
+                    market="moneyline",
+                    side=home_team,
+                    model_probability=home_prob,
+                    market_implied_probability=home_market_prob,
+                    edge=home_prob - home_market_prob,
+                    expected_value=expected_value(home_prob, int(row["home_odds"])),
+                    confidence=home_prob,
+                    reason_summary="Runtime logistic moneyline prediction",
+                    flags=[],
+                    market_prob=home_market_prob,
+                    metadata={"game": game_txt, "predicted_home_win_prob": home_prob, "model_prob": home_prob},
+                ),
+                Prediction(
+                    game_id=game_id,
+                    sport=sport_name,
+                    market="moneyline",
+                    side=away_team,
+                    model_probability=away_prob,
+                    market_implied_probability=away_market_prob,
+                    edge=away_prob - away_market_prob,
+                    expected_value=expected_value(away_prob, int(row["away_odds"])),
+                    confidence=away_prob,
+                    reason_summary="Runtime logistic moneyline prediction",
+                    flags=[],
+                    market_prob=away_market_prob,
+                    metadata={"game": game_txt, "predicted_home_win_prob": home_prob, "model_prob": away_prob},
+                ),
+            ]
+        )
+    return preds
+
+
 def _apply_runtime_home_win_probabilities(
     preds: list,
     daily_df: pd.DataFrame,
@@ -345,7 +424,7 @@ def _apply_runtime_home_win_probabilities(
         return preds
 
     if runtime_model is not None:
-        home_probs = pd.Series(predict_runtime_model(runtime_model, daily_df), index=daily_df["game_id"].astype(str))
+        home_probs = pd.Series(predict_runtime(runtime_model, daily_df), index=daily_df["game_id"].astype(str))
     else:
         implied = pd.to_numeric(_first_existing_column(daily_df, ["home_odds", "home_moneyline"], default=0.0), errors="coerce")
         home_probs = implied.apply(
@@ -518,6 +597,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     for sport_name in sports_to_run:
         logger.info("Running %s pipeline", sport_name)
         model = choose_model(sport_name)
+        model.runtime_model = None
         historical, daily = load_historical_and_daily(sport_name)
         runtime_home_win_model = None
         total_games_processed += len(daily)
@@ -542,9 +622,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                     print(f"[{sport_name.upper()}] WARNING: Very small dataset")
                 try:
                     runtime_home_win_model = train_runtime_model(historical_df)
+                    model.runtime_model = runtime_home_win_model
                     trained_in_run = runtime_home_win_model is not None
                 except Exception:
                     runtime_home_win_model = None
+                    model.runtime_model = None
                     trained_in_run = False
                 logger.info("[%s] Runtime model training completed from historical CSV.", sport_name.upper())
             except Exception:
@@ -566,7 +648,16 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                     f"[{sport_name.upper()}] Runtime training unavailable and no model artifact present at {artifact_path}."
                 )
 
-        preds = model.predict_daily(daily)
+        if hasattr(model, "runtime_model") and model.runtime_model is not None:
+            print(f"[{sport_name.upper()}] Using runtime model for predictions")
+            preds = _build_runtime_moneyline_predictions(daily, model.runtime_model, sport_name)
+        else:
+            print(f"[{sport_name.upper()}] Using baseline model for predictions")
+            try:
+                preds = model.predict_daily(daily)
+            except Exception as exc:
+                logger.warning("[%s] Baseline model prediction failed: %s", sport_name.upper(), exc)
+                preds = []
         preds = _apply_runtime_home_win_probabilities(preds, daily, runtime_home_win_model)
         logger.info("%s games processed for %s (%s predictions generated)", len(daily), sport_name, len(preds))
 
