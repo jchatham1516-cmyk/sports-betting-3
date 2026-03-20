@@ -644,9 +644,8 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
         if market == "moneyline" and home_model_prob is not None:
             model_probability = home_model_prob if selection == "moneyline_home" else 1.0 - home_model_prob
         market_probability = american_to_prob(american_odds)
-        payout = get_payout(american_odds)
-        edge = model_probability - market_probability
-        expected_value = (model_probability * payout) - (1 - model_probability)
+        edge = np.nan
+        expected_value = np.nan
         metadata = pred_row.get("metadata", {})
         if isinstance(metadata, str):
             try:
@@ -949,12 +948,10 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             return 100 / (odds + 100)
         return abs(odds) / (abs(odds) + 100)
 
-    def get_payout(odds):
-        if odds > 0:
-            return odds / 100
-        return 100 / abs(odds)
-
     if not df.empty and {"odds", "model_probability"}.issubset(df.columns):
+        if "model_prob" in df.columns:
+            df["model_prob"] = df["model_prob"].apply(calibrate_prob).clip(lower=0.01, upper=0.99)
+
         if {"selection", "home_team", "away_team", "home_odds", "away_odds", "model_prob", "market"}.issubset(df.columns):
             df = _align_moneyline_model_probability(df)
             df = df[df["market"] == "moneyline"].copy()
@@ -969,10 +966,14 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             ]].head(10))
             df = df[df["model_probability"].notna()].copy()
 
-        df["model_probability"] = df["model_probability"].apply(calibrate_prob).clip(lower=0.01, upper=0.99)
+        df["model_probability"] = df["model_probability"].clip(lower=0.01, upper=0.99)
         df["market_probability"] = df["odds"].apply(american_to_prob)
-        df["payout"] = df["odds"].apply(get_payout)
         df["edge"] = df["model_probability"] - df["market_probability"]
+        df["payout"] = np.where(
+            df["odds"] > 0,
+            df["odds"] / 100,
+            100 / abs(df["odds"])
+        )
         df["expected_value"] = (
             df["model_probability"] * df["payout"]
         ) - (1 - df["model_probability"])
