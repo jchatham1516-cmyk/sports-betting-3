@@ -57,6 +57,16 @@ games_df = pd.DataFrame(games)
 
 # Sort by date
 games_df = games_df.sort_values("event_date")
+if "home_moneyline" not in games_df.columns:
+    games_df["home_moneyline"] = 0
+if "spread" not in games_df.columns:
+    games_df["spread"] = 0
+if "implied_home_prob" not in games_df.columns:
+    games_df["implied_home_prob"] = games_df["home_moneyline"].apply(
+        lambda odds: ((-odds) / ((-odds) + 100)) if odds < 0 else (100 / (odds + 100))
+    )
+games_df["spread_abs"] = games_df["spread"].abs()
+games_df["is_favorite"] = (games_df["home_moneyline"] < 0).astype(int)
 
 print("Total games:", len(games_df))
 
