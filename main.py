@@ -63,9 +63,9 @@ EDGE_THRESHOLD = 0.01
 FORCE_BETS = True
 LOGGER = logging.getLogger(__name__)
 # Temporary loose-filter thresholds for early-stage model learning/data collection.
-MIN_EDGE = 0.003
-MIN_EV = 0.002
-MIN_MODEL_PROBABILITY = 0.50
+MIN_EDGE = 0.002
+MIN_EV = 0.001
+MIN_MODEL_PROBABILITY = 0.40
 MAX_BETS_PER_SPORT_PER_DAY = 5
 MAX_EV = 0.15
 MAX_HEAVY_FAVORITE_ODDS = -300
