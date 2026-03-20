@@ -260,10 +260,11 @@ def apply_smart_bet_filter(df):
 
         # Blend model + market (very important)
         adjusted_prob = 0.7 * market_prob + 0.3 * model_prob
-        edge = (model_prob - market_prob) * 1.5
 
         row["adjusted_prob"] = adjusted_prob
-        row["edge"] = edge
+        # Edge / EV are computed only in the final stage.
+        row["edge"] = np.nan
+        row["expected_value"] = np.nan
 
         results.append(row)
 
@@ -275,10 +276,8 @@ def apply_smart_bet_filter(df):
     sort_key = "expected_value" if "expected_value" in df.columns else "edge"
     df_sorted = df.sort_values(by=sort_key, ascending=False)
 
-    print("[DEBUG] Top edges:")
-    debug_cols = ["away_team", "home_team", "edge", "expected_value"]
-    available_debug_cols = [col for col in debug_cols if col in df_sorted.columns]
-    print(df_sorted[available_debug_cols].head(10))
+    print("[DEBUG] Top edges (FINAL ONLY):")
+    print(df[["edge", "expected_value"]].sort_values(by="expected_value", ascending=False).head(10))
 
     if FORCE_BETS:
         return df_sorted.head(3)
@@ -567,8 +566,8 @@ def _build_runtime_moneyline_predictions(
                     side=home_team,
                     model_probability=home_prob,
                     market_implied_probability=home_market_prob,
-                    edge=home_prob - home_market_prob,
-                    expected_value=expected_value(home_prob, int(row["home_odds"])),
+                    edge=np.nan,
+                    expected_value=np.nan,
                     confidence=home_prob,
                     reason_summary="Runtime logistic moneyline prediction",
                     flags=[],
@@ -582,8 +581,8 @@ def _build_runtime_moneyline_predictions(
                     side=away_team,
                     model_probability=away_prob,
                     market_implied_probability=away_market_prob,
-                    edge=away_prob - away_market_prob,
-                    expected_value=expected_value(away_prob, int(row["away_odds"])),
+                    edge=np.nan,
+                    expected_value=np.nan,
                     confidence=away_prob,
                     reason_summary="Runtime logistic moneyline prediction",
                     flags=[],
@@ -625,9 +624,8 @@ def _apply_runtime_home_win_probabilities(
         is_home_side = str(pred.side) == str(game_row.get("home_team", ""))
         model_probability = home_prob if is_home_side else 1.0 - home_prob
         pred.model_probability = float(np.clip(model_probability, 0.01, 0.99))
-        pred.edge = pred.model_probability - float(pred.market_implied_probability)
-        odds = int(game_row["home_odds"] if is_home_side else game_row["away_odds"])
-        pred.expected_value = expected_value(pred.model_probability, odds)
+        pred.edge = np.nan
+        pred.expected_value = np.nan
         if not isinstance(pred.metadata, dict):
             pred.metadata = {}
         pred.metadata["predicted_home_win_prob"] = home_prob
@@ -908,7 +906,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                     isotonic_model.predict([float(pred.model_probability)])[0]
                 )
                 pred.model_probability = float(np.clip(calibrated_probability, 0.01, 0.99))
-                pred.edge = pred.model_probability - float(pred.market_implied_probability)
+                pred.edge = np.nan
         logger.info("%s games processed for %s (%s predictions generated)", len(daily), sport_name, len(preds))
 
         predictions_by_game_id: dict[str, list[dict]] = defaultdict(list)
@@ -1056,8 +1054,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         df["expected_value"] = (
             df["model_probability"] * df["payout"]
         ) - (1 - df["model_probability"])
-        assert df["expected_value"].max() < 1, "EV is incorrectly scaled!"
-        assert df["expected_value"].min() > -1, "EV is incorrectly scaled!"
+        assert df["expected_value"].max() < 1, "EV ERROR: value too high"
+        assert df["expected_value"].min() > -1, "EV ERROR: value too low"
         df["confidence"] = (df["edge"] * 0.6) + (df["expected_value"] * 0.4)
 
         print("[DEBUG] Top edges after calibration + EV recompute:")
