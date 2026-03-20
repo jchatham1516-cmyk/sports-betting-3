@@ -488,8 +488,6 @@ def predict_runtime(model, games_df: pd.DataFrame):
     # Keep full, non-feature columns intact for downstream bet readability/debugging.
     df = df_full
     df["model_prob"] = model_probs
-    df["edge"] = 0.0
-    df["expected_value"] = 0.0
     return model_probs
 
 
@@ -1005,6 +1003,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             return 100 / (odds + 100)
         return abs(odds) / (abs(odds) + 100)
 
+    def get_payout(odds):
+        if odds > 0:
+            return odds / 100
+        return 100 / abs(odds)
+
     if not df.empty and {"odds", "model_probability"}.issubset(df.columns):
         # Safe bet filtering: remove extreme longshots/heavy favorites before final selection.
         df = df[(df["odds"] > -300) & (df["odds"] < 300)].copy()
@@ -1047,17 +1050,14 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         df["model_probability"] = df["model_probability"] * 1.03
         df["model_probability"] = df["model_probability"].clip(0.02, 0.98)
 
-        # Recompute edge and EV.
+        # Recompute edge and EV from finalized probabilities/odds.
         df["edge"] = df["model_probability"] - df["market_probability"]
-        df["payout"] = np.where(
-            df["odds"] > 0,
-            df["odds"] / 100,
-            100 / abs(df["odds"])
-        )
+        df["payout"] = df["odds"].apply(get_payout)
         df["expected_value"] = (
             df["model_probability"] * df["payout"]
         ) - (1 - df["model_probability"])
-        df["expected_value"] = df["expected_value"].clip(-1, 0.5)
+        assert df["expected_value"].max() < 1, "EV is incorrectly scaled!"
+        assert df["expected_value"].min() > -1, "EV is incorrectly scaled!"
         df["confidence"] = (df["edge"] * 0.6) + (df["expected_value"] * 0.4)
 
         print("[DEBUG] Top edges after calibration + EV recompute:")
@@ -1072,7 +1072,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             .head(10)
         )
 
-        print("EV CHECK:")
+        print("[FINAL EV VALIDATION]")
         print(df[["odds", "model_probability", "market_probability", "edge", "expected_value"]].head())
 
     if not df.empty and {"expected_value", "edge", "model_probability"}.issubset(df.columns):
