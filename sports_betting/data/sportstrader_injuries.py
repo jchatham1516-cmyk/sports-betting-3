@@ -10,13 +10,14 @@ def fetch_sportstrader_injuries():
         print("SPORTTRADER_API_KEY not found")
         return {}
 
-    url = "https://api.sportstrader.com/v1/injuries/nba"  # adjust if needed
+    url = "https://api.sportradar.com/nba/trial/v8/en/league/injuries.json"  # adjust if needed
 
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "x-api-key": api_key,
     }
 
     try:
+        print(f"[SPORTSRADAR] Requesting: {url}")
         response = requests.get(url, headers=headers, timeout=10)
 
         if response.status_code != 200:
@@ -32,19 +33,21 @@ def fetch_sportstrader_injuries():
     injuries = {}
 
     # Normalize response → {team: {player: status}}
-    for item in data.get("injuries", []):
-        team = item.get("team", "").lower()
-        player = item.get("player_name", "")
-        status = item.get("status", "").lower()
+    for team in data.get("teams", []):
+        team_name = f"{team.get('market', '')} {team.get('name', '')}".lower()
 
-        if not team or not player:
-            continue
+        for player in team.get("players", []):
+            if "injury" not in player:
+                continue
 
-        if team not in injuries:
-            injuries[team] = {}
+            player_name = player.get("full_name")
+            status = player["injury"].get("status", "").lower()
 
-        injuries[team][player] = status
+            if team_name not in injuries:
+                injuries[team_name] = {}
 
-    print(f"[SPORTSTRADER] Loaded injuries for {len(injuries)} teams")
+            injuries[team_name][player_name] = status
+
+    print(f"[SPORTSRADAR] Loaded injuries for {len(injuries)} teams")
 
     return injuries
