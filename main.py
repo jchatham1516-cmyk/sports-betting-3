@@ -122,6 +122,7 @@ def apply_smart_bet_filter(df):
         # stronger teams usually have bigger spreads
         spread = row.get("spread", 0)
         row["net_rating_diff"] = -spread * 1.5
+        row["form_diff"] = -spread * 0.8
 
         # REST PROXY (based on spread = stronger teams handle fatigue better)
         spread = abs(row.get("spread", 0))
@@ -149,20 +150,47 @@ def apply_smart_bet_filter(df):
         else:
             row["injury_impact_diff"] = 0
 
+        spread = row.get("spread", 0)
+        if abs(spread) >= 10:
+            row["predictability"] = 1
+        elif abs(spread) <= 3:
+            row["predictability"] = -1
+        else:
+            row["predictability"] = 0
+
+        if ml < 0:
+            ml_strength = abs(ml) / 100
+        else:
+            ml_strength = -ml / 100
+        row["line_disagreement"] = ml_strength - spread
+
+        if ml < -300:
+            row["public_bias"] = -1
+        elif ml > 200:
+            row["public_bias"] = 1
+        else:
+            row["public_bias"] = 0
+
         model_prob = row.get("model_prob", 0)
         market_prob = row.get("market_prob", 0)
 
         row["model_prob"] = generate_sharp_edge(row)
         # normalize elo_diff impact
         elo_effect = row["elo_diff"] / 150
-        feature_boost = (
+        existing_feature_boost = (
             0.03 * elo_effect
             + 0.02 * (row["net_rating_diff"] / 10)
             + 0.015 * row["rest_diff"]
             - 0.015 * row["travel_fatigue_diff"]
             + 0.01 * row["injury_impact_diff"]
         )
-        row["model_prob"] = row["model_prob"] + feature_boost
+        feature_boost = (
+            0.025 * (row["form_diff"] / 10)
+            + 0.02 * row["predictability"]
+            + 0.02 * (row["line_disagreement"] / 10)
+            + 0.015 * row["public_bias"]
+        )
+        row["model_prob"] = row["model_prob"] + existing_feature_boost + feature_boost
         row["model_prob"] = max(0.05, min(0.95, row["model_prob"]))
         model_prob = row.get("model_prob", model_prob)
 
@@ -171,7 +199,7 @@ def apply_smart_bet_filter(df):
 
         # Blend model + market (very important)
         adjusted_prob = 0.7 * market_prob + 0.3 * model_prob
-        edge = (model_prob - market_prob) * 1.4
+        edge = (model_prob - market_prob) * 1.5
 
         row["adjusted_prob"] = adjusted_prob
         row["edge"] = edge
