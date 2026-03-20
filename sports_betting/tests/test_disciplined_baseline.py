@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 
+from sports_betting.sports.common.baseline_model import INJURY_IMPACT_WEIGHT
 from sports_betting.sports.nba.model import NBAModel
 
 
@@ -75,3 +76,26 @@ def test_disciplined_model_predictions_include_support_signals():
         assert 0.0 <= pred.model_probability <= 1.0
         assert "support_count" in pred.metadata
         assert "strength" in pred.reason_summary
+
+
+def test_disciplined_model_scales_and_uses_injury_features():
+    model = NBAModel()
+    train_df = _make_training_frame()
+    train_df["injury_impact_home"] = 0.6
+    train_df["injury_impact_away"] = 0.3
+    train_df["injury_confidence_score"] = 0.9
+    train_df["injury_data_stale_flag"] = 0
+    train_df["starter_out_count_home"] = 1
+    train_df["starter_out_count_away"] = 0
+    train_df["star_player_out_home"] = 1
+    train_df["star_player_out_away"] = 0
+
+    scaled = model._build_features(train_df, ["injury_impact_diff", "injury_confidence_score", "starter_out_count_home"])
+    assert scaled["injury_impact_diff"].iloc[0] == train_df["injury_impact_diff"].iloc[0] * INJURY_IMPACT_WEIGHT
+    assert scaled["injury_confidence_score"].iloc[0] == train_df["injury_confidence_score"].iloc[0] * INJURY_IMPACT_WEIGHT
+    assert scaled["starter_out_count_home"].iloc[0] == train_df["starter_out_count_home"].iloc[0] * INJURY_IMPACT_WEIGHT
+
+    model.train(train_df)
+    moneyline_columns = model.feature_columns["moneyline"]
+    assert "injury_confidence_score" in moneyline_columns
+    assert "starter_out_count_home" in moneyline_columns
