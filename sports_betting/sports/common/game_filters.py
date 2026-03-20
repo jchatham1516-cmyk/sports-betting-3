@@ -8,16 +8,16 @@ import pandas as pd
 
 
 def _games_window(now: datetime) -> tuple[datetime, datetime]:
-    """Return the UTC rolling window [now, now + 18h]."""
+    """Return the UTC rolling window [now, now + 48h]."""
     start = now
-    end = start + timedelta(hours=18)
+    end = start + timedelta(hours=48)
     return start, end
 
 
 def filter_games_window(raw_games: list[dict]) -> list[dict]:
-    """Keep only games starting within the next 18 hours."""
+    """Keep only games starting within the next 48 hours."""
     now = datetime.utcnow().replace(tzinfo=timezone.utc)
-    cutoff = now + timedelta(hours=18)
+    cutoff = now + timedelta(hours=48)
 
     filtered: list[dict] = []
     for game in raw_games:
@@ -36,7 +36,7 @@ def filter_games_window(raw_games: list[dict]) -> list[dict]:
 
 
 def filter_games_for_today(raw_games: list[dict]) -> list[dict]:
-    """Backward-compatible alias for the rolling 18-hour game window filter."""
+    """Backward-compatible alias for the rolling 48-hour game window filter."""
     return filter_games_window(raw_games)
 
 
