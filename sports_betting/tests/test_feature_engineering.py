@@ -50,3 +50,29 @@ def test_enrich_with_context_features_adds_columns(tmp_path: Path):
     assert "recent_epa_diff" in out.columns
     assert "starter_out_count" in out.columns
     assert out.loc[0, "qb_out_flag_home"] == 1
+
+
+def test_enrich_with_context_features_loads_json_injuries(tmp_path: Path):
+    root = tmp_path / "sports_betting" / "data"
+    (root / "injuries").mkdir(parents=True)
+    (root / "external").mkdir(parents=True)
+
+    (root / "injuries" / "injuries.json").write_text(
+        """
+{
+  "home team": {"Player A": "out"},
+  "away team": {"Player B": "questionable"}
+}
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    games = pd.DataFrame(
+        [
+            {"game_id": "1", "home_team": " Home Team ", "away_team": "AWAY TEAM", "event_date": "2025-01-01T00:00:00Z"},
+        ]
+    )
+
+    out = enrich_with_context_features(games, "nba", root)
+    assert out.loc[0, "injury_impact_home"] > 0
+    assert out.loc[0, "injury_impact_away"] > 0
