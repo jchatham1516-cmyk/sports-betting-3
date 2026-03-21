@@ -47,6 +47,31 @@ def test_compute_injury_impact_boosts_star_player_weight():
     assert out.loc[0, "injury_impact_home"] > out.loc[0, "injury_impact_away"]
 
 
+def test_compute_injury_impact_resolves_team_aliases():
+    games = pd.DataFrame([{"home_team": "LA Lakers", "away_team": "NY Knicks"}])
+    injuries = pd.DataFrame(
+        [
+            {"sport": "nba", "team_name": "Los Angeles Lakers", "player": "LeBron James", "status": "out"},
+            {"sport": "nba", "team_name": "New York Knicks", "player": "Starter", "status": "questionable"},
+        ]
+    )
+    out = compute_injury_impact(games, injuries)
+    assert out.loc[0, "injury_impact_home"] > 0
+    assert out.loc[0, "injury_impact_away"] > 0
+
+
+def test_compute_injury_impact_weights_rotation_role():
+    games = pd.DataFrame([{"home_team": "Boston Celtics", "away_team": "Miami Heat"}])
+    injuries = pd.DataFrame(
+        [
+            {"sport": "nba", "team_name": "Boston Celtics", "player": "Bench Player", "status": "questionable", "role": "bench"},
+            {"sport": "nba", "team_name": "Miami Heat", "player": "Rotation Player", "status": "questionable", "role": "rotation"},
+        ]
+    )
+    out = compute_injury_impact(games, injuries)
+    assert out.loc[0, "injury_impact_away"] > out.loc[0, "injury_impact_home"]
+
+
 def test_load_injuries_normalizes_team_keys(tmp_path: Path, monkeypatch):
     root = tmp_path / "repo"
     injury_dir = root / "sports_betting" / "data" / "injuries"

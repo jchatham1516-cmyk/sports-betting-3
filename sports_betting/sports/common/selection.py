@@ -114,9 +114,9 @@ def qualify_prediction(
     if rec is None:
         return None
 
-    min_edge = float(thresholds.get("min_edge", 0.0005))
-    min_ev = float(thresholds.get("min_ev", 0.0))
-    min_confidence = float(thresholds.get("min_confidence", 0.35))
+    min_edge = float(thresholds.get("min_edge", 0.0001))
+    min_ev = float(thresholds.get("min_ev", 0.0001))
+    min_confidence = float(thresholds.get("min_confidence", 0.2))
 
     if rec.edge < min_edge:
         LOGGER.info(
