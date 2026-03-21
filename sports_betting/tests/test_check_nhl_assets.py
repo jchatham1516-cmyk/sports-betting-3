@@ -28,3 +28,12 @@ def test_check_nhl_data_returns_false_when_missing(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(check_nhl_assets, "NHL_HISTORICAL_PATH", hist_path)
 
     assert check_nhl_assets.check_nhl_data() is False
+    assert hist_path.exists()
+
+
+def test_adjust_filter_thresholds_defaults():
+    out = check_nhl_assets.adjust_filter_thresholds()
+
+    assert out["min_edge"] == 5e-05
+    assert out["min_ev"] == 5e-05
+    assert out["min_confidence"] == 0.1
