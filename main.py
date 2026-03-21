@@ -1281,18 +1281,22 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         )
         df["edge"] = (df["edge"] + 0.50 * df["injury_edge_adjustment"]).clip(-0.99, 0.99)
 
-        if "expected_value" not in df.columns or df["expected_value"].isna().all():
-            print("ERROR: 'expected_value' column is missing or contains NaN values.")
-            df["expected_value"] = df.get("expected_value", pd.Series(index=df.index, dtype=float)).fillna(0.5)
-            print("Replaced NaN 'expected_value' with 0.5.")
+        if "expected_value" not in df.columns:
+            print("ERROR: 'expected_value' column is missing. Filling with 0.5.")
+            df["expected_value"] = 0.5
         else:
+            df["expected_value"] = pd.to_numeric(df["expected_value"], errors="coerce")
+            nan_count = int(df["expected_value"].isna().sum())
+            if nan_count > 0:
+                print(f"WARNING: Found {nan_count} NaN 'expected_value' values. Replacing with 0.5.")
+                df["expected_value"] = df["expected_value"].fillna(0.5)
             print("Expected Value Summary:")
             print(df["expected_value"].describe())
 
         max_ev = df["expected_value"].max()
         if pd.notna(max_ev) and max_ev >= 1:
             print(f"Warning: Maximum Expected Value is too high: {max_ev}. Clipping values to 0.99.")
-            df["expected_value"] = df["expected_value"].clip(upper=0.99)
+        df["expected_value"] = df["expected_value"].clip(upper=0.99)
         print("Proceeding with predictions...")
 
         # Remove unrealistic EV outliers before bet selection.
