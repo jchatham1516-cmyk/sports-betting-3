@@ -72,6 +72,11 @@ MAX_HEAVY_FAVORITE_ODDS = -300
 REQUIRED_FEATURES = [
     "injury_impact_diff",
 ]
+INJURY_EDGE_WEIGHT = 0.08
+REST_EDGE_WEIGHT = 0.01
+TRAVEL_EDGE_WEIGHT = -0.03
+FORM_EDGE_WEIGHT = 0.015
+MATCHUP_EDGE_WEIGHT = 0.0005
 
 
 def ensure_required_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -135,6 +140,44 @@ def generate_sharp_edge(row):
 def calibrate_prob(p: float) -> float:
     """Shrink model probability toward 50% to reduce over-conservatism/noise."""
     return 0.5 + (float(p) - 0.5) * 0.6
+
+
+def _numeric_feature(df: pd.DataFrame, col: str) -> pd.Series:
+    if col not in df.columns:
+        return pd.Series(0.0, index=df.index, dtype=float)
+    return pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+
+def add_contextual_adjustments(df: pd.DataFrame) -> pd.DataFrame:
+    """Blend injury/rest/travel/form/matchup context into edge and EV."""
+    out = df.copy()
+    injury_diff = _numeric_feature(out, "injury_impact_diff")
+    rest_diff = _numeric_feature(out, "rest_diff")
+    travel_fatigue_diff = _numeric_feature(out, "travel_fatigue_diff")
+    travel_distance = _numeric_feature(out, "travel_distance")
+    form_diff = _numeric_feature(out, "form_diff")
+    elo_diff = _numeric_feature(out, "elo_diff")
+    net_rating_diff = _numeric_feature(out, "net_rating_diff")
+
+    # Combine matchup strength from available team-quality context.
+    matchup_diff = (0.65 * elo_diff) + (0.35 * net_rating_diff)
+
+    out["injury_edge_adjustment"] = INJURY_EDGE_WEIGHT * injury_diff
+    out["rest_edge_adjustment"] = REST_EDGE_WEIGHT * rest_diff
+    out["travel_edge_adjustment"] = (
+        TRAVEL_EDGE_WEIGHT * travel_fatigue_diff
+        - 0.00005 * travel_distance
+    )
+    out["form_edge_adjustment"] = FORM_EDGE_WEIGHT * (form_diff / 10.0)
+    out["matchup_edge_adjustment"] = MATCHUP_EDGE_WEIGHT * matchup_diff
+    out["context_edge_adjustment"] = (
+        out["injury_edge_adjustment"]
+        + out["rest_edge_adjustment"]
+        + out["travel_edge_adjustment"]
+        + out["form_edge_adjustment"]
+        + out["matchup_edge_adjustment"]
+    ).clip(-0.12, 0.12)
+    return out
 
 
 def fit_isotonic_model(historical_df: pd.DataFrame, runtime_model):
@@ -1127,11 +1170,25 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         # Recompute edge + EV once after all probability adjustments.
         df["model_probability"] = df["model_probability"].fillna(0.5)
         df["market_probability"] = df["market_probability"].fillna(0.5)
+        df = add_contextual_adjustments(df)
+        df["model_probability"] = (
+            df["model_probability"] + df["context_edge_adjustment"]
+        ).clip(0.01, 0.99)
         df["edge"] = df["model_probability"] - df["market_probability"]
         df["payout"] = df["odds"].apply(get_payout)
         df["expected_value"] = (
             df["model_probability"] * df["payout"]
         ) - (1 - df["model_probability"])
+        # Context-aware EV: account for injury, travel, rest, form, and matchup factors.
+        df["expected_value"] = (
+            df["expected_value"]
+            + 0.55 * df["injury_edge_adjustment"]
+            + 0.35 * df["rest_edge_adjustment"]
+            + 0.45 * df["travel_edge_adjustment"]
+            + 0.60 * df["form_edge_adjustment"]
+            + 0.45 * df["matchup_edge_adjustment"]
+        )
+        df["edge"] = (df["edge"] + 0.50 * df["injury_edge_adjustment"]).clip(-0.99, 0.99)
 
         # Remove unrealistic EV outliers before bet selection.
         df = df[df["expected_value"] < 0.25].copy()
@@ -1140,7 +1197,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print(df[["away_team", "home_team", "model_probability", "edge", "expected_value"]].head())
         assert df["expected_value"].max() < 1, "EV ERROR: value too high"
         assert df["expected_value"].min() > -1, "EV ERROR: value too low"
-        df["confidence"] = (df["edge"] * 0.6) + (df["expected_value"] * 0.4)
+        df["confidence"] = (
+            (df["edge"] * 0.45)
+            + (df["expected_value"] * 0.25)
+            + (df["model_probability"] * 0.30)
+        ).clip(0.0, 1.0)
 
         print("[DEBUG] Top edges after calibration + EV recompute:")
         print(
@@ -1217,7 +1278,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         low_edge_mask = df["edge"] <= min_edge
         low_ev_mask = df["expected_value"] <= min_expected_value
         high_ev_override_mask = (df["expected_value"] > 0.05) & (df["model_probability"] < 0.5)
-        low_confidence_mask = (df["model_probability"] <= min_confidence) & (~high_ev_override_mask)
+        confidence_col = "confidence" if "confidence" in df.columns else "model_probability"
+        low_confidence_mask = (df[confidence_col] <= min_confidence) & (~high_ev_override_mask)
 
         filter_fail_summary = {
             "low_edge": int(low_edge_mask.sum()),
@@ -1247,24 +1309,24 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 if bet["expected_value"] <= min_expected_value:
                     fail_reasons.append(f"ev {bet['expected_value']:.4f} <= {min_expected_value:.4f}")
                 if (
-                    bet["model_probability"] <= min_confidence
-                    and not (bet["expected_value"] > 0.05 and bet["model_probability"] < 0.5)
+                    bet[confidence_col] <= min_confidence
+                    and not (bet["expected_value"] > 0.05 and bet[confidence_col] < 0.5)
                 ):
-                    fail_reasons.append(f"confidence {bet['model_probability']:.4f} <= {min_confidence:.4f}")
+                    fail_reasons.append(f"confidence {bet[confidence_col]:.4f} <= {min_confidence:.4f}")
                 matchup = f"{bet['away_team']} @ {bet['home_team']}"
                 if fail_reasons:
                     print(f"[FILTER FAIL] {matchup} | {'; '.join(fail_reasons)}")
                 else:
                     print(
                         f"[FILTER PASS] {matchup} | "
-                        f"edge={bet['edge']:.4f}, ev={bet['expected_value']:.4f}, conf={bet['model_probability']:.4f}"
+                        f"edge={bet['edge']:.4f}, ev={bet['expected_value']:.4f}, conf={bet[confidence_col]:.4f}"
                     )
 
         filtered_bets = df[
-            (df["expected_value"] > min_expected_value) &
-            (df["edge"] > min_edge) &
+            (df["expected_value"] >= min_expected_value) &
+            (df["edge"] >= min_edge) &
             (
-                (df["model_probability"] > min_confidence) |
+                (df[confidence_col] >= min_confidence) |
                 (df["expected_value"] > 0.05)
             )
         ]
