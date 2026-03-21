@@ -19,7 +19,13 @@ from sklearn.isotonic import IsotonicRegression
 from sports_betting.backtesting.engine import summarize_backtest
 from sports_betting.config.settings import load_config
 from sports_betting.data.fetch_injuries import compute_injury_impact, fetch_injuries
-from sports_betting.data.load_injuries import load_injuries, get_team_injury_penalty, match_injury_impact
+from sports_betting.data.load_injuries import (
+    calculate_injury_impact,
+    get_team_injury_penalty,
+    load_injuries,
+    match_injury_impact,
+    normalize_team_name,
+)
 from sports_betting.models.entities import Prediction
 from sports_betting.scripts.injuries import run_injury_pipeline
 from sports_betting.scripts.data_io import (
@@ -77,6 +83,9 @@ REST_EDGE_WEIGHT = 0.01
 TRAVEL_EDGE_WEIGHT = -0.03
 FORM_EDGE_WEIGHT = 0.015
 MATCHUP_EDGE_WEIGHT = 0.0005
+INJURY_IMPACT_FACTOR = 5.0
+CONFIDENCE_MOVING_WINDOW = 10
+CONFIDENCE_THRESHOLD_MULTIPLIER = 1.5
 
 
 def ensure_required_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -178,6 +187,67 @@ def add_contextual_adjustments(df: pd.DataFrame) -> pd.DataFrame:
         + out["matchup_edge_adjustment"]
     ).clip(-0.12, 0.12)
     return out
+
+
+def build_injury_impact_data(injuries: dict) -> pd.DataFrame:
+    rows = []
+    for team, players in (injuries or {}).items():
+        rows.append(
+            {
+                "team": normalize_team_name(team),
+                "impact": float(calculate_injury_impact(players)),
+            }
+        )
+    return pd.DataFrame(rows, columns=["team", "impact"])
+
+
+def adjust_for_injury_impact(predictions: pd.DataFrame, injury_data: pd.DataFrame) -> pd.DataFrame:
+    out = predictions.copy()
+    if out.empty or injury_data.empty:
+        return out
+
+    for col in ("edge", "expected_value"):
+        if col not in out.columns:
+            out[col] = 0.0
+
+    impact_by_team = (
+        injury_data.assign(team=injury_data["team"].map(normalize_team_name))
+        .groupby("team")["impact"]
+        .mean()
+        .to_dict()
+    )
+
+    home_impact = out.get("home_team", pd.Series("", index=out.index)).map(
+        lambda team: float(impact_by_team.get(normalize_team_name(team), 0.0))
+    )
+    away_impact = out.get("away_team", pd.Series("", index=out.index)).map(
+        lambda team: float(impact_by_team.get(normalize_team_name(team), 0.0))
+    )
+    injury_delta = (home_impact - away_impact) * INJURY_IMPACT_FACTOR
+    out["expected_value"] = pd.to_numeric(out["expected_value"], errors="coerce").fillna(0.0) + injury_delta
+    out["edge"] = pd.to_numeric(out["edge"], errors="coerce").fillna(0.0) + injury_delta
+    return out
+
+
+def adjust_confidence_and_thresholds(predictions: pd.DataFrame) -> pd.DataFrame:
+    out = predictions.copy()
+    if out.empty or "confidence" not in out.columns:
+        return out
+
+    recent_results = out.tail(CONFIDENCE_MOVING_WINDOW)
+    mean_confidence = pd.to_numeric(recent_results["confidence"], errors="coerce").mean()
+    if pd.isna(mean_confidence):
+        return out
+    adjusted_confidence = float(mean_confidence) * CONFIDENCE_THRESHOLD_MULTIPLIER
+    out["confidence"] = pd.to_numeric(out["confidence"], errors="coerce").fillna(0.0).apply(
+        lambda x: min(float(x), adjusted_confidence)
+    )
+    return out
+
+
+def process_predictions(predictions: pd.DataFrame, injury_data: pd.DataFrame) -> pd.DataFrame:
+    adjusted = adjust_for_injury_impact(predictions, injury_data)
+    return adjust_confidence_and_thresholds(adjusted)
 
 
 def fit_isotonic_model(historical_df: pd.DataFrame, runtime_model):
@@ -1202,6 +1272,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             + (df["expected_value"] * 0.25)
             + (df["model_probability"] * 0.30)
         ).clip(0.0, 1.0)
+        injury_data = build_injury_impact_data(injuries)
+        df = process_predictions(df, injury_data)
+        df["confidence"] = df["confidence"].clip(0.0, 1.0)
 
         print("[DEBUG] Top edges after calibration + EV recompute:")
         print(
