@@ -83,9 +83,9 @@ REST_EDGE_WEIGHT = 0.01
 TRAVEL_EDGE_WEIGHT = -0.03
 FORM_EDGE_WEIGHT = 0.015
 MATCHUP_EDGE_WEIGHT = 0.0005
-INJURY_IMPACT_FACTOR = 5.0
+INJURY_IMPACT_FACTOR = 10.0
 CONFIDENCE_MOVING_WINDOW = 10
-CONFIDENCE_THRESHOLD_MULTIPLIER = 1.5
+CONFIDENCE_THRESHOLD_MULTIPLIER = 2.0
 
 
 def ensure_required_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -248,6 +248,11 @@ def adjust_confidence_and_thresholds(predictions: pd.DataFrame) -> pd.DataFrame:
 def process_predictions(predictions: pd.DataFrame, injury_data: pd.DataFrame) -> pd.DataFrame:
     adjusted = adjust_for_injury_impact(predictions, injury_data)
     return adjust_confidence_and_thresholds(adjusted)
+
+
+def process_predictions_with_adjusted_injury(predictions: pd.DataFrame, injury_data: pd.DataFrame) -> pd.DataFrame:
+    """Backward-compatible alias for explicit injury-adjusted prediction processing."""
+    return process_predictions(predictions, injury_data)
 
 
 def fit_isotonic_model(historical_df: pd.DataFrame, runtime_model):
