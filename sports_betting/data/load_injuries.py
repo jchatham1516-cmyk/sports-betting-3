@@ -3,7 +3,62 @@ import os
 
 
 def normalize_team_name(name):
-    return str(name).lower().strip()
+    return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in str(name or "")).split())
+
+
+def normalize_player_name(name):
+    return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in str(name or "")).split())
+
+
+def _team_tokens(team_name):
+    return set(normalize_team_name(team_name).split())
+
+
+CITY_ALIASES = {
+    "la": "los angeles",
+    "ny": "new york",
+}
+
+
+def _expand_city_aliases(team_name):
+    tokens = normalize_team_name(team_name).split()
+    expanded = []
+    for token in tokens:
+        alias = CITY_ALIASES.get(token)
+        if alias:
+            expanded.extend(alias.split())
+        else:
+            expanded.append(token)
+    return " ".join(expanded).strip()
+
+
+def resolve_injury_team_key(team_name, injuries):
+    """Best-effort resolver for team names between odds/predictions and injury feeds."""
+    normalized = normalize_team_name(team_name)
+    if not normalized:
+        return None
+    if normalized in injuries:
+        return normalized
+
+    incoming_tokens = _team_tokens(_expand_city_aliases(normalized))
+    if not incoming_tokens:
+        return None
+
+    best_match = None
+    best_overlap = 0.0
+    for candidate in injuries.keys():
+        candidate_tokens = _team_tokens(_expand_city_aliases(candidate))
+        if not candidate_tokens:
+            continue
+        overlap = len(incoming_tokens & candidate_tokens) / max(len(incoming_tokens), len(candidate_tokens))
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_match = candidate
+
+    # Require a meaningful token overlap to avoid false matches.
+    if best_overlap >= 0.5:
+        return best_match
+    return None
 
 
 def _coerce_injuries(payload):
@@ -66,35 +121,62 @@ def load_injuries():
     return injuries
 
 
+STAR_PLAYERS = {
+    "stephen curry",
+    "lebron james",
+    "kevin durant",
+    "nikola jokic",
+    "luka doncic",
+    "giannis antetokounmpo",
+    "jayson tatum",
+    "joel embiid",
+    "shai gilgeous alexander",
+    "anthony davis",
+}
+
+
+def calculate_injury_impact(player_status_map):
+    """Weighted impact score; stars are weighted more heavily than role players."""
+    impact = 0.0
+    for player, status in player_status_map.items():
+        normalized_status = str(status or "").strip().lower()
+        status_weight = 0.0
+        if normalized_status in {"out", "inactive", "ir"}:
+            status_weight = 1.0
+        elif normalized_status == "doubtful":
+            status_weight = 0.75
+        elif normalized_status in {"questionable", "day-to-day", "day to day"}:
+            status_weight = 0.5
+        elif normalized_status == "probable":
+            status_weight = 0.2
+        if status_weight <= 0:
+            continue
+
+        is_star = normalize_player_name(player) in STAR_PLAYERS
+        player_weight = 2.0 if is_star else 1.0
+        impact += status_weight * player_weight
+    return impact
+
+
+def match_injury_impact(predictions_df, injuries):
+    """Map injuries onto home/away teams and compute side-specific + combined impact."""
+    out = predictions_df.copy()
+    out["injury_impact_home"] = 0.0
+    out["injury_impact_away"] = 0.0
+    for idx, row in out.iterrows():
+        home_key = resolve_injury_team_key(row.get("home_team"), injuries)
+        away_key = resolve_injury_team_key(row.get("away_team"), injuries)
+        if home_key:
+            out.at[idx, "injury_impact_home"] = calculate_injury_impact(injuries.get(home_key, {}))
+        if away_key:
+            out.at[idx, "injury_impact_away"] = calculate_injury_impact(injuries.get(away_key, {}))
+    out["combined_injury_impact"] = out["injury_impact_home"] + out["injury_impact_away"]
+    return out
+
+
 def get_team_injury_penalty(team_name, injuries):
-    team_name = normalize_team_name(team_name)
-
-    if team_name not in injuries:
+    resolved_team = resolve_injury_team_key(team_name, injuries)
+    if not resolved_team:
         return 0.0
-
-    penalty = 0.0
-
-    STAR_PLAYERS = [
-        "Stephen Curry",
-        "LeBron James",
-        "Kevin Durant",
-        "Nikola Jokic",
-        "Luka Doncic",
-        "Giannis Antetokounmpo",
-    ]
-
-    for player, status in injuries[team_name].items():
-        status = str(status).lower()
-
-        if player in STAR_PLAYERS:
-            if status == "out":
-                penalty += 0.10  # HUGE impact
-            elif status == "questionable":
-                penalty += 0.05
-        else:
-            if status == "out":
-                penalty += 0.03
-            elif status == "questionable":
-                penalty += 0.015
-
-    return penalty
+    # Convert impact points into a probability penalty.
+    return 0.02 * calculate_injury_impact(injuries.get(resolved_team, {}))
