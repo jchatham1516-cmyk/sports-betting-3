@@ -36,25 +36,35 @@ def fetch_nba_injuries() -> pd.DataFrame:
 
 
 def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> pd.DataFrame:
-    """Compute injury impact for teams based on player injuries"""
+    """Refined injury impact calculation for teams based on player injuries."""
     out = df_games.copy()
     injuries = df_injuries.copy()
+
+    if "home_team" not in out.columns:
+        out["home_team"] = ""
+    if "away_team" not in out.columns:
+        out["away_team"] = ""
+
     if injuries.empty:
         injuries = pd.DataFrame(columns=["team", "player", "status"])
     if "team" not in injuries.columns:
         injuries["team"] = ""
-    if "status" not in injuries.columns:
-        injuries["status"] = ""
+    if "player" not in injuries.columns:
+        injuries["player"] = ""
 
-    out["home_team"] = out.get("home_team", "").astype(str).apply(_normalize_team_name)
-    out["away_team"] = out.get("away_team", "").astype(str).apply(_normalize_team_name)
-    injuries["team"] = injuries["team"].apply(_normalize_team_name)
+    # Normalize team names
+    out["home_team"] = out["home_team"].astype(str).apply(_normalize_team_name)
+    out["away_team"] = out["away_team"].astype(str).apply(_normalize_team_name)
+    injuries["team"] = injuries["team"].astype(str).apply(_normalize_team_name)
 
-    injury_map = injuries.groupby("team").size().to_dict()
+    # Mapping injury data to teams
+    injury_map = injuries.groupby("team")["player"].apply(len)
 
+    # Apply injury impact mapping to teams
     out["injury_impact_home"] = out["home_team"].map(injury_map).fillna(0)
     out["injury_impact_away"] = out["away_team"].map(injury_map).fillna(0)
 
+    # Calculate the difference between away team and home team injury impact
     out["injury_impact_diff"] = out["injury_impact_away"] - out["injury_impact_home"]
 
     return out
