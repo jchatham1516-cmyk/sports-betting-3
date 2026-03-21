@@ -11,6 +11,8 @@ import pandas as pd
 
 from sports_betting.sports.common.injuries import load_injury_frame, normalize_status, normalize_team_name, summarize_team_injuries
 
+INJURY_EDGE_EV_SCALING_FACTOR = 2.0
+
 SPORT_EFFICIENCY_FEATURES: dict[str, list[str]] = {
     "nba": [
         "off_rating",
@@ -349,8 +351,10 @@ def add_market_context_features(games_df: pd.DataFrame) -> pd.DataFrame:
     if needs_adjust.any():
         out.loc[needs_adjust, "adjusted_prob"] = (0.75 * out.loc[needs_adjust, "market_prob"]) + (0.25 * out.loc[needs_adjust, "model_prob"])
     out["model_prob"] = out["adjusted_prob"]
-    out["edge"] = out["adjusted_prob"] - out["market_prob"]
-    out["expected_value"] = _series("expected_value")
+    injury_impact_diff = _series("injury_impact_diff")
+    injury_adjustment = injury_impact_diff * INJURY_EDGE_EV_SCALING_FACTOR
+    out["edge"] = (out["adjusted_prob"] - out["market_prob"]) + injury_adjustment
+    out["expected_value"] = _series("expected_value") + injury_adjustment
     out["open_line"] = _series("open_line") if "open_line" in out.columns else _series("spread_line")
     out["current_line"] = _series("current_line") if "current_line" in out.columns else _series("spread_line")
     out["line_movement"] = out["current_line"] - out["open_line"]
