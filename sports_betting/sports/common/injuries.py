@@ -295,7 +295,14 @@ def summarize_team_injuries(frame: pd.DataFrame, sport: str) -> pd.DataFrame:
     work["status_weight"] = work["status"].map(STATUS_WEIGHT).fillna(0.4)
     work["impact_rating"] = pd.to_numeric(work.get("impact_rating", 0.0), errors="coerce").fillna(0.0)
     work["role_weight"] = work.apply(
-        lambda r: max(_role_weight(str(r.get("expected_minutes_or_role", "")), r.get("expected_minutes_or_role", 0.0)), float(r.get("impact_rating", 0.0))), axis=1
+        lambda r: max(
+            _role_weight(
+                str(r.get("role") or r.get("expected_minutes_or_role") or ""),
+                r.get("expected_minutes") if "expected_minutes" in work.columns else r.get("expected_minutes_or_role", 0.0),
+            ),
+            float(r.get("impact_rating", 0.0)),
+        ),
+        axis=1,
     )
 
     multipliers_units = work.apply(

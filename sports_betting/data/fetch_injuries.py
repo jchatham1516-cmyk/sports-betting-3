@@ -3,6 +3,17 @@ import pandas as pd
 from urllib.request import urlopen
 
 STAR_PLAYER_MULTIPLIER = 2.0
+ROLE_MULTIPLIERS = {
+    "superstar": 2.0,
+    "all-star": 1.75,
+    "all star": 1.75,
+    "star": 1.6,
+    "starter": 1.35,
+    "rotation": 1.15,
+    "sixth man": 1.15,
+    "bench": 1.0,
+    "depth": 0.9,
+}
 STAR_PLAYER_BY_SPORT = {
     "nba": {
         "lebron james",
@@ -32,6 +43,46 @@ STAR_PLAYER_BY_SPORT = {
 
 def _normalize_team_name(name: str | None) -> str:
     return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in str(name)).split())
+
+
+def _team_tokens(team_name: str | None) -> set[str]:
+    return set(_normalize_team_name(team_name).split())
+
+
+def _expand_city_aliases(team_name: str | None) -> str:
+    aliases = {"la": "los angeles", "ny": "new york", "st": "saint"}
+    expanded: list[str] = []
+    for token in _normalize_team_name(team_name).split():
+        alias = aliases.get(token)
+        if alias:
+            expanded.extend(alias.split())
+        else:
+            expanded.append(token)
+    return " ".join(expanded).strip()
+
+
+def _resolve_team_key(team_name: str | None, available_keys: set[str]) -> str | None:
+    normalized = _normalize_team_name(team_name)
+    if not normalized:
+        return None
+    if normalized in available_keys:
+        return normalized
+
+    incoming_tokens = _team_tokens(_expand_city_aliases(normalized))
+    if not incoming_tokens:
+        return None
+
+    best_match = None
+    best_overlap = 0.0
+    for candidate in available_keys:
+        candidate_tokens = _team_tokens(_expand_city_aliases(candidate))
+        if not candidate_tokens:
+            continue
+        overlap = len(incoming_tokens & candidate_tokens) / max(len(incoming_tokens), len(candidate_tokens))
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_match = candidate
+    return best_match if best_overlap >= 0.5 else None
 
 
 def _status_weight(status: str | None) -> float:
@@ -118,8 +169,23 @@ def _is_star_player(player_name: str, sport: str, role: str) -> bool:
 
 def _player_injury_impact(row: pd.Series) -> float:
     status_weight = _status_weight(row.get("status"))
-    star_multiplier = STAR_PLAYER_MULTIPLIER if _is_star_player(row.get("player"), row.get("sport"), row.get("role")) else 1.0
-    return status_weight * star_multiplier
+    role_key = str(row.get("role") or row.get("expected_minutes_or_role") or "").strip().lower()
+    position_key = str(row.get("position") or "").strip().lower()
+    role_multiplier = ROLE_MULTIPLIERS.get(role_key, 1.0)
+
+    expected_minutes = pd.to_numeric(row.get("expected_minutes") or row.get("minutes") or row.get("expected_minutes_or_role"), errors="coerce")
+    if pd.notna(expected_minutes):
+        if expected_minutes >= 34:
+            role_multiplier = max(role_multiplier, 1.6)
+        elif expected_minutes >= 28:
+            role_multiplier = max(role_multiplier, 1.35)
+        elif expected_minutes >= 20:
+            role_multiplier = max(role_multiplier, 1.15)
+    if position_key in {"qb", "g", "goalie"}:
+        role_multiplier = max(role_multiplier, 1.5)
+
+    star_multiplier = STAR_PLAYER_MULTIPLIER if _is_star_player(row.get("player"), row.get("sport"), role_key) else 1.0
+    return status_weight * role_multiplier * star_multiplier
 
 
 def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> pd.DataFrame:
@@ -144,9 +210,13 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
     injury_map = injuries.groupby("team")["impact"].sum()
     print(f"[INJURY IMPACT] teams with mapped injuries: {len(injury_map)}")
 
+    available_keys = set(injury_map.index.astype(str))
+    out["_home_injury_key"] = out["_home_team_key"].apply(lambda team: _resolve_team_key(team, available_keys))
+    out["_away_injury_key"] = out["_away_team_key"].apply(lambda team: _resolve_team_key(team, available_keys))
+
     # Apply injury impact mapping to teams
-    out["injury_impact_home"] = out["_home_team_key"].map(injury_map).fillna(0)
-    out["injury_impact_away"] = out["_away_team_key"].map(injury_map).fillna(0)
+    out["injury_impact_home"] = out["_home_injury_key"].map(injury_map).fillna(0)
+    out["injury_impact_away"] = out["_away_injury_key"].map(injury_map).fillna(0)
 
     # Calculate the difference between away team and home team injury impact
     out["injury_impact_diff"] = out["injury_impact_away"] - out["injury_impact_home"]
@@ -156,6 +226,6 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
         print("[INJURY IMPACT] top impacted teams:")
         print(injury_map.sort_values(ascending=False).head(10))
 
-    out = out.drop(columns=["_home_team_key", "_away_team_key"], errors="ignore")
+    out = out.drop(columns=["_home_team_key", "_away_team_key", "_home_injury_key", "_away_injury_key"], errors="ignore")
 
     return out

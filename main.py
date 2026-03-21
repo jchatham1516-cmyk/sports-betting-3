@@ -63,9 +63,9 @@ EDGE_THRESHOLD = 0.01
 FORCE_BETS = True
 LOGGER = logging.getLogger(__name__)
 # Temporary loose-filter thresholds for early-stage model learning/data collection.
-MIN_EDGE = 0.001
-MIN_EV = 0.0005
-MIN_MODEL_PROBABILITY = 0.30
+MIN_EDGE = 0.0001
+MIN_EV = 0.0001
+MIN_MODEL_PROBABILITY = 0.20
 MAX_BETS_PER_SPORT_PER_DAY = 5
 MAX_EV = 0.15
 MAX_HEAVY_FAVORITE_ODDS = -300
@@ -1219,14 +1219,25 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         high_ev_override_mask = (df["expected_value"] > 0.05) & (df["model_probability"] < 0.5)
         low_confidence_mask = (df["model_probability"] <= min_confidence) & (~high_ev_override_mask)
 
+        filter_fail_summary = {
+            "low_edge": int(low_edge_mask.sum()),
+            "low_ev": int(low_ev_mask.sum()),
+            "low_confidence": int(low_confidence_mask.sum()),
+        }
         if low_edge_mask.any():
-            print(f"Rejected bet due to low edge: {int(low_edge_mask.sum())}")
+            print(f"Rejected bet due to low edge: {filter_fail_summary['low_edge']}")
         if low_ev_mask.any():
-            print(f"Rejected bet due to low EV: {int(low_ev_mask.sum())}")
+            print(f"Rejected bet due to low EV: {filter_fail_summary['low_ev']}")
         if low_confidence_mask.any():
-            print(f"Rejected bet due to low confidence: {int(low_confidence_mask.sum())}")
+            print(f"Rejected bet due to low confidence: {filter_fail_summary['low_confidence']}")
         if high_ev_override_mask.any():
             print("Allowed high EV underdog bet")
+        any_rejection_mask = low_edge_mask | low_ev_mask | low_confidence_mask
+        print(
+            "[FILTER SUMMARY] "
+            f"total_games={len(df)}, passed={int((~any_rejection_mask).sum())}, "
+            f"rejected={int(any_rejection_mask.sum())}, details={filter_fail_summary}"
+        )
 
         if {"home_team", "away_team", "edge", "expected_value", "model_probability"}.issubset(df.columns):
             for _, bet in df.iterrows():
