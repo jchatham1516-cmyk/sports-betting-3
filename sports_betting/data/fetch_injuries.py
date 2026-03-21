@@ -69,6 +69,8 @@ def _ensure_injury_frame(df_injuries: pd.DataFrame) -> pd.DataFrame:
     if df_injuries.empty:
         return pd.DataFrame(columns=["sport", "team", "player", "status"])
     injuries = df_injuries.copy()
+    if "team_name" in injuries.columns and "team" not in injuries.columns:
+        injuries["team"] = injuries["team_name"]
     for col in ["sport", "team", "player", "status"]:
         if col not in injuries.columns:
             injuries[col] = ""
@@ -97,6 +99,7 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
 
     # Weighted injury mapping to teams, keeps NHL/NBA status severity.
     injury_map = injuries.groupby("team")["impact"].sum()
+    print(f"[INJURY IMPACT] teams with mapped injuries: {len(injury_map)}")
 
     # Apply injury impact mapping to teams
     out["injury_impact_home"] = out["home_team"].map(injury_map).fillna(0)
@@ -104,5 +107,7 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
 
     # Calculate the difference between away team and home team injury impact
     out["injury_impact_diff"] = out["injury_impact_away"] - out["injury_impact_home"]
+    matched_games = ((out["injury_impact_home"] != 0) | (out["injury_impact_away"] != 0)).sum()
+    print(f"[INJURY IMPACT] matched games: {int(matched_games)} / {len(out)}")
 
     return out

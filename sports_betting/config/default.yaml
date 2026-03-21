@@ -15,17 +15,17 @@ bankroll:
 
 thresholds:
   nba:
-    moneyline: {min_edge: 0.001, min_ev: 0.001, min_confidence: 0.40}
-    spread:    {min_edge: 0.001, min_ev: 0.001, min_confidence: 0.40}
-    total:     {min_edge: 0.001, min_ev: 0.001, min_confidence: 0.40}
+    moneyline: {min_edge: 0.0005, min_ev: 0.0, min_confidence: 0.35}
+    spread:    {min_edge: 0.0005, min_ev: 0.0, min_confidence: 0.35}
+    total:     {min_edge: 0.0005, min_ev: 0.0, min_confidence: 0.35}
   nfl:
-    moneyline: {min_edge: 0.001, min_ev: 0.001, min_confidence: 0.40}
-    spread:    {min_edge: 0.001, min_ev: 0.001, min_confidence: 0.40}
-    total:     {min_edge: 0.001, min_ev: 0.001, min_confidence: 0.40}
+    moneyline: {min_edge: 0.0005, min_ev: 0.0, min_confidence: 0.35}
+    spread:    {min_edge: 0.0005, min_ev: 0.0, min_confidence: 0.35}
+    total:     {min_edge: 0.0005, min_ev: 0.0, min_confidence: 0.35}
   nhl:
-    moneyline: {min_edge: 0.001, min_ev: 0.001, min_confidence: 0.40}
-    spread:    {min_edge: 0.001, min_ev: 0.001, min_confidence: 0.40}
-    total:     {min_edge: 0.001, min_ev: 0.001, min_confidence: 0.40}
+    moneyline: {min_edge: 0.0005, min_ev: 0.0, min_confidence: 0.35}
+    spread:    {min_edge: 0.0005, min_ev: 0.0, min_confidence: 0.35}
+    total:     {min_edge: 0.0005, min_ev: 0.0, min_confidence: 0.35}
 
 output:
   top_n: 8

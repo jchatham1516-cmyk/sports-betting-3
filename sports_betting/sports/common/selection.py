@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from datetime import date
+import logging
 
 from sports_betting.models.entities import BetRecommendation, Prediction
 from sports_betting.sports.common.risk import BankrollConfig, recommend_units
+
+LOGGER = logging.getLogger(__name__)
 
 
 def confidence_tier(score: float) -> str:
@@ -111,15 +114,39 @@ def qualify_prediction(
     if rec is None:
         return None
 
-    min_edge = float(thresholds.get("min_edge", 0.001))
-    min_ev = float(thresholds.get("min_ev", 0.001))
-    min_confidence = float(thresholds.get("min_confidence", 0.40))
+    min_edge = float(thresholds.get("min_edge", 0.0005))
+    min_ev = float(thresholds.get("min_ev", 0.0))
+    min_confidence = float(thresholds.get("min_confidence", 0.35))
 
     if rec.edge < min_edge:
+        LOGGER.info(
+            "[FILTER] rejected %s %s (%s): edge %.4f < min_edge %.4f",
+            pred.sport,
+            game_text,
+            pred.market,
+            rec.edge,
+            min_edge,
+        )
         return None
     if rec.expected_value < min_ev:
+        LOGGER.info(
+            "[FILTER] rejected %s %s (%s): ev %.4f < min_ev %.4f",
+            pred.sport,
+            game_text,
+            pred.market,
+            rec.expected_value,
+            min_ev,
+        )
         return None
     if rec.confidence_score < min_confidence:
+        LOGGER.info(
+            "[FILTER] rejected %s %s (%s): confidence %.4f < min_confidence %.4f",
+            pred.sport,
+            game_text,
+            pred.market,
+            rec.confidence_score,
+            min_confidence,
+        )
         return None
 
     return rec
