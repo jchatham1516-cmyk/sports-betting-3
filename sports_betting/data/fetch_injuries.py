@@ -4,8 +4,6 @@ from urllib.request import urlopen
 
 
 def _normalize_team_name(name: str | None) -> str:
-    if not name:
-        return ""
     return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in str(name)).split())
 
 
@@ -38,6 +36,7 @@ def fetch_nba_injuries() -> pd.DataFrame:
 
 
 def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> pd.DataFrame:
+    """Compute injury impact for teams based on player injuries"""
     out = df_games.copy()
     injuries = df_injuries.copy()
     if injuries.empty:
