@@ -18,7 +18,7 @@ from sklearn.isotonic import IsotonicRegression
 
 from sports_betting.backtesting.engine import summarize_backtest
 from sports_betting.config.settings import load_config
-from sports_betting.data.fetch_injuries import compute_injury_impact, fetch_nba_injuries
+from sports_betting.data.fetch_injuries import compute_injury_impact, fetch_injuries
 from sports_betting.data.load_injuries import load_injuries, get_team_injury_penalty
 from sports_betting.models.entities import Prediction
 from sports_betting.scripts.injuries import run_injury_pipeline
@@ -852,11 +852,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         historical = ensure_required_features(historical)
         daily = ensure_required_features(daily)
         daily = _ensure_runtime_prediction_columns(daily)
-        if sport_name == "nba":
+        if sport_name in {"nba", "nhl"}:
             try:
-                injuries_df = fetch_nba_injuries()
+                injuries_df = fetch_injuries(sport_name)
                 daily = compute_injury_impact(daily, injuries_df)
-                print("[INJURY DEBUG]")
+                print(f"[INJURY DEBUG][{sport_name.upper()}]")
                 print(injuries_df.head())
                 print(
                     daily[
@@ -870,7 +870,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                     ].head()
                 )
             except Exception:
-                print("Injury data failed, using zeros")
+                print(f"Injury data failed for {sport_name}, using zeros")
                 daily["injury_impact_home"] = 0
                 daily["injury_impact_away"] = 0
                 daily["injury_impact_diff"] = 0

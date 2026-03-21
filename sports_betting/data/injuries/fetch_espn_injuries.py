@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
@@ -21,9 +22,15 @@ def _safe_team_name(table) -> str:
         heading = section.find(["h2", "h3"])
         if heading:
             return heading.get_text(" ", strip=True).lower()
+        aria_label = section.get("aria-label")
+        if aria_label:
+            return str(aria_label).strip().lower()
     label = table.find_previous(["h2", "h3", "span"])
     if label:
         return label.get_text(" ", strip=True).lower()
+    caption = table.find("caption")
+    if caption:
+        return caption.get_text(" ", strip=True).lower()
     return "unknown"
 
 def fetch_espn_injuries():
@@ -61,9 +68,11 @@ def fetch_espn_injuries():
 def run_injury_pipeline():
     """Run the injury scraping and save to JSON."""
     injuries = fetch_espn_injuries()
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+    output_path = Path(OUTPUT_PATH)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as f:
         json.dump(injuries, f, indent=2)
-    print(f"[ESPN] Saved injuries to {OUTPUT_PATH}")
+    print(f"[ESPN] Saved injuries to {output_path}")
 
 if __name__ == "__main__":
     run_injury_pipeline()
