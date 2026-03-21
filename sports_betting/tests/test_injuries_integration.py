@@ -22,6 +22,31 @@ def test_compute_injury_impact_uses_team_name_column():
     assert "injury_impact_diff" in out.columns
 
 
+def test_compute_injury_impact_keeps_original_team_names():
+    games = pd.DataFrame([{"home_team": "New York Rangers", "away_team": "Boston Bruins"}])
+    injuries = pd.DataFrame(
+        [{"sport": "nhl", "team_name": "New York Rangers", "player": "Player A", "status": "out"}]
+    )
+
+    out = compute_injury_impact(games, injuries)
+
+    assert out.loc[0, "home_team"] == "New York Rangers"
+    assert out.loc[0, "away_team"] == "Boston Bruins"
+
+
+def test_compute_injury_impact_boosts_star_player_weight():
+    games = pd.DataFrame([{"home_team": "Los Angeles Lakers", "away_team": "Boston Celtics"}])
+    injuries = pd.DataFrame(
+        [
+            {"sport": "nba", "team_name": "Los Angeles Lakers", "player": "LeBron James", "status": "out"},
+            {"sport": "nba", "team_name": "Boston Celtics", "player": "Depth Player", "status": "out"},
+        ]
+    )
+
+    out = compute_injury_impact(games, injuries)
+    assert out.loc[0, "injury_impact_home"] > out.loc[0, "injury_impact_away"]
+
+
 def test_load_injuries_normalizes_team_keys(tmp_path: Path, monkeypatch):
     root = tmp_path / "repo"
     injury_dir = root / "sports_betting" / "data" / "injuries"

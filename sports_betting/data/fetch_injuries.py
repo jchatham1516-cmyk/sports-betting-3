@@ -2,6 +2,33 @@ import json
 import pandas as pd
 from urllib.request import urlopen
 
+STAR_PLAYER_MULTIPLIER = 2.0
+STAR_PLAYER_BY_SPORT = {
+    "nba": {
+        "lebron james",
+        "nikola jokic",
+        "giannis antetokounmpo",
+        "luka doncic",
+        "jayson tatum",
+        "stephen curry",
+        "kevin durant",
+        "joel embiid",
+        "shai gilgeous alexander",
+        "anthony davis",
+    },
+    "nhl": {
+        "connor mcdavid",
+        "nathan mackinnon",
+        "auston matthews",
+        "nikita kucherov",
+        "david pastrnak",
+        "cale makar",
+        "igor shesterkin",
+        "andrei vasilevskiy",
+        "ilya sorokin",
+    },
+}
+
 
 def _normalize_team_name(name: str | None) -> str:
     return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in str(name)).split())
@@ -79,6 +106,22 @@ def _ensure_injury_frame(df_injuries: pd.DataFrame) -> pd.DataFrame:
     return injuries
 
 
+def _is_star_player(player_name: str, sport: str, role: str) -> bool:
+    player_key = str(player_name or "").strip().lower()
+    role_key = str(role or "").strip().lower()
+    if not player_key:
+        return False
+    if player_key in STAR_PLAYER_BY_SPORT.get(str(sport or "").strip().lower(), set()):
+        return True
+    return role_key in {"superstar", "all-star", "all star", "star", "elite qb", "starting goalie"}
+
+
+def _player_injury_impact(row: pd.Series) -> float:
+    status_weight = _status_weight(row.get("status"))
+    star_multiplier = STAR_PLAYER_MULTIPLIER if _is_star_player(row.get("player"), row.get("sport"), row.get("role")) else 1.0
+    return status_weight * star_multiplier
+
+
 def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> pd.DataFrame:
     """Refined injury impact calculation for teams based on player injuries."""
     out = df_games.copy()
@@ -89,11 +132,11 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
     if "away_team" not in out.columns:
         out["away_team"] = ""
 
-    # Normalize team names
-    out["home_team"] = out["home_team"].astype(str).apply(_normalize_team_name)
-    out["away_team"] = out["away_team"].astype(str).apply(_normalize_team_name)
+    # Keep display team names intact, but create normalized mapping keys.
+    out["_home_team_key"] = out["home_team"].astype(str).apply(_normalize_team_name)
+    out["_away_team_key"] = out["away_team"].astype(str).apply(_normalize_team_name)
     if not injuries.empty:
-        injuries["impact"] = injuries["status"].apply(_status_weight)
+        injuries["impact"] = injuries.apply(_player_injury_impact, axis=1)
     else:
         injuries["impact"] = pd.Series(dtype=float)
 
@@ -102,12 +145,17 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
     print(f"[INJURY IMPACT] teams with mapped injuries: {len(injury_map)}")
 
     # Apply injury impact mapping to teams
-    out["injury_impact_home"] = out["home_team"].map(injury_map).fillna(0)
-    out["injury_impact_away"] = out["away_team"].map(injury_map).fillna(0)
+    out["injury_impact_home"] = out["_home_team_key"].map(injury_map).fillna(0)
+    out["injury_impact_away"] = out["_away_team_key"].map(injury_map).fillna(0)
 
     # Calculate the difference between away team and home team injury impact
     out["injury_impact_diff"] = out["injury_impact_away"] - out["injury_impact_home"]
     matched_games = ((out["injury_impact_home"] != 0) | (out["injury_impact_away"] != 0)).sum()
     print(f"[INJURY IMPACT] matched games: {int(matched_games)} / {len(out)}")
+    if not injury_map.empty:
+        print("[INJURY IMPACT] top impacted teams:")
+        print(injury_map.sort_values(ascending=False).head(10))
+
+    out = out.drop(columns=["_home_team_key", "_away_team_key"], errors="ignore")
 
     return out

@@ -1189,10 +1189,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 ]
             )
 
-        df = df[
-            (df["expected_value"] > 0.02) &
-            (df["model_probability"] < 0.60)
-        ].copy()
+        df = df.copy()
         min_edge = MIN_EDGE
         min_expected_value = MIN_EV
         min_confidence = MIN_MODEL_PROBABILITY
@@ -1200,7 +1197,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print(f"min_edge={min_edge}, min_ev={min_expected_value}, min_conf={min_confidence}")
 
         low_edge_mask = df["edge"] <= min_edge
-        low_ev_mask = df["expected_value"] <= 0
+        low_ev_mask = df["expected_value"] <= min_expected_value
         high_ev_override_mask = (df["expected_value"] > 0.05) & (df["model_probability"] < 0.5)
         low_confidence_mask = (df["model_probability"] <= min_confidence) & (~high_ev_override_mask)
 
@@ -1213,8 +1210,29 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         if high_ev_override_mask.any():
             print("Allowed high EV underdog bet")
 
+        if {"home_team", "away_team", "edge", "expected_value", "model_probability"}.issubset(df.columns):
+            for _, bet in df.iterrows():
+                fail_reasons = []
+                if bet["edge"] <= min_edge:
+                    fail_reasons.append(f"edge {bet['edge']:.4f} <= {min_edge:.4f}")
+                if bet["expected_value"] <= min_expected_value:
+                    fail_reasons.append(f"ev {bet['expected_value']:.4f} <= {min_expected_value:.4f}")
+                if (
+                    bet["model_probability"] <= min_confidence
+                    and not (bet["expected_value"] > 0.05 and bet["model_probability"] < 0.5)
+                ):
+                    fail_reasons.append(f"confidence {bet['model_probability']:.4f} <= {min_confidence:.4f}")
+                matchup = f"{bet['away_team']} @ {bet['home_team']}"
+                if fail_reasons:
+                    print(f"[FILTER FAIL] {matchup} | {'; '.join(fail_reasons)}")
+                else:
+                    print(
+                        f"[FILTER PASS] {matchup} | "
+                        f"edge={bet['edge']:.4f}, ev={bet['expected_value']:.4f}, conf={bet['model_probability']:.4f}"
+                    )
+
         filtered_bets = df[
-            (df["expected_value"] > 0) &
+            (df["expected_value"] > min_expected_value) &
             (df["edge"] > min_edge) &
             (
                 (df["model_probability"] > min_confidence) |
