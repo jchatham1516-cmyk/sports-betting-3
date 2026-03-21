@@ -1187,15 +1187,27 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         if {"selection", "home_team", "away_team", "home_odds", "away_odds", "model_prob", "market"}.issubset(df.columns):
             df = _align_moneyline_model_probability(df)
             df = df[df["market"] == "moneyline"].copy()
-            print(df[[
-                "selection",
-                "home_team",
-                "away_team",
-                "favorite_team",
-                "model_prob",
-                "model_prob_home",
-                "model_probability",
-            ]].head(10))
+            expected_debug_columns = ["favorite_team", "model_prob_home"]
+            missing_debug_columns = [col for col in expected_debug_columns if col not in df.columns]
+            if missing_debug_columns:
+                print(f"Warning: The following columns are missing: {missing_debug_columns}")
+                print("One or both of the expected columns are missing. Displaying available columns:")
+                print(df.columns.tolist())
+            else:
+                print("All expected columns are present. Proceeding with data selection...")
+                print(
+                    df[
+                        [
+                            "selection",
+                            "home_team",
+                            "away_team",
+                            "favorite_team",
+                            "model_prob",
+                            "model_prob_home",
+                            "model_probability",
+                        ]
+                    ].head(10)
+                )
             df = df[df["model_probability"].notna()].copy()
 
         df["market_probability"] = df["odds"].apply(american_to_prob)
