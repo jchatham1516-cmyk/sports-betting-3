@@ -1187,10 +1187,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         if {"selection", "home_team", "away_team", "home_odds", "away_odds", "model_prob", "market"}.issubset(df.columns):
             df = _align_moneyline_model_probability(df)
             df = df[df["market"] == "moneyline"].copy()
-            expected_debug_columns = ["favorite_team", "model_prob_home"]
-            missing_debug_columns = [col for col in expected_debug_columns if col not in df.columns]
+            required_columns = ["favorite_team", "model_prob_home"]
+            missing_debug_columns = [col for col in required_columns if col not in df.columns]
             if missing_debug_columns:
                 print(f"Warning: The following columns are missing: {missing_debug_columns}")
+                for col in missing_debug_columns:
+                    df[col] = None
                 print("One or both of the expected columns are missing. Displaying available columns:")
                 print(df.columns.tolist())
             else:
@@ -1278,6 +1280,18 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             + 0.45 * df["matchup_edge_adjustment"]
         )
         df["edge"] = (df["edge"] + 0.50 * df["injury_edge_adjustment"]).clip(-0.99, 0.99)
+
+        if "expected_value" not in df.columns:
+            print("ERROR: 'expected_value' column missing.")
+        else:
+            print("Expected Value Summary:")
+            print(df["expected_value"].describe())
+            max_ev = df["expected_value"].max()
+            if pd.notna(max_ev) and max_ev >= 1:
+                print(f"Warning: Maximum Expected Value is too high: {max_ev}")
+                df["expected_value"] = df["expected_value"].clip(upper=0.99)
+                print("Clipping expected values to below 1.")
+            print("Proceeding with predictions...")
 
         # Remove unrealistic EV outliers before bet selection.
         df = df[df["expected_value"] < 0.25].copy()
