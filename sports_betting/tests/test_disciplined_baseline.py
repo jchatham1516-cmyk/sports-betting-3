@@ -99,3 +99,48 @@ def test_disciplined_model_scales_and_uses_injury_features():
     moneyline_columns = model.feature_columns["moneyline"]
     assert "injury_confidence_score" in moneyline_columns
     assert "starter_out_count_home" in moneyline_columns
+
+
+def test_disciplined_model_applies_contextual_ev_adjustments():
+    model = NBAModel()
+    train_df = _make_training_frame()
+    model.train(train_df)
+
+    daily = pd.DataFrame(
+        [
+            {
+                "game_id": "g2",
+                "home_team": "HOME",
+                "away_team": "AWAY",
+                "home_odds": -110,
+                "away_odds": -110,
+                "home_spread_odds": -110,
+                "away_spread_odds": -110,
+                "over_odds": -110,
+                "under_odds": -110,
+                "spread_line": -2.5,
+                "total_line": 224.5,
+                "elo_diff": 35.0,
+                "rest_diff": 2.0,
+                "travel_fatigue_diff": 1.1,
+                "travel_distance": 1500.0,
+                "injury_impact_diff": 1.4,
+                "injury_confidence_score": 1.0,
+                "injury_data_stale_flag": 0.0,
+                "offensive_rating_diff": 2.5,
+                "defensive_rating_diff": -1.5,
+                "net_rating_diff": 4.5,
+                "pace_diff": 2.0,
+                "last5_net_rating_diff": 3.2,
+                "last10_net_rating_diff": 2.6,
+            }
+        ]
+    )
+
+    preds = model.predict_daily(daily)
+    assert preds, "Expected predictions from contextual daily frame"
+    sample = preds[0]
+    assert "total_adjustment" in sample.metadata
+    assert "injury_component" in sample.metadata
+    assert sample.metadata["total_adjustment"] != 0.0
+    assert sample.edge != sample.metadata["raw_edge"]
