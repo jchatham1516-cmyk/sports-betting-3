@@ -6,6 +6,43 @@ def normalize_team_name(name):
     return str(name).lower().strip()
 
 
+def _coerce_injuries(payload):
+    """Normalize injury payloads to a {normalized_team_name: {player: status}} mapping."""
+    normalized = {}
+    if isinstance(payload, dict):
+        iterable = payload.items()
+    elif isinstance(payload, list):
+        iterable = []
+        for rec in payload:
+            if not isinstance(rec, dict):
+                continue
+            team = rec.get("team_name") or rec.get("team")
+            player = rec.get("player") or rec.get("player_name") or rec.get("name")
+            status = rec.get("status", "")
+            iterable.append((team, {player: status}))
+    else:
+        return normalized
+
+    for team, players in iterable:
+        team_key = normalize_team_name(team)
+        if not team_key:
+            continue
+        normalized.setdefault(team_key, {})
+        if isinstance(players, dict):
+            for player, status in players.items():
+                if str(player or "").strip():
+                    normalized[team_key][str(player).strip()] = str(status or "").strip().lower()
+        elif isinstance(players, list):
+            for rec in players:
+                if not isinstance(rec, dict):
+                    continue
+                player = rec.get("player") or rec.get("player_name") or rec.get("name")
+                status = rec.get("status", "")
+                if str(player or "").strip():
+                    normalized[team_key][str(player).strip()] = str(status or "").strip().lower()
+    return normalized
+
+
 def load_injuries():
     path = "sports_betting/data/injuries/injuries.json"
     fallback_path = "sports_betting/data/inputs/injuries.json"
@@ -19,6 +56,7 @@ def load_injuries():
     else:
         print("No injury data available — using empty dict")
         injuries = {}
+    injuries = _coerce_injuries(injuries)
 
     print("[INJURY STATUS]")
     print(f"Teams with injuries: {len(injuries)}")
