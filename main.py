@@ -1190,9 +1190,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             required_columns = ["favorite_team", "model_prob_home"]
             missing_debug_columns = [col for col in required_columns if col not in df.columns]
             if missing_debug_columns:
-                print(f"Warning: The following columns are missing: {missing_debug_columns}")
+                print(f"WARNING: Missing columns: {', '.join(missing_debug_columns)}")
                 for col in missing_debug_columns:
-                    df[col] = None
+                    df[col] = np.nan
                 print("One or both of the expected columns are missing. Displaying available columns:")
                 print(df.columns.tolist())
             else:
@@ -1281,24 +1281,26 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         )
         df["edge"] = (df["edge"] + 0.50 * df["injury_edge_adjustment"]).clip(-0.99, 0.99)
 
-        if "expected_value" not in df.columns:
-            print("ERROR: 'expected_value' column missing.")
+        if "expected_value" not in df.columns or df["expected_value"].isna().all():
+            print("ERROR: 'expected_value' column is missing or contains NaN values.")
+            df["expected_value"] = df.get("expected_value", pd.Series(index=df.index, dtype=float)).fillna(0.5)
+            print("Replaced NaN 'expected_value' with 0.5.")
         else:
             print("Expected Value Summary:")
             print(df["expected_value"].describe())
-            max_ev = df["expected_value"].max()
-            if pd.notna(max_ev) and max_ev >= 1:
-                print(f"Warning: Maximum Expected Value is too high: {max_ev}")
-                df["expected_value"] = df["expected_value"].clip(upper=0.99)
-                print("Clipping expected values to below 1.")
-            print("Proceeding with predictions...")
+
+        max_ev = df["expected_value"].max()
+        if pd.notna(max_ev) and max_ev >= 1:
+            print(f"Warning: Maximum Expected Value is too high: {max_ev}. Clipping values to 0.99.")
+            df["expected_value"] = df["expected_value"].clip(upper=0.99)
+        print("Proceeding with predictions...")
 
         # Remove unrealistic EV outliers before bet selection.
         df = df[df["expected_value"] < 0.25].copy()
 
         print("[INJURY ADJUSTMENT APPLIED]")
         print(df[["away_team", "home_team", "model_probability", "edge", "expected_value"]].head())
-        assert df["expected_value"].max() < 1, "EV ERROR: value too high"
+        assert df["expected_value"].max() < 1, "EV ERROR: value too high after adjustments"
         assert df["expected_value"].min() > -1, "EV ERROR: value too low"
         df["confidence"] = (
             (df["edge"] * 0.45)
