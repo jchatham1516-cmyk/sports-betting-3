@@ -24,9 +24,9 @@ def test_process_predictions_amplifies_injury_impact():
     )
 
     out = process_predictions(predictions, injury_data)
-    # delta=(0.2-0.1)*10 => +1.0
-    assert out.loc[0, "edge"] == pytest.approx(1.02)
-    assert out.loc[0, "expected_value"] == pytest.approx(1.03)
+    # delta=(0.2-0.1)*10 with weight factor 2 => +2.0
+    assert out.loc[0, "edge"] == pytest.approx(2.02)
+    assert out.loc[0, "expected_value"] == pytest.approx(2.03)
 
 
 def test_process_predictions_caps_confidence_by_recent_window():
@@ -57,4 +57,4 @@ def test_process_predictions_with_adjusted_injury_alias():
     )
 
     out = process_predictions_with_adjusted_injury(predictions, injury_data)
-    assert out.loc[0, "edge"] == pytest.approx(1.0)
+    assert out.loc[0, "edge"] == pytest.approx(2.0)

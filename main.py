@@ -69,9 +69,9 @@ EDGE_THRESHOLD = 0.01
 FORCE_BETS = True
 LOGGER = logging.getLogger(__name__)
 # Temporary loose-filter thresholds for early-stage model learning/data collection.
-MIN_EDGE = 0.0001
-MIN_EV = 0.0001
-MIN_MODEL_PROBABILITY = 0.20
+MIN_EDGE = 0.00005
+MIN_EV = 0.00005
+MIN_MODEL_PROBABILITY = 0.10
 MAX_BETS_PER_SPORT_PER_DAY = 5
 MAX_EV = 0.15
 MAX_HEAVY_FAVORITE_ODDS = -300
@@ -84,6 +84,7 @@ TRAVEL_EDGE_WEIGHT = -0.03
 FORM_EDGE_WEIGHT = 0.015
 MATCHUP_EDGE_WEIGHT = 0.0005
 INJURY_IMPACT_FACTOR = 10.0
+INJURY_WEIGHT_FACTOR = 2.0
 CONFIDENCE_MOVING_WINDOW = 10
 CONFIDENCE_THRESHOLD_MULTIPLIER = 2.0
 
@@ -224,8 +225,9 @@ def adjust_for_injury_impact(predictions: pd.DataFrame, injury_data: pd.DataFram
         lambda team: float(impact_by_team.get(normalize_team_name(team), 0.0))
     )
     injury_delta = (home_impact - away_impact) * INJURY_IMPACT_FACTOR
-    out["expected_value"] = pd.to_numeric(out["expected_value"], errors="coerce").fillna(0.0) + injury_delta
-    out["edge"] = pd.to_numeric(out["edge"], errors="coerce").fillna(0.0) + injury_delta
+    boosted_injury_delta = INJURY_WEIGHT_FACTOR * injury_delta
+    out["expected_value"] = pd.to_numeric(out["expected_value"], errors="coerce").fillna(0.0) + boosted_injury_delta
+    out["edge"] = pd.to_numeric(out["edge"], errors="coerce").fillna(0.0) + boosted_injury_delta
     return out
 
 
@@ -1398,6 +1400,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                     print(
                         f"[FILTER PASS] {matchup} | "
                         f"edge={bet['edge']:.4f}, ev={bet['expected_value']:.4f}, conf={bet[confidence_col]:.4f}"
+                    )
+                    print(
+                        f"Bet Passed - Edge: {bet['edge']} | "
+                        f"Expected Value: {bet['expected_value']} | "
+                        f"Confidence: {bet[confidence_col]}"
                     )
 
         filtered_bets = df[

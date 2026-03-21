@@ -26,7 +26,7 @@ def rank_score(pred: Prediction, model_quality_weight: float = 0.65) -> float:
 
 
 def _has_severe_data_issue(pred: Prediction) -> bool:
-    severe_flags = {"stale_injury_data", "missing_key_features", "suspicious_placeholder", "extreme_probability_without_support"}
+    severe_flags = {"missing_key_features", "suspicious_placeholder", "extreme_probability_without_support"}
     return bool(severe_flags.intersection(set(pred.flags)))
 
 
@@ -114,8 +114,8 @@ def qualify_prediction(
     if rec is None:
         return None
 
-    min_edge = float(thresholds.get("min_edge", 0.00001))
-    min_ev = float(thresholds.get("min_ev", 0.00001))
+    min_edge = float(thresholds.get("min_edge", 0.00005))
+    min_ev = float(thresholds.get("min_ev", 0.00005))
     min_confidence = float(thresholds.get("min_confidence", 0.1))
 
     if rec.edge < min_edge:
