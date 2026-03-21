@@ -20,7 +20,7 @@ from sports_betting.sports.common.odds import american_to_implied_probability, e
 LOGGER = logging.getLogger(__name__)
 
 INJURY_IMPACT_WEIGHT = 2.0
-INJURY_EDGE_WEIGHT = 0.018
+INJURY_EDGE_WEIGHT = 0.036
 TRAVEL_EDGE_WEIGHT = 0.012
 RECENT_FORM_EDGE_WEIGHT = 0.010
 MATCHUP_EDGE_WEIGHT = 0.008
