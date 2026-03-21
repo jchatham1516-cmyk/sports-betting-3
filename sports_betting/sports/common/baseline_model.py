@@ -20,6 +20,10 @@ from sports_betting.sports.common.odds import american_to_implied_probability, e
 LOGGER = logging.getLogger(__name__)
 
 INJURY_IMPACT_WEIGHT = 2.0
+INJURY_EDGE_WEIGHT = 0.018
+TRAVEL_EDGE_WEIGHT = 0.012
+RECENT_FORM_EDGE_WEIGHT = 0.010
+MATCHUP_EDGE_WEIGHT = 0.008
 OPTIONAL_INJURY_FEATURES = [
     "injury_impact",
     "injury_impact_diff",
@@ -251,6 +255,45 @@ class DisciplinedBaselineModel(SportModel):
         reliability = max(0.0, 1.0 - brier)
         return float(np.clip(0.35 + 0.9 * max(edge, 0.0) + 0.08 * support_count + 0.35 * reliability, 0.01, 0.99))
 
+    def _contextual_adjustments(self, row: pd.Series) -> dict[str, float]:
+        injury_confidence = float(np.clip(float(row.get("injury_confidence_score", 1.0)), 0.0, 1.0))
+        stale_penalty = 0.5 if float(row.get("injury_data_stale_flag", 0.0)) > 0 else 1.0
+        injury_component = (
+            INJURY_EDGE_WEIGHT
+            * float(row.get("injury_impact_diff", 0.0))
+            * injury_confidence
+            * stale_penalty
+        )
+
+        travel_rest_component = TRAVEL_EDGE_WEIGHT * (
+            0.55 * float(row.get("rest_diff", 0.0))
+            + 0.45 * float(row.get("travel_fatigue_diff", 0.0))
+            - 0.0006 * float(row.get("travel_distance", 0.0))
+        )
+
+        recent_form_signal = (
+            0.55 * float(row.get("last5_net_rating_diff", 0.0))
+            + 0.35 * float(row.get("last10_net_rating_diff", 0.0))
+            + 0.10 * float(row.get("recent_goal_diff", row.get("recent_epa_diff", 0.0)))
+        )
+        recent_form_component = RECENT_FORM_EDGE_WEIGHT * recent_form_signal
+
+        matchup_signal = (
+            0.45 * float(row.get("net_rating_diff", 0.0))
+            + 0.25 * float(row.get("offensive_rating_diff", 0.0))
+            - 0.20 * float(row.get("defensive_rating_diff", 0.0))
+            + 0.10 * float(row.get("pace_diff", 0.0))
+        )
+        matchup_component = MATCHUP_EDGE_WEIGHT * matchup_signal
+
+        return {
+            "injury_component": injury_component,
+            "travel_rest_component": travel_rest_component,
+            "recent_form_component": recent_form_component,
+            "matchup_component": matchup_component,
+            "total_adjustment": injury_component + travel_rest_component + recent_form_component + matchup_component,
+        }
+
     def _reason(self, row: pd.Series, support: dict[str, float], market: str) -> str:
         return (
             f"strength {row.get('elo_diff', 0.0):+.1f}; injury {row.get('injury_impact_diff', 0.0):+.2f}; "
@@ -258,7 +301,13 @@ class DisciplinedBaselineModel(SportModel):
             f"efficiency {row.get('net_rating_diff', 0.0):+.2f}; market disagreement {support.get('market_disagreement', 0.0):.0f}."
         )
 
-    def _prediction_metadata(self, row: pd.Series, support_count: int, signals: dict[str, float]) -> dict[str, float | int]:
+    def _prediction_metadata(
+        self,
+        row: pd.Series,
+        support_count: int,
+        signals: dict[str, float],
+        contextual: dict[str, float],
+    ) -> dict[str, float | int]:
         return {
             "support_count": support_count,
             **signals,
@@ -267,6 +316,7 @@ class DisciplinedBaselineModel(SportModel):
             "rest_edge": float(row.get("rest_diff", 0.0)),
             "travel_edge": float(row.get("travel_fatigue_diff", 0.0)),
             "efficiency_edge": float(row.get("net_rating_diff", 0.0)),
+            **contextual,
         }
 
     def predict_daily(self, daily_df: pd.DataFrame) -> list[Prediction]:
@@ -299,6 +349,8 @@ class DisciplinedBaselineModel(SportModel):
             ]
             for side, p_model, p_market, odds in moneyline_sides:
                 adjusted_prob = self._adjust_probability(row, p_model, p_market, odds)
+                contextual = self._contextual_adjustments(row)
+                adjusted_prob = self._safe_probability(adjusted_prob + contextual["total_adjustment"], "moneyline")
                 edge = adjusted_prob - p_market
                 support_count, signals = self._support_signals(row, adjusted_prob, p_market, "moneyline", odds)
                 flags = [] if support_count >= 2 else ["low_feature_support"]
@@ -322,7 +374,8 @@ class DisciplinedBaselineModel(SportModel):
                             "game": game_txt,
                             "raw_model_probability": p_model,
                             "adjusted_prob": adjusted_prob,
-                            **self._prediction_metadata(row, support_count, signals),
+                            "raw_edge": float(self._safe_probability(self._adjust_probability(row, p_model, p_market, odds), "moneyline") - p_market),
+                            **self._prediction_metadata(row, support_count, signals, contextual),
                         },
                     )
                 )
@@ -340,6 +393,8 @@ class DisciplinedBaselineModel(SportModel):
             ]
             for side, p_model, p_market, odds in spread_sides:
                 adjusted_prob = self._adjust_probability(row, p_model, p_market, odds)
+                contextual = self._contextual_adjustments(row)
+                adjusted_prob = self._safe_probability(adjusted_prob + contextual["total_adjustment"], "spread")
                 edge = adjusted_prob - p_market
                 support_count, signals = self._support_signals(row, adjusted_prob, p_market, "spread", odds)
                 flags = [] if support_count >= 2 else ["low_feature_support"]
@@ -361,7 +416,8 @@ class DisciplinedBaselineModel(SportModel):
                             "game": game_txt,
                             "raw_model_probability": p_model,
                             "adjusted_prob": adjusted_prob,
-                            **self._prediction_metadata(row, support_count, signals),
+                            "raw_edge": float(self._safe_probability(self._adjust_probability(row, p_model, p_market, odds), "spread") - p_market),
+                            **self._prediction_metadata(row, support_count, signals, contextual),
                         },
                     )
                 )
@@ -378,6 +434,8 @@ class DisciplinedBaselineModel(SportModel):
                 (f"Under {row.get('total_line', 0.0):.1f}", p_under, nv_under, int(row["under_odds"])),
             ]:
                 adjusted_prob = self._adjust_probability(row, p_model, p_market, odds)
+                contextual = self._contextual_adjustments(row)
+                adjusted_prob = self._safe_probability(adjusted_prob + contextual["total_adjustment"], "total")
                 edge = adjusted_prob - p_market
                 support_count, signals = self._support_signals(row, adjusted_prob, p_market, "total", odds)
                 flags = [] if support_count >= 2 else ["low_feature_support"]
@@ -399,7 +457,8 @@ class DisciplinedBaselineModel(SportModel):
                             "game": game_txt,
                             "raw_model_probability": p_model,
                             "adjusted_prob": adjusted_prob,
-                            **self._prediction_metadata(row, support_count, signals),
+                            "raw_edge": float(self._safe_probability(self._adjust_probability(row, p_model, p_market, odds), "total") - p_market),
+                            **self._prediction_metadata(row, support_count, signals, contextual),
                         },
                     )
                 )
