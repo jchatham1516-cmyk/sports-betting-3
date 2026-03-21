@@ -19,7 +19,7 @@ from sklearn.isotonic import IsotonicRegression
 from sports_betting.backtesting.engine import summarize_backtest
 from sports_betting.config.settings import load_config
 from sports_betting.data.fetch_injuries import compute_injury_impact, fetch_injuries
-from sports_betting.data.load_injuries import load_injuries, get_team_injury_penalty
+from sports_betting.data.load_injuries import load_injuries, get_team_injury_penalty, match_injury_impact
 from sports_betting.models.entities import Prediction
 from sports_betting.scripts.injuries import run_injury_pipeline
 from sports_betting.scripts.data_io import (
@@ -63,9 +63,9 @@ EDGE_THRESHOLD = 0.01
 FORCE_BETS = True
 LOGGER = logging.getLogger(__name__)
 # Temporary loose-filter thresholds for early-stage model learning/data collection.
-MIN_EDGE = 0.002
-MIN_EV = 0.001
-MIN_MODEL_PROBABILITY = 0.40
+MIN_EDGE = 0.001
+MIN_EV = 0.0005
+MIN_MODEL_PROBABILITY = 0.30
 MAX_BETS_PER_SPORT_PER_DAY = 5
 MAX_EV = 0.15
 MAX_HEAVY_FAVORITE_ODDS = -300
@@ -1083,10 +1083,28 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         df["model_probability"] = df["model_probability"].clip(0.05, 0.65)
 
         injuries = load_injuries()
+        df = match_injury_impact(df, injuries)
+        df["injury_impact_diff"] = df["injury_impact_away"] - df["injury_impact_home"]
+        print("[INJURY MATCH DEBUG]")
+        print(
+            df[
+                [
+                    "away_team",
+                    "home_team",
+                    "injury_impact_home",
+                    "injury_impact_away",
+                    "combined_injury_impact",
+                ]
+            ].head(10)
+        )
 
         def apply_injury_adjustment(row):
-            home_penalty = get_team_injury_penalty(row["home_team"], injuries)
-            away_penalty = get_team_injury_penalty(row["away_team"], injuries)
+            # If injury matching already created impacts, prefer those exact values.
+            home_penalty = 0.02 * float(row.get("injury_impact_home", 0.0))
+            away_penalty = 0.02 * float(row.get("injury_impact_away", 0.0))
+            if home_penalty == 0 and away_penalty == 0:
+                home_penalty = get_team_injury_penalty(row["home_team"], injuries)
+                away_penalty = get_team_injury_penalty(row["away_team"], injuries)
 
             # Adjust model probabilities
             adj_home_prob = row["model_prob"] - home_penalty + away_penalty

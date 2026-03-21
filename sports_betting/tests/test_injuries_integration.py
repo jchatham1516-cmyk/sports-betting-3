@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 
 from sports_betting.data.fetch_injuries import compute_injury_impact
-from sports_betting.data.load_injuries import load_injuries
+from sports_betting.data.load_injuries import calculate_injury_impact, load_injuries, match_injury_impact
 
 
 def test_compute_injury_impact_uses_team_name_column():
@@ -62,3 +62,21 @@ def test_load_injuries_normalizes_team_keys(tmp_path: Path, monkeypatch):
     assert "los angeles lakers" in injuries
     assert injuries["los angeles lakers"]["LeBron James"] == "out"
     assert "toronto maple leafs" in injuries
+
+
+def test_match_injury_impact_resolves_team_aliases():
+    predictions = pd.DataFrame([{"home_team": "LA Lakers", "away_team": "Boston Celtics"}])
+    injuries = {
+        "los angeles lakers": {"LeBron James": "out"},
+        "boston celtics": {"Depth Player": "questionable"},
+    }
+    out = match_injury_impact(predictions, injuries)
+    assert out.loc[0, "injury_impact_home"] > 0
+    assert out.loc[0, "injury_impact_away"] > 0
+    assert out.loc[0, "combined_injury_impact"] == out.loc[0, "injury_impact_home"] + out.loc[0, "injury_impact_away"]
+
+
+def test_calculate_injury_impact_weights_stars_more():
+    star_only = {"LeBron James": "out"}
+    role_only = {"Rotation Player": "out"}
+    assert calculate_injury_impact(star_only) > calculate_injury_impact(role_only)
