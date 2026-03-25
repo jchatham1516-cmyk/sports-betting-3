@@ -40,6 +40,9 @@ STAR_PLAYER_BY_SPORT = {
         "ilya sorokin",
     },
 }
+SUPERSTAR_WEIGHT = 2.5
+STARTER_WEIGHT = 1.5
+ROLE_PLAYER_WEIGHT = 1.0
 
 
 def _normalize_team_name(name: str | None) -> str:
@@ -113,6 +116,29 @@ def _status_weight(status: str | None) -> float:
     if normalized == "probable":
         return 0.25
     return 0.4
+
+
+def classify_player(player_name: str, role: str | None = None) -> float:
+    superstar_list = [
+        "lebron james",
+        "stephen curry",
+        "nikola jokic",
+        "giannis antetokounmpo",
+        "luka doncic",
+        "kevin durant",
+    ]
+
+    normalized_name = str(player_name or "").strip().lower()
+    if normalized_name in superstar_list:
+        return SUPERSTAR_WEIGHT
+
+    role_key = str(role or "").strip().lower()
+    if role_key in {"bench", "depth", "role player"}:
+        return ROLE_PLAYER_WEIGHT
+    if role_key == "rotation":
+        return 1.2
+
+    return STARTER_WEIGHT  # fallback for now
 
 
 def fetch_espn_injuries_for_sport(sport: str) -> pd.DataFrame:
@@ -225,16 +251,30 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
                     player = str(rec.get(player_col, "")).strip()
                     if not team or not player:
                         continue
-                    raw.setdefault(team, []).append(player)
+                    raw.setdefault(team, []).append(
+                        {
+                            "player": player,
+                            "status": rec.get("status", "out"),
+                            "role": rec.get("role") or rec.get("expected_minutes_or_role", ""),
+                        }
+                    )
 
     rows = []
     for team, players in raw.items():
         for player in players:
+            player_name = player
+            status = "out"
+            role = ""
+            if isinstance(player, dict):
+                player_name = player.get("player") or player.get("player_name") or ""
+                status = player.get("status", "out")
+                role = player.get("role") or player.get("expected_minutes_or_role", "")
             rows.append(
                 {
                     "team": team,
-                    "player": player,
-                    "status": "out",
+                    "player": player_name,
+                    "status": status,
+                    "role": role,
                 }
             )
 
@@ -252,10 +292,25 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
     out["home_team_norm"] = out["home_team"].apply(normalize_team_name)
     out["away_team_norm"] = out["away_team"].apply(normalize_team_name)
 
-    injury_counts = injuries.groupby("team_norm").size()
+    injuries["player_weight"] = injuries.apply(
+        lambda injury_row: classify_player(
+            injury_row.get("player", ""),
+            injury_row.get("role") or injury_row.get("expected_minutes_or_role"),
+        ),
+        axis=1,
+    )
+    print("[PLAYER WEIGHT DEBUG]")
+    for _, player_row in injuries.iterrows():
+        player_name = player_row.get("player", "")
+        weight = float(player_row.get("player_weight", STARTER_WEIGHT))
+        print(player_name, "weight:", weight)
+    injury_counts = injuries.groupby("team_norm")["player_weight"].sum()
+    available_injury_teams = set(injury_counts.index)
+    out["home_team_match"] = out["home_team_norm"].apply(lambda team: _resolve_team_key(team, available_injury_teams) or team)
+    out["away_team_match"] = out["away_team_norm"].apply(lambda team: _resolve_team_key(team, available_injury_teams) or team)
 
-    out["injury_impact_home"] = out["home_team_norm"].map(injury_counts).fillna(0)
-    out["injury_impact_away"] = out["away_team_norm"].map(injury_counts).fillna(0)
+    out["injury_impact_home"] = out["home_team_match"].map(injury_counts).fillna(0)
+    out["injury_impact_away"] = out["away_team_match"].map(injury_counts).fillna(0)
     out["injury_impact_diff"] = out["injury_impact_home"] - out["injury_impact_away"]
 
     print("\n[INJURY RAW SAMPLE]:", list(raw.keys())[:5])

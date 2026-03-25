@@ -71,8 +71,8 @@ EDGE_THRESHOLD = 0.01
 FORCE_BETS = True
 LOGGER = logging.getLogger(__name__)
 # Temporary loose-filter thresholds for early-stage model learning/data collection.
-MIN_EDGE = 0.00005
-MIN_EV = 0.00005
+MIN_EDGE = 0.005
+MIN_EV = 0.01
 MIN_MODEL_PROBABILITY = 0.10
 MAX_BETS_PER_SPORT_PER_DAY = 5
 MAX_EV = 0.15
@@ -1420,6 +1420,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         df["scaled_injury"] = scale_injury_impact(df["injury_impact_diff"], weight=0.01, cap=0.05)
         df["model_probability"] = (df["model_probability"] + df["scaled_injury"]).clip(0.01, 0.99)
         df["edge"] = df["model_probability"] - df["market_probability"]
+        df["edge_after_injury"] = df["edge"] + (df["injury_impact_diff"] * INJURY_WEIGHT)
+        df["edge"] = df["edge_after_injury"]
         df["decimal_odds"] = df["odds"].apply(_american_to_decimal)
         payout = df["decimal_odds"] - 1
         df["expected_value"] = (
@@ -1546,14 +1548,16 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                         f"Confidence: {bet[confidence_col]}"
                     )
 
-        filtered_bets = df[
+        smart_flex_mask = (df["edge"] > 0.005) & (df["expected_value"] > 0.02)
+        pass_filter_mask = (
             (df["expected_value"] >= min_expected_value) &
             (df["edge"] >= min_edge) &
             (
                 (df[confidence_col] >= min_confidence) |
                 (df["expected_value"] > 0.05)
             )
-        ]
+        ) | smart_flex_mask
+        filtered_bets = df[pass_filter_mask]
         final_bets = filtered_bets.copy()
 
         final_bets = final_bets[
