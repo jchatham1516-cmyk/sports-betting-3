@@ -1491,31 +1491,26 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         df = df.copy()
         min_expected_value = MIN_EV
-        min_confidence = MIN_MODEL_PROBABILITY
         print("[LOOSE FILTER MODE ENABLED]")
-        print(f"min_ev={min_expected_value}, min_conf={min_confidence}")
+        print(f"min_ev={min_expected_value}")
 
         low_ev_mask = df["expected_value"] <= min_expected_value
         deep_negative_ev_mask = df["expected_value"] < -0.05
-        high_ev_override_mask = (df["expected_value"] > 0.05) & (df["model_probability"] < 0.5)
+        high_ev_override_mask = df["expected_value"] > 0.10
         confidence_col = "confidence" if "confidence" in df.columns else "model_probability"
         df.loc[df["edge"] < 0, confidence_col] = df.loc[df["edge"] < 0, confidence_col] * 0.8
-        low_confidence_mask = (df[confidence_col] <= min_confidence) & (~high_ev_override_mask)
 
         filter_fail_summary = {
             "low_ev": int(low_ev_mask.sum()),
             "deep_negative_ev": int(deep_negative_ev_mask.sum()),
-            "low_confidence": int(low_confidence_mask.sum()),
         }
         if low_ev_mask.any():
             print(f"Rejected bet due to low EV: {filter_fail_summary['low_ev']}")
         if deep_negative_ev_mask.any():
             print(f"Rejected bet due to deep negative EV: {filter_fail_summary['deep_negative_ev']}")
-        if low_confidence_mask.any():
-            print(f"Rejected bet due to low confidence: {filter_fail_summary['low_confidence']}")
         if high_ev_override_mask.any():
-            print("Allowed high EV underdog bet")
-        any_rejection_mask = low_ev_mask | deep_negative_ev_mask | low_confidence_mask
+            print("Allowed high EV override bet")
+        any_rejection_mask = low_ev_mask | deep_negative_ev_mask
         print(
             "[FILTER SUMMARY] "
             f"total_games={len(df)}, passed={int((~any_rejection_mask).sum())}, "
@@ -1529,11 +1524,6 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                     fail_reasons.append(f"ev {bet['expected_value']:.4f} <= {min_expected_value:.4f}")
                 if bet["expected_value"] < -0.05:
                     fail_reasons.append(f"ev {bet['expected_value']:.4f} < -0.0500")
-                if (
-                    bet[confidence_col] <= min_confidence
-                    and not (bet["expected_value"] > 0.05 and bet[confidence_col] < 0.5)
-                ):
-                    fail_reasons.append(f"confidence {bet[confidence_col]:.4f} <= {min_confidence:.4f}")
                 matchup = f"{bet['away_team']} @ {bet['home_team']}"
                 if fail_reasons:
                     print(f"[FILTER FAIL] {matchup} | {'; '.join(fail_reasons)}")
@@ -1565,14 +1555,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             df[confidence_col],
             pass_filter_mask,
         ):
-            print("[EV PRIMARY FILTER DEBUG]")
-            print("edge:", edge)
-            print("ev:", expected_value)
-            print("confidence:", confidence)
-            print("pass:", bool(pass_filter))
+            print("[FINAL FILTER DEBUG]")
+            print("EV:", expected_value)
+            print("Confidence:", confidence)
+            print("Units:", "N/A")
 
-        strong_ev_override_mask = df["expected_value"] > 0.10
-        filtered_bets = df[pass_filter_mask & ((df[confidence_col] >= min_confidence) | strong_ev_override_mask)]
+        filtered_bets = df[pass_filter_mask]
         final_bets = filtered_bets.copy()
 
         final_bets = final_bets[

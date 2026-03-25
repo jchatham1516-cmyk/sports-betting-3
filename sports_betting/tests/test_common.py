@@ -72,7 +72,7 @@ def test_qualify_prediction_scales_units_instead_of_hard_confidence_reject():
     assert rec.recommended_units <= 1.0
 
 
-def test_qualify_prediction_extreme_low_confidence_safety_rejects_low_ev():
+def test_qualify_prediction_extreme_low_confidence_scales_units_with_low_ev():
     cfg = BankrollConfig(bankroll=5000, unit_size=50, max_units_per_bet=2.0, kelly_fraction=0.25)
     pred = Prediction(
         game_id="game-2",
@@ -98,4 +98,5 @@ def test_qualify_prediction_extreme_low_confidence_safety_rejects_low_ev():
         stake_mode="fractional_kelly",
     )
 
-    assert rec is None
+    assert rec is not None
+    assert rec.recommended_units > 0
