@@ -162,6 +162,19 @@ def _numeric_feature(df: pd.DataFrame, col: str) -> pd.Series:
     return pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
 
+def scale_injury_impact(
+    injury_impact_diff: pd.Series | float,
+    weight: float = 0.01,
+    cap: float = 0.05,
+) -> pd.Series | float:
+    scaled = pd.to_numeric(injury_impact_diff, errors="coerce")
+    if isinstance(scaled, pd.Series):
+        scaled = scaled.fillna(0.0)
+        return (scaled * float(weight)).clip(-abs(float(cap)), abs(float(cap)))
+    scalar = 0.0 if pd.isna(scaled) else float(scaled)
+    return float(np.clip(scalar * float(weight), -abs(float(cap)), abs(float(cap))))
+
+
 def add_contextual_adjustments(df: pd.DataFrame) -> pd.DataFrame:
     """Blend injury/rest/travel/form/matchup context into edge and EV."""
     out = df.copy()
@@ -211,10 +224,6 @@ def adjust_for_injury_impact(predictions: pd.DataFrame, injury_data: pd.DataFram
     if out.empty or injury_data.empty:
         return out
 
-    for col in ("edge", "expected_value"):
-        if col not in out.columns:
-            out[col] = 0.0
-
     impact_by_team = (
         injury_data.assign(team=injury_data["team"].map(normalize_team_name))
         .groupby("team")["impact"]
@@ -228,10 +237,9 @@ def adjust_for_injury_impact(predictions: pd.DataFrame, injury_data: pd.DataFram
     away_impact = out.get("away_team", pd.Series("", index=out.index)).map(
         lambda team: float(impact_by_team.get(normalize_team_name(team), 0.0))
     )
-    injury_delta = (home_impact - away_impact) * INJURY_IMPACT_FACTOR
-    boosted_injury_delta = INJURY_WEIGHT_FACTOR * injury_delta
-    out["expected_value"] = pd.to_numeric(out["expected_value"], errors="coerce").fillna(0.0) + boosted_injury_delta
-    out["edge"] = pd.to_numeric(out["edge"], errors="coerce").fillna(0.0) + boosted_injury_delta
+    out["injury_impact_home_post"] = home_impact
+    out["injury_impact_away_post"] = away_impact
+    out["injury_impact_diff_post"] = home_impact - away_impact
     return out
 
 
@@ -1409,10 +1417,13 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         df["model_probability"] = (
             df["model_probability"] + df["context_edge_adjustment"]
         ).clip(0.01, 0.99)
+        df["scaled_injury"] = scale_injury_impact(df["injury_impact_diff"], weight=0.01, cap=0.05)
+        df["model_probability"] = (df["model_probability"] + df["scaled_injury"]).clip(0.01, 0.99)
         df["edge"] = df["model_probability"] - df["market_probability"]
         df["decimal_odds"] = df["odds"].apply(_american_to_decimal)
+        payout = df["decimal_odds"] - 1
         df["expected_value"] = (
-            df["model_probability"] * (df["decimal_odds"] - 1)
+            df["model_probability"] * payout
         ) - (1 - df["model_probability"])
         # Context-aware EV: account for injury, travel, rest, form, and matchup factors.
         df["expected_value"] = (
@@ -1451,8 +1462,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             + (df["expected_value"] * 0.25)
             + (df["model_probability"] * 0.30)
         ).clip(0.0, 1.0)
-        injury_data = build_injury_impact_data(injuries)
-        df = process_predictions(df, injury_data)
+        df = adjust_confidence_and_thresholds(df)
         df["confidence"] = df["confidence"].clip(0.0, 1.0)
 
         print("[DEBUG] Top edges after calibration + EV recompute:")
@@ -1470,64 +1480,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print("[FINAL EV VALIDATION]")
         print(df[["odds", "model_probability", "market_probability", "edge", "expected_value"]].head())
 
-        injury_col = None
-        if "injury_impact" in df.columns:
-            injury_col = "injury_impact"
-        elif "injury_impact_diff" in df.columns:
-            injury_col = "injury_impact_diff"
-
-        if injury_col is not None:
-            top_teams_by_injury = df[
-                ["home_team", "away_team", injury_col]
-            ].sort_values(by=injury_col, ascending=False)
-            print("[TOP TEAMS BY INJURY IMPACT]")
-            print(top_teams_by_injury.head(10))
-
-            injury_scaled = df[injury_col] * INJURY_WEIGHT
-            print("[INJURY SCALING DEBUG]")
-            print("raw_diff:", df[injury_col].head(10).tolist())
-            print("scaled:", injury_scaled.head(10).tolist())
-
-            df["edge_after_injury"] = df["edge"] + injury_scaled
-            df["expected_value_after_injury"] = df["expected_value"] + injury_scaled
-            df["model_probability_adjusted"] = (
-                df["model_probability"] + (df[injury_col] * MODEL_PROBABILITY_INJURY_WEIGHT)
-            ).clip(0.01, 0.99)
-
-            print("[INJURY-ADJUSTED EDGE / EV]")
-            print(
-                df[
-                    [
-                        "home_team",
-                        "away_team",
-                        "edge",
-                        "expected_value",
-                        "edge_after_injury",
-                        "expected_value_after_injury",
-                        "model_probability_adjusted",
-                    ]
-                ]
-            )
-        else:
-            print("[INJURY-ADJUSTED EDGE / EV SKIPPED: no injury impact column found]")
-
     if not df.empty and {"expected_value", "edge", "model_probability"}.issubset(df.columns):
-        if {"edge_after_injury", "expected_value_after_injury"}.issubset(df.columns):
-            filtered_bets = df[
-                (df["edge_after_injury"] > 0.05)
-                & (df["expected_value_after_injury"] > 0.03)
-            ].copy()
-            print("[FILTERED BETS AFTER INJURY ADJUSTMENT]")
-            print(
-                filtered_bets[
-                    [
-                        "home_team",
-                        "away_team",
-                        "edge_after_injury",
-                        "expected_value_after_injury",
-                    ]
-                ]
-            )
+        print("[FINAL MODEL CHECK]")
+        print("model_probability:", df["model_probability"].head(10).tolist())
+        print("market_probability:", df["market_probability"].head(10).tolist())
+        print("edge:", df["edge"].head(10).tolist())
+        print("expected_value:", df["expected_value"].head(10).tolist())
 
         df = df.copy()
         min_edge = MIN_EDGE
