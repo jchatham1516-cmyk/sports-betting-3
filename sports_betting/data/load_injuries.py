@@ -1,9 +1,7 @@
 import json
 import os
 
-
-def normalize_team_name(name):
-    return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in str(name or "")).split())
+from sports_betting.sports.common.team_names import normalize_team_name
 
 
 def normalize_player_name(name):
