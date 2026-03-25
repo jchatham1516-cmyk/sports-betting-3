@@ -1277,16 +1277,22 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             df["away_team_norm"] = df["away_team"].astype(str).apply(shared_normalize_team_name)
             df["injury_impact_home"] = df["home_team_norm"].map(inj_home).fillna(df["injury_impact_home"]).fillna(0.0)
             df["injury_impact_away"] = df["away_team_norm"].map(inj_home).fillna(df["injury_impact_away"]).fillna(0.0)
-        # FORCE correct injury columns after all merges/suffixing.
+        # FINAL INJURY COLUMN FIX (LAST STEP BEFORE BET SELECTION)
         games = df
-        if "injury_impact_home_x" in games.columns:
-            games["injury_impact_home"] = games["injury_impact_home_x"]
+        for col in ["home", "away"]:
+            x_col = f"injury_impact_{col}_x"
+            y_col = f"injury_impact_{col}_y"
+            base_col = f"injury_impact_{col}"
 
-        if "injury_impact_away_x" in games.columns:
-            games["injury_impact_away"] = games["injury_impact_away_x"]
+            if x_col in games.columns:
+                games[base_col] = games[x_col]
+            elif y_col in games.columns:
+                games[base_col] = games[y_col]
 
-        # Recompute diff to ensure correctness before final prediction adjustments.
-        games["injury_impact_diff"] = games["injury_impact_home"] - games["injury_impact_away"]
+        # recompute diff AFTER forcing correct columns
+        games["injury_impact_diff"] = (
+            games["injury_impact_home"] - games["injury_impact_away"]
+        )
 
         # Drop duplicated merge suffix columns so downstream logic cannot read stale values.
         cols_to_drop = [c for c in games.columns if c.endswith("_x") or c.endswith("_y")]
@@ -1306,7 +1312,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             ].head(10)
         )
 
-        print("\n[FINAL INJURY CHECK]")
+        print("\n[FINAL INJURY CHECK AFTER FIX]")
         print(games[["home_team", "away_team", "injury_impact_home", "injury_impact_away", "injury_impact_diff"]].head())
         print("[FINAL INJURY NON-ZERO COUNT]:", (games["injury_impact_diff"] != 0).sum())
 
