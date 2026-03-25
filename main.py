@@ -1490,32 +1490,32 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print("expected_value:", df["expected_value"].head(10).tolist())
 
         df = df.copy()
-        min_edge = MIN_EDGE
         min_expected_value = MIN_EV
         min_confidence = MIN_MODEL_PROBABILITY
         print("[LOOSE FILTER MODE ENABLED]")
-        print(f"min_edge={min_edge}, min_ev={min_expected_value}, min_conf={min_confidence}")
+        print(f"min_ev={min_expected_value}, min_conf={min_confidence}")
 
-        low_edge_mask = df["edge"] <= min_edge
         low_ev_mask = df["expected_value"] <= min_expected_value
+        deep_negative_ev_mask = df["expected_value"] < -0.05
         high_ev_override_mask = (df["expected_value"] > 0.05) & (df["model_probability"] < 0.5)
         confidence_col = "confidence" if "confidence" in df.columns else "model_probability"
+        df.loc[df["edge"] < 0, confidence_col] = df.loc[df["edge"] < 0, confidence_col] * 0.8
         low_confidence_mask = (df[confidence_col] <= min_confidence) & (~high_ev_override_mask)
 
         filter_fail_summary = {
-            "low_edge": int(low_edge_mask.sum()),
             "low_ev": int(low_ev_mask.sum()),
+            "deep_negative_ev": int(deep_negative_ev_mask.sum()),
             "low_confidence": int(low_confidence_mask.sum()),
         }
-        if low_edge_mask.any():
-            print(f"Rejected bet due to low edge: {filter_fail_summary['low_edge']}")
         if low_ev_mask.any():
             print(f"Rejected bet due to low EV: {filter_fail_summary['low_ev']}")
+        if deep_negative_ev_mask.any():
+            print(f"Rejected bet due to deep negative EV: {filter_fail_summary['deep_negative_ev']}")
         if low_confidence_mask.any():
             print(f"Rejected bet due to low confidence: {filter_fail_summary['low_confidence']}")
         if high_ev_override_mask.any():
             print("Allowed high EV underdog bet")
-        any_rejection_mask = low_edge_mask | low_ev_mask | low_confidence_mask
+        any_rejection_mask = low_ev_mask | deep_negative_ev_mask | low_confidence_mask
         print(
             "[FILTER SUMMARY] "
             f"total_games={len(df)}, passed={int((~any_rejection_mask).sum())}, "
@@ -1525,10 +1525,10 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         if {"home_team", "away_team", "edge", "expected_value", "model_probability"}.issubset(df.columns):
             for _, bet in df.iterrows():
                 fail_reasons = []
-                if bet["edge"] <= min_edge:
-                    fail_reasons.append(f"edge {bet['edge']:.4f} <= {min_edge:.4f}")
                 if bet["expected_value"] <= min_expected_value:
                     fail_reasons.append(f"ev {bet['expected_value']:.4f} <= {min_expected_value:.4f}")
+                if bet["expected_value"] < -0.05:
+                    fail_reasons.append(f"ev {bet['expected_value']:.4f} < -0.0500")
                 if (
                     bet[confidence_col] <= min_confidence
                     and not (bet["expected_value"] > 0.05 and bet[confidence_col] < 0.5)
@@ -1553,25 +1553,22 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         # PRIMARY PATH (EV-driven)
         pass_filter_mask = pass_filter_mask | (df["expected_value"] > 0.02)
 
-        # SECONDARY PATH (edge + EV combo)
-        pass_filter_mask = pass_filter_mask | ((df["edge"] > 0.005) & (df["expected_value"] > 0.01))
-
-        # UNDERDOG BOOST
-        pass_filter_mask = pass_filter_mask | ((df["odds"] > 150) & (df["expected_value"] > 0.015))
-
-        # STRONG EV OVERRIDE
+        # STRONG EV AUTO-PASS
         pass_filter_mask = pass_filter_mask | (df["expected_value"] > 0.10)
 
-        for edge, expected_value, odds, pass_filter in zip(
+        # OPTIONAL SAFETY FLOOR
+        pass_filter_mask = pass_filter_mask & (df["expected_value"] >= -0.05)
+
+        for edge, expected_value, confidence, pass_filter in zip(
             df["edge"],
             df["expected_value"],
-            df["odds"],
+            df[confidence_col],
             pass_filter_mask,
         ):
-            print("[FILTER DEBUG]")
+            print("[EV PRIMARY FILTER DEBUG]")
             print("edge:", edge)
             print("ev:", expected_value)
-            print("odds:", odds)
+            print("confidence:", confidence)
             print("pass:", bool(pass_filter))
 
         strong_ev_override_mask = df["expected_value"] > 0.10
