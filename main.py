@@ -909,6 +909,9 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
                 "support_count": support_count,
                 "composite_score": composite_score,
                 "reason_summary": reason_summary,
+                "injury_impact_home": float(game_row.get("injury_impact_home", 0.0)),
+                "injury_impact_away": float(game_row.get("injury_impact_away", 0.0)),
+                "injury_impact_diff": float(game_row.get("injury_impact_diff", 0.0)),
             }
         )
 
@@ -1137,6 +1140,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 "sportsbook_event_away_team": game_row.get("sportsbook_event_away_team", game_row.get("away_team", "")),
                 "sportsbook_home_outcome_name": game_row.get("sportsbook_home_outcome_name", game_row.get("home_team", "")),
                 "sportsbook_away_outcome_name": game_row.get("sportsbook_away_outcome_name", game_row.get("away_team", "")),
+                "injury_impact_home": float(game_row.get("injury_impact_home", 0.0)),
+                "injury_impact_away": float(game_row.get("injury_impact_away", 0.0)),
+                "injury_impact_diff": float(game_row.get("injury_impact_diff", 0.0)),
             }
 
     out_dir = Path("data/outputs")
@@ -1202,6 +1208,57 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     print("Columns before bet selection:", bets_df.columns.tolist())
 
     df = bets_df.copy()
+    injuries = load_injuries()
+
+    # FINAL INJURY MERGE (CRITICAL FIX)
+    injury_rows: list[dict[str, float | str]] = []
+    for team, players in (injuries or {}).items():
+        injury_rows.append(
+            {
+                "team_norm": shared_normalize_team_name(str(team or "")),
+                "injury_impact": float(calculate_injury_impact(players or {})),
+            }
+        )
+    injuries_df = pd.DataFrame(injury_rows)
+    if not df.empty and not injuries_df.empty and "team_norm" in injuries_df.columns:
+        home_merge = injuries_df.groupby("team_norm").agg(
+            {"injury_impact": "sum"}
+        ).rename(columns={"injury_impact": "injury_impact_home"})
+        away_merge = injuries_df.groupby("team_norm").agg(
+            {"injury_impact": "sum"}
+        ).rename(columns={"injury_impact": "injury_impact_away"})
+        df["home_team_norm"] = df["home_team"].astype(str).apply(shared_normalize_team_name)
+        df["away_team_norm"] = df["away_team"].astype(str).apply(shared_normalize_team_name)
+        df = df.merge(home_merge, left_on="home_team_norm", right_index=True, how="left")
+        df = df.merge(away_merge, left_on="away_team_norm", right_index=True, how="left")
+        df["injury_impact_home"] = (
+            pd.to_numeric(df.get("injury_impact_home_x"), errors="coerce")
+            .fillna(pd.to_numeric(df.get("injury_impact_home_y"), errors="coerce"))
+            .fillna(0.0)
+        )
+        df["injury_impact_away"] = (
+            pd.to_numeric(df.get("injury_impact_away_x"), errors="coerce")
+            .fillna(pd.to_numeric(df.get("injury_impact_away_y"), errors="coerce"))
+            .fillna(0.0)
+        )
+        df["injury_impact_diff"] = (
+            df["injury_impact_home"] - df["injury_impact_away"]
+        )
+
+    print("[FINAL INJURY CHECK]")
+    if not df.empty and {"home_team", "away_team", "injury_impact_home", "injury_impact_away", "injury_impact_diff"}.issubset(df.columns):
+        print(
+            df[
+                [
+                    "home_team",
+                    "away_team",
+                    "injury_impact_home",
+                    "injury_impact_away",
+                    "injury_impact_diff",
+                ]
+            ].head()
+        )
+        print("[FINAL INJURY NON-ZERO COUNT]:", (df["injury_impact_diff"] != 0).sum())
 
     def american_to_prob(odds):
         if odds > 0:
@@ -1258,7 +1315,6 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         # Hard clamp immediately after prediction pipeline output.
         df["model_probability"] = df["model_probability"].clip(0.05, 0.65)
 
-        injuries = load_injuries()
         df = match_injury_impact(df, injuries)
         injury_rows: list[dict[str, float | str]] = []
         for team, players in (injuries or {}).items():
