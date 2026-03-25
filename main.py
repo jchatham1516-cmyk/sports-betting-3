@@ -1277,11 +1277,25 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             df["away_team_norm"] = df["away_team"].astype(str).apply(shared_normalize_team_name)
             df["injury_impact_home"] = df["home_team_norm"].map(inj_home).fillna(df["injury_impact_home"]).fillna(0.0)
             df["injury_impact_away"] = df["away_team_norm"].map(inj_home).fillna(df["injury_impact_away"]).fillna(0.0)
-        df["injury_impact_diff"] = df["injury_impact_home"] - df["injury_impact_away"]
-        print("[INJURY MATCH COUNT]:", int((df["injury_impact_diff"] != 0).sum()))
+        # FORCE correct injury columns after all merges/suffixing.
+        games = df
+        if "injury_impact_home_x" in games.columns:
+            games["injury_impact_home"] = games["injury_impact_home_x"]
+
+        if "injury_impact_away_x" in games.columns:
+            games["injury_impact_away"] = games["injury_impact_away_x"]
+
+        # Recompute diff to ensure correctness before final prediction adjustments.
+        games["injury_impact_diff"] = games["injury_impact_home"] - games["injury_impact_away"]
+
+        # Drop duplicated merge suffix columns so downstream logic cannot read stale values.
+        cols_to_drop = [c for c in games.columns if c.endswith("_x") or c.endswith("_y")]
+        games.drop(columns=cols_to_drop, inplace=True, errors="ignore")
+
+        print("[INJURY MATCH COUNT]:", int((games["injury_impact_diff"] != 0).sum()))
         print("[INJURY MATCH DEBUG]")
         print(
-            df[
+            games[
                 [
                     "away_team",
                     "home_team",
@@ -1291,6 +1305,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 ]
             ].head(10)
         )
+
+        print("\n[FINAL INJURY CHECK]")
+        print(games[["home_team", "away_team", "injury_impact_home", "injury_impact_away", "injury_impact_diff"]].head())
+        print("[FINAL INJURY NON-ZERO COUNT]:", (games["injury_impact_diff"] != 0).sum())
+
+        df = games
 
         def apply_injury_adjustment(row):
             # If injury matching already created impacts, prefer those exact values.
