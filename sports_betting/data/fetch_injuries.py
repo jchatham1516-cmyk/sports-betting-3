@@ -1,8 +1,7 @@
 import json
 import pandas as pd
+from pathlib import Path
 from urllib.request import urlopen
-
-from sports_betting.sports.common.team_names import normalize_team_name
 
 STAR_PLAYER_MULTIPLIER = 2.0
 ROLE_MULTIPLIERS = {
@@ -45,6 +44,22 @@ STAR_PLAYER_BY_SPORT = {
 
 def _normalize_team_name(name: str | None) -> str:
     return normalize_team_name(str(name or ""))
+
+
+def normalize_team_name(name):
+    if not isinstance(name, str):
+        return ""
+    return (
+        name.lower()
+        .replace("trail blazers", "blazers")
+        .replace("76ers", "sixers")
+        .replace("la clippers", "los angeles clippers")
+        .replace("la lakers", "los angeles lakers")
+        .replace("okc thunder", "oklahoma city thunder")
+        .replace("utah mammoth", "utah hockey club")
+        .replace("montréal", "montreal")
+        .strip()
+    )
 
 
 def _team_tokens(team_name: str | None) -> set[str]:
@@ -191,43 +206,63 @@ def _player_injury_impact(row: pd.Series) -> float:
 
 
 def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> pd.DataFrame:
-    """Refined injury impact calculation for teams based on player injuries."""
     out = df_games.copy()
-    injuries = _ensure_injury_frame(df_injuries)
+    injuries_path = Path("sports_betting/data/injuries/injuries.json")
+    if not injuries_path.exists():
+        injuries_path = Path(__file__).resolve().parent / "injuries" / "injuries.json"
+
+    if injuries_path.exists():
+        with injuries_path.open(encoding="utf-8") as f:
+            raw = json.load(f)
+    else:
+        raw = {}
+        if isinstance(df_injuries, pd.DataFrame) and not df_injuries.empty:
+            team_col = "team" if "team" in df_injuries.columns else "team_name"
+            player_col = "player" if "player" in df_injuries.columns else "player_name"
+            if team_col in df_injuries.columns and player_col in df_injuries.columns:
+                for _, rec in df_injuries.iterrows():
+                    team = str(rec.get(team_col, "")).strip()
+                    player = str(rec.get(player_col, "")).strip()
+                    if not team or not player:
+                        continue
+                    raw.setdefault(team, []).append(player)
+
+    rows = []
+    for team, players in raw.items():
+        for player in players:
+            rows.append(
+                {
+                    "team": team,
+                    "player": player,
+                    "status": "out",
+                }
+            )
+
+    injuries = pd.DataFrame(rows)
+
+    if injuries.empty:
+        print("[ERROR] Injuries dataframe is empty after rebuild")
 
     if "home_team" not in out.columns:
         out["home_team"] = ""
     if "away_team" not in out.columns:
         out["away_team"] = ""
 
-    # Keep display team names intact, but create normalized mapping keys.
-    out["_home_team_key"] = out["home_team"].astype(str).apply(_normalize_team_name)
-    out["_away_team_key"] = out["away_team"].astype(str).apply(_normalize_team_name)
-    if not injuries.empty:
-        injuries["impact"] = injuries.apply(_player_injury_impact, axis=1)
-    else:
-        injuries["impact"] = pd.Series(dtype=float)
+    injuries["team_norm"] = injuries["team"].apply(normalize_team_name)
+    out["home_team_norm"] = out["home_team"].apply(normalize_team_name)
+    out["away_team_norm"] = out["away_team"].apply(normalize_team_name)
 
-    # Weighted injury mapping to teams, keeps NHL/NBA status severity.
-    injury_map = injuries.groupby("team")["impact"].sum()
-    print(f"[INJURY IMPACT] teams with mapped injuries: {len(injury_map)}")
+    injury_counts = injuries.groupby("team_norm").size()
 
-    available_keys = set(injury_map.index.astype(str))
-    out["_home_injury_key"] = out["_home_team_key"].apply(lambda team: _resolve_team_key(team, available_keys))
-    out["_away_injury_key"] = out["_away_team_key"].apply(lambda team: _resolve_team_key(team, available_keys))
+    out["injury_impact_home"] = out["home_team_norm"].map(injury_counts).fillna(0)
+    out["injury_impact_away"] = out["away_team_norm"].map(injury_counts).fillna(0)
+    out["injury_impact_diff"] = out["injury_impact_home"] - out["injury_impact_away"]
 
-    # Apply injury impact mapping to teams
-    out["injury_impact_home"] = out["_home_injury_key"].map(injury_map).fillna(0)
-    out["injury_impact_away"] = out["_away_injury_key"].map(injury_map).fillna(0)
-
-    # Calculate the difference between away team and home team injury impact
-    out["injury_impact_diff"] = out["injury_impact_away"] - out["injury_impact_home"]
-    matched_games = ((out["injury_impact_home"] != 0) | (out["injury_impact_away"] != 0)).sum()
-    print(f"[INJURY IMPACT] matched games: {int(matched_games)} / {len(out)}")
-    if not injury_map.empty:
-        print("[INJURY IMPACT] top impacted teams:")
-        print(injury_map.sort_values(ascending=False).head(10))
-
-    out = out.drop(columns=["_home_team_key", "_away_team_key", "_home_injury_key", "_away_injury_key"], errors="ignore")
+    print("\n[INJURY RAW SAMPLE]:", list(raw.keys())[:5])
+    print("\n[INJURY DF SAMPLE]:")
+    print(injuries.head())
+    print("\n[TEAM NORMALIZATION SAMPLE]:")
+    print(out[["home_team", "home_team_norm"]].head())
+    print("\n[INJURY MATCH COUNT]:", (out["injury_impact_diff"] != 0).sum())
 
     return out
