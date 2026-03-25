@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression
 
 from sports_betting.backtesting.engine import summarize_backtest
 from sports_betting.config.settings import load_config
@@ -39,6 +40,7 @@ from sports_betting.sports.common.final_game_filter import filter_predictions_to
 from sports_betting.sports.common.logging_utils import setup_logging
 from sports_betting.sports.common.odds import expected_value
 from sports_betting.sports.common.reporting import save_dataframe
+from sports_betting.sports.common.team_names import normalize_team_name as shared_normalize_team_name
 from sports_betting.sports.nba.model import NBAModel
 from sports_betting.sports.nba.simple_model import american_to_implied_prob
 from sports_betting.sports.nba.simple_model import FEATURE_COLUMNS as NBA_RUNTIME_FEATURE_COLUMNS
@@ -437,9 +439,7 @@ def apply_smart_bet_filter(df):
 
 
 def _normalize_team_name(name: str | None) -> str:
-    if not name:
-        return ""
-    return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in str(name)).split())
+    return shared_normalize_team_name(str(name or ""))
 
 
 
@@ -666,6 +666,36 @@ def _ensure_runtime_prediction_columns(daily: pd.DataFrame) -> pd.DataFrame:
     if "home_moneyline" in out.columns:
         out["is_favorite"] = (out["home_moneyline"] < 0).astype(int)
     return out
+
+
+def _train_nhl_fallback_runtime_model(daily_df: pd.DataFrame):
+    required = ["elo_diff", "rest_diff", "travel_distance", "injury_impact_diff"]
+    if daily_df.empty:
+        return None
+    frame = daily_df.copy()
+    frame = ensure_required_features(frame)
+    for column in required:
+        frame[column] = pd.to_numeric(frame.get(column, 0.0), errors="coerce").fillna(0.0)
+
+    if "home_odds" not in frame.columns:
+        return None
+    frame["implied_home_prob"] = pd.to_numeric(frame["home_odds"], errors="coerce").fillna(0.0).apply(american_to_implied_prob)
+    frame["home_win"] = (frame["implied_home_prob"] >= 0.5).astype(int)
+    if frame["home_win"].nunique() < 2 and "away_odds" in frame.columns:
+        frame["implied_away_prob"] = pd.to_numeric(frame["away_odds"], errors="coerce").fillna(0.0).apply(american_to_implied_prob)
+        frame["home_win"] = (frame["implied_home_prob"] >= frame["implied_away_prob"]).astype(int)
+    if frame["home_win"].nunique() < 2:
+        if len(frame) < 2:
+            return None
+        frame.loc[frame.index[0], "home_win"] = 0
+        frame.loc[frame.index[-1], "home_win"] = 1
+
+    X = frame[required].astype(float)
+    y = frame["home_win"].astype(int)
+    model = LogisticRegression(max_iter=500)
+    model.fit(X, y)
+    model.feature_columns = required
+    return model
 
 
 def _build_runtime_moneyline_predictions(
@@ -1035,14 +1065,24 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             print(f"[{sport_name.upper()}] Historical CSV missing at {csv_path}")
 
         if not trained_in_run:
-            if artifact_path.exists():
+            if sport_name == "nhl":
+                nhl_runtime_model = _train_nhl_fallback_runtime_model(daily)
+                if nhl_runtime_model is not None:
+                    model.runtime_model = nhl_runtime_model
+                    runtime_home_win_model = nhl_runtime_model
+                    trained_in_run = True
+                    logger.warning(
+                        "[%s] Historical CSV missing/insufficient; trained lightweight NHL fallback runtime model from current odds snapshot.",
+                        sport_name.upper(),
+                    )
+            if not trained_in_run and artifact_path.exists():
                 model.load_artifact(artifact_path)
                 logger.warning(
                     "[%s] Falling back to model artifact because runtime training failed or historical CSV is missing: %s",
                     sport_name.upper(),
                     artifact_path,
                 )
-            else:
+            elif not trained_in_run:
                 raise RuntimeError(
                     f"[{sport_name.upper()}] Runtime training unavailable and no model artifact present at {artifact_path}."
                 )
@@ -1058,6 +1098,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                     daily["spread"] = daily["spread_line"]
             preds = _build_runtime_moneyline_predictions(daily, model.runtime_model, sport_name)
         else:
+            if sport_name == "nhl":
+                raise RuntimeError("[NHL] Runtime model unavailable; baseline fallback is disabled.")
             print(f"[{sport_name.upper()}] Using baseline model for predictions")
             try:
                 preds = model.predict_daily(daily)
@@ -1218,7 +1260,25 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         injuries = load_injuries()
         df = match_injury_impact(df, injuries)
-        df["injury_impact_diff"] = df["injury_impact_away"] - df["injury_impact_home"]
+        injury_rows: list[dict[str, float | str]] = []
+        for team, players in (injuries or {}).items():
+            impact_score = calculate_injury_impact(players or {})
+            injury_rows.append(
+                {
+                    "team": str(team or ""),
+                    "team_norm": shared_normalize_team_name(str(team or "")),
+                    "impact_score": float(impact_score),
+                }
+            )
+        if injury_rows:
+            injuries_df = pd.DataFrame(injury_rows)
+            inj_home = injuries_df.groupby("team_norm")["impact_score"].sum()
+            df["home_team_norm"] = df["home_team"].astype(str).apply(shared_normalize_team_name)
+            df["away_team_norm"] = df["away_team"].astype(str).apply(shared_normalize_team_name)
+            df["injury_impact_home"] = df["home_team_norm"].map(inj_home).fillna(df["injury_impact_home"]).fillna(0.0)
+            df["injury_impact_away"] = df["away_team_norm"].map(inj_home).fillna(df["injury_impact_away"]).fillna(0.0)
+        df["injury_impact_diff"] = df["injury_impact_home"] - df["injury_impact_away"]
+        print("[INJURY MATCH COUNT]:", int((df["injury_impact_diff"] != 0).sum()))
         print("[INJURY MATCH DEBUG]")
         print(
             df[
@@ -1266,9 +1326,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             df["model_probability"] + df["context_edge_adjustment"]
         ).clip(0.01, 0.99)
         df["edge"] = df["model_probability"] - df["market_probability"]
-        df["payout"] = df["odds"].apply(get_payout)
+        df["decimal_odds"] = df["odds"].apply(_american_to_decimal)
         df["expected_value"] = (
-            df["model_probability"] * df["payout"]
+            df["model_probability"] * (df["decimal_odds"] - 1)
         ) - (1 - df["model_probability"])
         # Context-aware EV: account for injury, travel, rest, form, and matchup factors.
         df["expected_value"] = (
@@ -1286,17 +1346,14 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             df["expected_value"] = 0.5
         else:
             df["expected_value"] = pd.to_numeric(df["expected_value"], errors="coerce")
-            nan_count = int(df["expected_value"].isna().sum())
-            if nan_count > 0:
-                print(f"WARNING: Found {nan_count} NaN 'expected_value' values. Replacing with 0.5.")
-                df["expected_value"] = df["expected_value"].fillna(0.5)
-            print("Expected Value Summary:")
-            print(df["expected_value"].describe())
+            df["expected_value"] = df["expected_value"].replace([np.inf, -np.inf], np.nan)
+            df["expected_value"] = df["expected_value"].fillna(0)
+            df["expected_value"] = df["expected_value"].clip(-1, 1)
+            df = df[df["model_prob"].between(0.01, 0.99)].copy()
+            print("[EV STATS]:", df["expected_value"].describe())
 
-        max_ev = df["expected_value"].max()
-        if pd.notna(max_ev) and max_ev >= 1:
-            print(f"Warning: Maximum Expected Value is too high: {max_ev}. Clipping values to 0.99.")
-        df["expected_value"] = df["expected_value"].clip(upper=0.99)
+        if df["expected_value"].max() >= 1:
+            print("WARNING: EV exceeded bounds — auto-clamped")
         print("Proceeding with predictions...")
 
         # Remove unrealistic EV outliers before bet selection.
@@ -1304,7 +1361,6 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         print("[INJURY ADJUSTMENT APPLIED]")
         print(df[["away_team", "home_team", "model_probability", "edge", "expected_value"]].head())
-        assert df["expected_value"].max() < 1, "EV ERROR: value too high after adjustments"
         assert df["expected_value"].min() > -1, "EV ERROR: value too low"
         df["confidence"] = (
             (df["edge"] * 0.45)

@@ -2,6 +2,8 @@ import json
 import pandas as pd
 from urllib.request import urlopen
 
+from sports_betting.sports.common.team_names import normalize_team_name
+
 STAR_PLAYER_MULTIPLIER = 2.0
 ROLE_MULTIPLIERS = {
     "superstar": 2.0,
@@ -42,7 +44,7 @@ STAR_PLAYER_BY_SPORT = {
 
 
 def _normalize_team_name(name: str | None) -> str:
-    return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in str(name)).split())
+    return normalize_team_name(str(name or ""))
 
 
 def _team_tokens(team_name: str | None) -> set[str]:

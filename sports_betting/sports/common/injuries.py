@@ -6,7 +6,6 @@ import os
 
 import json
 import logging
-import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +14,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 import pandas as pd
+from sports_betting.sports.common.team_names import normalize_team_name
 
 LOGGER = logging.getLogger(__name__)
 
@@ -63,12 +63,6 @@ class InjurySource:
 
 def normalize_status(status: str) -> str:
     return STATUS_MAP.get(str(status or "").strip().lower(), "questionable")
-
-
-def normalize_team_name(name: object) -> str:
-    normalized = unicodedata.normalize("NFKD", str(name or ""))
-    ascii_name = normalized.encode("ascii", "ignore").decode("utf-8")
-    return ascii_name.lower().strip()
 
 
 def _to_float(value: object, default: float = 0.0) -> float:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -15,6 +14,7 @@ from urllib.request import urlopen
 import numpy as np
 import pandas as pd
 
+from sports_betting.sports.common.team_names import normalize_team_name
 from sports_betting.sports.common.feature_engineering import SPORT_EFFICIENCY_FEATURES, add_elo_features, enrich_with_context_features
 from sports_betting.sports.common.game_filters import current_sports_day_window, filter_games_window
 
@@ -458,10 +458,7 @@ def generate_sample_data(sport: str, rows: int = 300) -> pd.DataFrame:
 
 
 def _normalize_team_name(name: str | None) -> str:
-    if not name:
-        return ""
-    cleaned = re.sub(r"[^a-z0-9]+", " ", str(name).lower()).strip()
-    return " ".join(cleaned.split())
+    return normalize_team_name(str(name or ""))
 
 
 def _build_outcome_lookup(outcomes: list[dict]) -> dict[str, dict]:
