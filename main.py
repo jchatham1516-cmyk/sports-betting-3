@@ -1474,9 +1474,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         )
 
         df = df.dropna(subset=["model_probability", "market_probability"]).copy()
+        df["profit_per_unit"] = df["odds"].apply(get_payout)
         df["expected_value"] = (
-            df["model_probability"] * (df["odds"] / 100)
+            df["model_probability"] * df["profit_per_unit"]
         ) - (1 - df["model_probability"])
+        print("[EV FIX DEBUG]")
+        print(df[["odds", "profit_per_unit", "model_probability", "expected_value"]].head())
 
         if "expected_value" not in df.columns:
             print("ERROR: 'expected_value' column is missing. Filling with 0.5.")
