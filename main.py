@@ -87,6 +87,8 @@ FORM_EDGE_WEIGHT = 0.015
 MATCHUP_EDGE_WEIGHT = 0.0005
 INJURY_IMPACT_FACTOR = 10.0
 INJURY_WEIGHT_FACTOR = 2.0
+INJURY_WEIGHT = 0.02
+MODEL_PROBABILITY_INJURY_WEIGHT = 0.01
 CONFIDENCE_MOVING_WINDOW = 10
 CONFIDENCE_THRESHOLD_MULTIPLIER = 2.0
 
@@ -1481,8 +1483,16 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             print("[TOP TEAMS BY INJURY IMPACT]")
             print(top_teams_by_injury.head(10))
 
-            df["edge_after_injury"] = df["edge"] + df[injury_col]
-            df["expected_value_after_injury"] = df["expected_value"] + df[injury_col]
+            injury_scaled = df[injury_col] * INJURY_WEIGHT
+            print("[INJURY SCALING DEBUG]")
+            print("raw_diff:", df[injury_col].head(10).tolist())
+            print("scaled:", injury_scaled.head(10).tolist())
+
+            df["edge_after_injury"] = df["edge"] + injury_scaled
+            df["expected_value_after_injury"] = df["expected_value"] + injury_scaled
+            df["model_probability_adjusted"] = (
+                df["model_probability"] + (df[injury_col] * MODEL_PROBABILITY_INJURY_WEIGHT)
+            ).clip(0.01, 0.99)
 
             print("[INJURY-ADJUSTED EDGE / EV]")
             print(
@@ -1494,6 +1504,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                         "expected_value",
                         "edge_after_injury",
                         "expected_value_after_injury",
+                        "model_probability_adjusted",
                     ]
                 ]
             )
