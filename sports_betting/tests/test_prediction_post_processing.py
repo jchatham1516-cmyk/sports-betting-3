@@ -4,7 +4,7 @@ import pytest
 from main import process_predictions, process_predictions_with_adjusted_injury
 
 
-def test_process_predictions_amplifies_injury_impact():
+def test_process_predictions_preserves_edge_ev_and_tracks_injury_columns():
     predictions = pd.DataFrame(
         [
             {
@@ -24,9 +24,11 @@ def test_process_predictions_amplifies_injury_impact():
     )
 
     out = process_predictions(predictions, injury_data)
-    # delta=(0.2-0.1)*10 with weight factor 2 => +2.0
-    assert out.loc[0, "edge"] == pytest.approx(2.02)
-    assert out.loc[0, "expected_value"] == pytest.approx(2.03)
+    assert out.loc[0, "edge"] == pytest.approx(0.02)
+    assert out.loc[0, "expected_value"] == pytest.approx(0.03)
+    assert out.loc[0, "injury_impact_home_post"] == pytest.approx(0.2)
+    assert out.loc[0, "injury_impact_away_post"] == pytest.approx(0.1)
+    assert out.loc[0, "injury_impact_diff_post"] == pytest.approx(0.1)
 
 
 def test_process_predictions_caps_confidence_by_recent_window():
@@ -57,4 +59,5 @@ def test_process_predictions_with_adjusted_injury_alias():
     )
 
     out = process_predictions_with_adjusted_injury(predictions, injury_data)
-    assert out.loc[0, "edge"] == pytest.approx(2.0)
+    assert out.loc[0, "edge"] == pytest.approx(0.0)
+    assert out.loc[0, "injury_impact_diff_post"] == pytest.approx(0.1)
