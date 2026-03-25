@@ -115,10 +115,9 @@ def qualify_prediction(
     if rec is None:
         return None
 
-    min_edge = float(thresholds.get("min_edge", 0.00001))
     min_ev = float(thresholds.get("min_ev", 0.00001))
     min_confidence = float(thresholds.get("min_confidence", 0.05))
-    edge = min_edge if math.isnan(rec.edge) else rec.edge
+    edge = 0.0 if math.isnan(rec.edge) else rec.edge
     expected_value = min_ev if math.isnan(rec.expected_value) else rec.expected_value
     confidence = rec.confidence_score
     rec.edge = edge
@@ -126,31 +125,36 @@ def qualify_prediction(
 
     pass_filter = False
 
+    # SOFT EDGE PENALTY (no hard rejection)
+    if edge < 0:
+        confidence *= 0.8
+
+    # OPTIONAL SAFETY FLOOR
+    if expected_value < -0.05:
+        pass_filter = False
+
     # PRIMARY PATH (EV-driven)
     if expected_value > 0.02:
         pass_filter = True
 
-    # SECONDARY PATH (edge + EV combo)
-    elif edge > 0.005 and expected_value > 0.01:
+    # STRONG EV AUTO-PASS
+    if expected_value > 0.10:
         pass_filter = True
 
-    # UNDERDOG BOOST
-    if odds > 150 and expected_value > 0.015:
-        pass_filter = True
+    rec.confidence_score = confidence
 
-    print("[FILTER DEBUG]")
+    print("[EV PRIMARY FILTER DEBUG]")
     print("edge:", edge)
     print("ev:", expected_value)
-    print("odds:", odds)
+    print("confidence:", confidence)
     print("pass:", pass_filter)
 
     if not pass_filter:
         LOGGER.info(
-            "[FILTER] rejected %s %s (%s): edge %.4f, ev %.4f did not meet pass criteria",
+            "[FILTER] rejected %s %s (%s): ev %.4f did not meet EV pass criteria",
             pred.sport,
             game_text,
             pred.market,
-            edge,
             expected_value,
         )
         return None
