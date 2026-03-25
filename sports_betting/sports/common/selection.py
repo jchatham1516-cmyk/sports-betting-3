@@ -124,24 +124,34 @@ def qualify_prediction(
     rec.edge = edge
     rec.expected_value = expected_value
 
-    if edge < min_edge:
+    pass_filter = False
+
+    # PRIMARY PATH (EV-driven)
+    if expected_value > 0.02:
+        pass_filter = True
+
+    # SECONDARY PATH (edge + EV combo)
+    elif edge > 0.005 and expected_value > 0.01:
+        pass_filter = True
+
+    # UNDERDOG BOOST
+    if odds > 150 and expected_value > 0.015:
+        pass_filter = True
+
+    print("[FILTER DEBUG]")
+    print("edge:", edge)
+    print("ev:", expected_value)
+    print("odds:", odds)
+    print("pass:", pass_filter)
+
+    if not pass_filter:
         LOGGER.info(
-            "[FILTER] rejected %s %s (%s): edge %.4f < min_edge %.4f",
+            "[FILTER] rejected %s %s (%s): edge %.4f, ev %.4f did not meet pass criteria",
             pred.sport,
             game_text,
             pred.market,
             edge,
-            min_edge,
-        )
-        return None
-    if expected_value < min_ev:
-        LOGGER.info(
-            "[FILTER] rejected %s %s (%s): ev %.4f < min_ev %.4f",
-            pred.sport,
-            game_text,
-            pred.market,
             expected_value,
-            min_ev,
         )
         return None
     if confidence < min_confidence:
