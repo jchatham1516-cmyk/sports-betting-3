@@ -632,6 +632,7 @@ def predict_runtime(model, games_df: pd.DataFrame):
 
     probs = runtime_model.predict_proba(X_pred)[:, 1]
     model_probs = probs
+    print("Model nulls:", int(pd.Series(model_probs).isnull().sum()))
 
     # Keep full, non-feature columns intact for downstream bet readability/debugging.
     df = df_full
@@ -940,6 +941,9 @@ def _align_moneyline_model_probability(df: pd.DataFrame) -> pd.DataFrame:
     if not moneyline_mask.any():
         return out
 
+    normalized_home = out.loc[moneyline_mask, "home_team"].astype(str).str.lower().str.strip()
+    normalized_selection = out.loc[moneyline_mask, "selection"].astype(str).str.lower().str.strip()
+
     out.loc[moneyline_mask, "favorite_team"] = np.where(
         out.loc[moneyline_mask, "home_odds"] < out.loc[moneyline_mask, "away_odds"],
         out.loc[moneyline_mask, "home_team"],
@@ -951,7 +955,7 @@ def _align_moneyline_model_probability(df: pd.DataFrame) -> pd.DataFrame:
         1 - out.loc[moneyline_mask, "model_prob"],
     )
     out.loc[moneyline_mask, "model_probability"] = np.where(
-        out.loc[moneyline_mask, "selection"] == out.loc[moneyline_mask, "home_team"],
+        normalized_selection == normalized_home,
         out.loc[moneyline_mask, "model_prob_home"],
         1 - out.loc[moneyline_mask, "model_prob_home"],
     )
@@ -1271,6 +1275,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print("[FINAL INJURY NON-ZERO COUNT]:", (df["injury_impact_diff"] != 0).sum())
 
     def american_to_prob(odds):
+        odds = pd.to_numeric(odds, errors="coerce")
+        if pd.isna(odds) or odds == 0:
+            return np.nan
         if odds > 0:
             return 100 / (odds + 100)
         return abs(odds) / (abs(odds) + 100)
@@ -1281,6 +1288,17 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         return 100 / abs(odds)
 
     if not df.empty and {"odds", "model_probability"}.issubset(df.columns):
+        if "home_team" in df.columns:
+            df["home_team"] = df["home_team"].astype(str).str.lower().str.strip()
+        if "away_team" in df.columns:
+            df["away_team"] = df["away_team"].astype(str).str.lower().str.strip()
+        if "selection" in df.columns:
+            df["selection"] = df["selection"].astype(str).str.lower().str.strip()
+
+        if "model_prob" in df.columns:
+            print("Model rows:", int(df["model_prob"].notna().sum()))
+        print("Odds rows:", int(df["odds"].notna().sum()))
+
         # Safe bet filtering: remove extreme longshots/heavy favorites before final selection.
         df = df[(df["odds"] > -300) & (df["odds"] < 300)].copy()
 
@@ -1319,9 +1337,13 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                         ]
                     ].head(10)
                 )
+            print("Merged rows:", len(df))
+            print("Null model_prob rows:", int(df["model_probability"].isnull().sum()))
             df = df[df["model_probability"].notna()].copy()
 
         df["market_probability"] = df["odds"].apply(american_to_prob)
+        print("Model nulls:", int(df["model_probability"].isnull().sum()))
+        print("Market nulls:", int(df["market_probability"].isnull().sum()))
         # Hard clamp immediately after prediction pipeline output.
         df["model_probability"] = df["model_probability"].clip(0.05, 0.65)
 
@@ -1437,6 +1459,24 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             + 0.45 * df["matchup_edge_adjustment"]
         )
         df["edge"] = (df["edge"] + 0.50 * df["injury_edge_adjustment"]).clip(-0.99, 0.99)
+
+        print("[NaN DEBUG]")
+        print(
+            df[
+                [
+                    "away_team",
+                    "home_team",
+                    "model_probability",
+                    "market_probability",
+                    "expected_value",
+                ]
+            ].head(20)
+        )
+
+        df = df.dropna(subset=["model_probability", "market_probability"]).copy()
+        df["expected_value"] = (
+            df["model_probability"] * (df["odds"] / 100)
+        ) - (1 - df["model_probability"])
 
         if "expected_value" not in df.columns:
             print("ERROR: 'expected_value' column is missing. Filling with 0.5.")
