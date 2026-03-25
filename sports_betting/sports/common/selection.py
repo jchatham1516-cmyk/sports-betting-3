@@ -116,10 +116,10 @@ def qualify_prediction(
         return None
 
     min_ev = float(thresholds.get("min_ev", 0.00001))
-    min_confidence = float(thresholds.get("min_confidence", 0.05))
     edge = 0.0 if math.isnan(rec.edge) else rec.edge
     expected_value = min_ev if math.isnan(rec.expected_value) else rec.expected_value
     confidence = rec.confidence_score
+    base_units = rec.recommended_units
     rec.edge = edge
     rec.expected_value = expected_value
 
@@ -141,13 +141,21 @@ def qualify_prediction(
     if expected_value > 0.10:
         pass_filter = True
 
+    confidence_multiplier = max(0.5, min(1.2, confidence))
+    adjusted_units = base_units * confidence_multiplier
+    rec.recommended_units = adjusted_units
     rec.confidence_score = confidence
+    rec.confidence_tier = confidence_tier(confidence)
 
     print("[EV PRIMARY FILTER DEBUG]")
     print("edge:", edge)
     print("ev:", expected_value)
     print("confidence:", confidence)
     print("pass:", pass_filter)
+    print("[CONFIDENCE SCALING DEBUG]")
+    print("confidence:", confidence)
+    print("multiplier:", confidence_multiplier)
+    print("units:", adjusted_units)
 
     if not pass_filter:
         LOGGER.info(
@@ -158,14 +166,14 @@ def qualify_prediction(
             expected_value,
         )
         return None
-    if confidence < min_confidence:
+    if confidence < 0.01 and expected_value < 0.05:
         LOGGER.info(
-            "[FILTER] rejected %s %s (%s): confidence %.4f < min_confidence %.4f",
+            "[FILTER] rejected %s %s (%s): confidence %.4f with low EV %.4f (extreme low-confidence safety)",
             pred.sport,
             game_text,
             pred.market,
             confidence,
-            min_confidence,
+            expected_value,
         )
         return None
 
