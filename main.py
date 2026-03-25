@@ -1548,16 +1548,30 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                         f"Confidence: {bet[confidence_col]}"
                     )
 
-        smart_flex_mask = (df["edge"] > 0.005) & (df["expected_value"] > 0.02)
-        pass_filter_mask = (
-            (df["expected_value"] >= min_expected_value) &
-            (df["edge"] >= min_edge) &
-            (
-                (df[confidence_col] >= min_confidence) |
-                (df["expected_value"] > 0.05)
-            )
-        ) | smart_flex_mask
-        filtered_bets = df[pass_filter_mask]
+        pass_filter_mask = pd.Series(False, index=df.index)
+
+        # PRIMARY PATH (EV-driven)
+        pass_filter_mask = pass_filter_mask | (df["expected_value"] > 0.02)
+
+        # SECONDARY PATH (edge + EV combo)
+        pass_filter_mask = pass_filter_mask | ((df["edge"] > 0.005) & (df["expected_value"] > 0.01))
+
+        # UNDERDOG BOOST
+        pass_filter_mask = pass_filter_mask | ((df["odds"] > 150) & (df["expected_value"] > 0.015))
+
+        for edge, expected_value, odds, pass_filter in zip(
+            df["edge"],
+            df["expected_value"],
+            df["odds"],
+            pass_filter_mask,
+        ):
+            print("[FILTER DEBUG]")
+            print("edge:", edge)
+            print("ev:", expected_value)
+            print("odds:", odds)
+            print("pass:", bool(pass_filter))
+
+        filtered_bets = df[pass_filter_mask & (df[confidence_col] >= min_confidence)]
         final_bets = filtered_bets.copy()
 
         final_bets = final_bets[
