@@ -73,7 +73,7 @@ LOGGER = logging.getLogger(__name__)
 # Temporary loose-filter thresholds for early-stage model learning/data collection.
 MIN_EDGE = 0.005
 MIN_EV = 0.01
-MIN_MODEL_PROBABILITY = 0.10
+MIN_MODEL_PROBABILITY = 0.05
 MAX_BETS_PER_SPORT_PER_DAY = 5
 MAX_EV = 0.15
 MAX_HEAVY_FAVORITE_ODDS = -300
@@ -1559,6 +1559,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         # UNDERDOG BOOST
         pass_filter_mask = pass_filter_mask | ((df["odds"] > 150) & (df["expected_value"] > 0.015))
 
+        # STRONG EV OVERRIDE
+        pass_filter_mask = pass_filter_mask | (df["expected_value"] > 0.10)
+
         for edge, expected_value, odds, pass_filter in zip(
             df["edge"],
             df["expected_value"],
@@ -1571,7 +1574,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             print("odds:", odds)
             print("pass:", bool(pass_filter))
 
-        filtered_bets = df[pass_filter_mask & (df[confidence_col] >= min_confidence)]
+        strong_ev_override_mask = df["expected_value"] > 0.10
+        filtered_bets = df[pass_filter_mask & ((df[confidence_col] >= min_confidence) | strong_ev_override_mask)]
         final_bets = filtered_bets.copy()
 
         final_bets = final_bets[
@@ -1596,16 +1600,18 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     else:
         final_bets = df.head(MAX_BETS_PER_SPORT_PER_DAY).copy()
 
-    def get_units(row):
+    def assign_units(row):
         if row["expected_value"] > 0.15:
-            return 2
-        elif row["expected_value"] > 0.05:
-            return 1.5
+            return 2.0  # strong play
+        elif row["expected_value"] > 0.08:
+            return 1.5  # medium play
         else:
-            return 1
+            return 1.0  # small play
 
     if not final_bets.empty and "expected_value" in final_bets.columns:
-        final_bets["units"] = final_bets.apply(get_units, axis=1)
+        final_bets["units"] = final_bets.apply(assign_units, axis=1)
+        print("[BET TIER DEBUG]")
+        print(final_bets[["expected_value", "units"]])
 
     if not final_bets.empty and {"odds", "model_probability", "market_probability", "edge", "expected_value"}.issubset(final_bets.columns):
         print("FINAL EV CHECK:")
