@@ -21,20 +21,38 @@ def _normalize_team(name: object) -> str:
 
 def build_nba_team_stats(historical: pd.DataFrame) -> pd.DataFrame:
     frame = historical.copy()
-    frame["home_team_norm"] = frame["home_team"].apply(_normalize_team)
-    frame["away_team_norm"] = frame["away_team"].apply(_normalize_team)
 
-    frame["home_score"] = pd.to_numeric(frame.get("home_score", 0.0), errors="coerce")
-    frame["away_score"] = pd.to_numeric(frame.get("away_score", 0.0), errors="coerce")
+    def norm(x: object) -> str:
+        return str(x).lower().strip()
+
+    frame["home_team_norm"] = frame["home_team"].apply(norm)
+    frame["away_team_norm"] = frame["away_team"].apply(norm)
+
+    # Ensure we always derive score-based stats even when advanced columns are absent.
+    score_aliases = {
+        "home": ["home_score", "home_points", "pts_home", "home_pts"],
+        "away": ["away_score", "away_points", "pts_away", "away_pts"],
+    }
+
+    home_col = next((col for col in score_aliases["home"] if col in frame.columns), None)
+    away_col = next((col for col in score_aliases["away"] if col in frame.columns), None)
+
+    home_scores = frame[home_col] if home_col else pd.Series(0.0, index=frame.index)
+    away_scores = frame[away_col] if away_col else pd.Series(0.0, index=frame.index)
+    frame["home_score"] = pd.to_numeric(home_scores, errors="coerce").fillna(0.0)
+    frame["away_score"] = pd.to_numeric(away_scores, errors="coerce").fillna(0.0)
     frame["point_diff"] = frame["home_score"] - frame["away_score"]
 
     home = (
-        frame.groupby("home_team_norm", as_index=False)
+        frame.groupby("home_team_norm")
         .agg(
-            home_score=("home_score", "mean"),
-            away_score=("away_score", "mean"),
-            point_diff=("point_diff", "mean"),
+            {
+                "home_score": "mean",
+                "away_score": "mean",
+                "point_diff": "mean",
+            }
         )
+        .reset_index()
         .rename(
             columns={
                 "home_team_norm": "team_norm",
@@ -43,13 +61,17 @@ def build_nba_team_stats(historical: pd.DataFrame) -> pd.DataFrame:
             }
         )
     )
+
     away = (
-        frame.groupby("away_team_norm", as_index=False)
+        frame.groupby("away_team_norm")
         .agg(
-            away_score=("away_score", "mean"),
-            home_score=("home_score", "mean"),
-            point_diff=("point_diff", "mean"),
+            {
+                "away_score": "mean",
+                "home_score": "mean",
+                "point_diff": "mean",
+            }
         )
+        .reset_index()
         .rename(
             columns={
                 "away_team_norm": "team_norm",
@@ -59,7 +81,9 @@ def build_nba_team_stats(historical: pd.DataFrame) -> pd.DataFrame:
         )
     )
 
-    return pd.concat([home, away], ignore_index=True).groupby("team_norm", as_index=False).mean(numeric_only=True)
+    team_stats = pd.concat([home, away], ignore_index=True)
+    team_stats = team_stats.groupby("team_norm", as_index=False).mean(numeric_only=True)
+    return team_stats
 
 
 def build_nhl_team_stats(historical: pd.DataFrame) -> pd.DataFrame:
@@ -235,6 +259,8 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
 
         team_df, source = _resolve_nba_team_stats()
         print(f"[NBA ENRICHMENT SOURCE] {source}")
+        if source == "historical_derived":
+            print("[NBA INFO] Using basic stat fallback (score-based features)")
         if team_df is not None:
             mapping = {
                 "offensive_rating_home": "offensive_rating_home",
