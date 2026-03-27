@@ -15,36 +15,74 @@ def _load_historical_csv(sport_name: str) -> pd.DataFrame | None:
     return _safe_read_csv(Path(f"sports_betting/data/historical/{sport_name}_historical.csv"))
 
 
-def _derive_team_means_from_historical(
-    historical_df: pd.DataFrame,
-    metric_map: dict[str, list[str]],
-) -> pd.DataFrame | None:
-    team_rows: list[dict[str, object]] = []
+def _normalize_team(name: object) -> str:
+    return str(name).lower().strip()
 
-    for _, row in historical_df.iterrows():
-        home_team = row.get("home_team")
-        away_team = row.get("away_team")
 
-        if pd.notna(home_team):
-            home_row: dict[str, object] = {"team": str(home_team).lower().strip()}
-            for metric, candidates in metric_map.items():
-                home_candidates = [f"{base}_home" for base in candidates]
-                value = next((row.get(col) for col in home_candidates if col in row.index), None)
-                home_row[metric] = pd.to_numeric(value, errors="coerce")
-            team_rows.append(home_row)
+def build_nba_team_stats(historical: pd.DataFrame) -> pd.DataFrame:
+    frame = historical.copy()
+    frame["home_team_norm"] = frame["home_team"].apply(_normalize_team)
+    frame["away_team_norm"] = frame["away_team"].apply(_normalize_team)
 
-        if pd.notna(away_team):
-            away_row: dict[str, object] = {"team": str(away_team).lower().strip()}
-            for metric, candidates in metric_map.items():
-                away_candidates = [f"{base}_away" for base in candidates]
-                value = next((row.get(col) for col in away_candidates if col in row.index), None)
-                away_row[metric] = pd.to_numeric(value, errors="coerce")
-            team_rows.append(away_row)
+    home = frame.groupby("home_team_norm", as_index=False).agg(
+        offensive_rating=("offensive_rating_home", "mean"),
+        defensive_rating=("defensive_rating_home", "mean"),
+        net_rating=("net_rating_home", "mean"),
+        pace=("pace_home", "mean"),
+    )
+    away = frame.groupby("away_team_norm", as_index=False).agg(
+        offensive_rating=("offensive_rating_away", "mean"),
+        defensive_rating=("defensive_rating_away", "mean"),
+        net_rating=("net_rating_away", "mean"),
+        pace=("pace_away", "mean"),
+    )
+    away = away.rename(columns={"away_team_norm": "team_norm"})
+    home = home.rename(columns={"home_team_norm": "team_norm"})
+    return pd.concat([home, away], ignore_index=True).groupby("team_norm", as_index=False).mean(numeric_only=True)
 
-    team_df = pd.DataFrame(team_rows)
-    if team_df.empty:
-        return None
-    return team_df.groupby("team", as_index=False).mean(numeric_only=True)
+
+def build_nhl_team_stats(historical: pd.DataFrame) -> pd.DataFrame:
+    frame = historical.copy()
+    frame["home_team_norm"] = frame["home_team"].apply(_normalize_team)
+    frame["away_team_norm"] = frame["away_team"].apply(_normalize_team)
+
+    home = frame.groupby("home_team_norm", as_index=False).agg(
+        goalie_save_strength=("goalie_strength_home", "mean"),
+        xgf_home=("xgf_home", "mean"),
+        xga_home=("xga_home", "mean"),
+    )
+    away = frame.groupby("away_team_norm", as_index=False).agg(
+        goalie_save_strength=("goalie_strength_away", "mean"),
+        xgf_home=("xgf_away", "mean"),
+        xga_home=("xga_away", "mean"),
+    )
+    away = away.rename(columns={"away_team_norm": "team_norm"})
+    home = home.rename(columns={"home_team_norm": "team_norm"})
+    return pd.concat([home, away], ignore_index=True).groupby("team_norm", as_index=False).mean(numeric_only=True)
+
+
+def build_mlb_team_stats(historical: pd.DataFrame) -> pd.DataFrame:
+    frame = historical.copy()
+    frame["home_team_norm"] = frame["home_team"].apply(_normalize_team)
+    frame["away_team_norm"] = frame["away_team"].apply(_normalize_team)
+
+    home = frame.groupby("home_team_norm", as_index=False).agg(
+        starter_rating=("starter_rating_home", "mean"),
+        bullpen_rating=("bullpen_rating_home", "mean"),
+        hitting_rating=("hitting_rating_home", "mean"),
+        home_split=("home_split_home", "mean"),
+        recent_form=("recent_form_home", "mean"),
+    )
+    away = frame.groupby("away_team_norm", as_index=False).agg(
+        starter_rating=("starter_rating_away", "mean"),
+        bullpen_rating=("bullpen_rating_away", "mean"),
+        hitting_rating=("hitting_rating_away", "mean"),
+        home_split=("home_split_away", "mean"),
+        recent_form=("recent_form_away", "mean"),
+    )
+    away = away.rename(columns={"away_team_norm": "team_norm"})
+    home = home.rename(columns={"home_team_norm": "team_norm"})
+    return pd.concat([home, away], ignore_index=True).groupby("team_norm", as_index=False).mean(numeric_only=True)
 
 
 def _resolve_nba_team_stats() -> tuple[pd.DataFrame | None, str]:
@@ -62,18 +100,10 @@ def _resolve_nba_team_stats() -> tuple[pd.DataFrame | None, str]:
     if historical_df is None:
         return None, "missing"
 
-    metric_map = {
-        "offensive_rating": ["offensive_rating", "off_rating"],
-        "defensive_rating": ["defensive_rating", "def_rating"],
-        "net_rating": ["net_rating"],
-        "pace": ["pace"],
-        "true_shooting": ["true_shooting"],
-        "effective_fg": ["effective_fg", "efg"],
-        "turnover_rate": ["turnover_rate"],
-        "rebound_rate": ["rebound_rate"],
-        "free_throw_rate": ["free_throw_rate"],
-    }
-    derived = _derive_team_means_from_historical(historical_df, metric_map)
+    required = {"offensive_rating_home", "offensive_rating_away", "defensive_rating_home", "defensive_rating_away"}
+    if not required.issubset(historical_df.columns):
+        return None, "historical_missing_columns"
+    derived = build_nba_team_stats(historical_df)
     if derived is None:
         return None, "historical_empty"
     return derived, "historical_derived"
@@ -94,14 +124,10 @@ def _resolve_nhl_team_stats() -> tuple[pd.DataFrame | None, str]:
     if historical_df is None:
         return None, "missing"
 
-    metric_map = {
-        "goalie_save_strength": ["goalie_strength", "goalie_save_strength"],
-        "special_teams_efficiency": ["special_teams_efficiency", "pp", "pk"],
-        "xgf": ["xgf"],
-        "xga": ["xga"],
-        "shot_share": ["shot_share"],
-    }
-    derived = _derive_team_means_from_historical(historical_df, metric_map)
+    required = {"goalie_strength_home", "goalie_strength_away", "xgf_home", "xgf_away", "xga_home", "xga_away"}
+    if not required.issubset(historical_df.columns):
+        return None, "historical_missing_columns"
+    derived = build_nhl_team_stats(historical_df)
     if derived is None:
         return None, "historical_empty"
     return derived, "historical_derived"
@@ -122,14 +148,10 @@ def _resolve_mlb_team_stats() -> tuple[pd.DataFrame | None, str]:
     if historical_df is None:
         return None, "missing"
 
-    metric_map = {
-        "starter_rating": ["starter_rating"],
-        "bullpen_rating": ["bullpen_rating"],
-        "hitting_rating": ["hitting_rating"],
-        "home_split": ["home_split"],
-        "recent_form": ["recent_form"],
-    }
-    derived = _derive_team_means_from_historical(historical_df, metric_map)
+    required = {"starter_rating_home", "starter_rating_away", "bullpen_rating_home", "bullpen_rating_away"}
+    if not required.issubset(historical_df.columns):
+        return None, "historical_missing_columns"
+    derived = build_mlb_team_stats(historical_df)
     if derived is None:
         return None, "historical_empty"
     return derived, "historical_derived"
@@ -137,36 +159,54 @@ def _resolve_mlb_team_stats() -> tuple[pd.DataFrame | None, str]:
 
 def _merge_home_away_team_stats(df: pd.DataFrame, team_df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
     out = df.copy()
-    stats = team_df.rename(columns={"team": "team_key"}).copy()
-
-    def normalize_team(name: object) -> str:
-        return str(name).lower().strip()
-
-    stats["team_key"] = stats["team_key"].apply(normalize_team)
+    stats = team_df.copy()
+    if "team" in stats.columns and "team_norm" not in stats.columns:
+        stats = stats.rename(columns={"team": "team_norm"})
+    if "team_norm" not in stats.columns:
+        raise RuntimeError("[DATA ERROR] Team stats must include `team` or `team_norm`")
+    stats["team_norm"] = stats["team_norm"].apply(_normalize_team)
 
     if "home_team_norm" not in out.columns and "home_team" in out.columns:
-        out["home_team_norm"] = out["home_team"].apply(normalize_team)
+        out["home_team_norm"] = out["home_team"].apply(_normalize_team)
     if "away_team_norm" not in out.columns and "away_team" in out.columns:
-        out["away_team_norm"] = out["away_team"].apply(normalize_team)
+        out["away_team_norm"] = out["away_team"].apply(_normalize_team)
 
     target_columns = set(mapping.values()) | {dst.replace("_home", "_away") for dst in mapping.values()}
     cols_to_drop = [col for col in out.columns if col in target_columns or col.endswith("_x") or col.endswith("_y")]
     out = out.drop(columns=cols_to_drop, errors="ignore")
 
-    home_stats = stats.rename(columns={src: dst for src, dst in mapping.items()})
-    away_stats = stats.rename(columns={src: dst.replace("_home", "_away") for src, dst in mapping.items()})
+    resolved_mapping = {
+        src: (dst[:-5] if dst.endswith("_home") else dst)
+        for src, dst in mapping.items()
+        if src in stats.columns
+    }
+    stats_base = stats.rename(columns=resolved_mapping)
+    home_stats = stats_base.add_suffix("_home")
+    away_stats = stats_base.add_suffix("_away")
 
-    out = out.merge(home_stats, left_on="home_team_norm", right_on="team_key", how="left").drop(columns=["team_key"], errors="ignore")
-    out = out.merge(away_stats, left_on="away_team_norm", right_on="team_key", how="left").drop(columns=["team_key"], errors="ignore")
+    out = out.merge(home_stats, left_on="home_team_norm", right_on="team_norm_home", how="left")
+    out = out.merge(away_stats, left_on="away_team_norm", right_on="team_norm_away", how="left")
+
+    print("[MERGE SUCCESS CHECK]")
+    if {"home_team", "offensive_rating_home", "offensive_rating_away"}.issubset(out.columns):
+        print(out[["home_team", "offensive_rating_home", "offensive_rating_away"]].head())
+    elif {"home_team", "goalie_save_strength_home", "goalie_save_strength_away"}.issubset(out.columns):
+        print(out[["home_team", "goalie_save_strength_home", "goalie_save_strength_away"]].head())
+    elif {"home_team", "starter_rating_home", "starter_rating_away"}.issubset(out.columns):
+        print(out[["home_team", "starter_rating_home", "starter_rating_away"]].head())
+
+    if "home_team_norm" in out.columns and "team_norm" in stats.columns:
+        missing = set(out["home_team_norm"]) - set(stats["team_norm"])
+        if missing:
+            print("[MERGE MISMATCH HOME TEAMS]")
+            print(missing)
+
     for base_col in mapping.values():
         away_col = base_col.replace("_home", "_away")
         if base_col in out.columns:
             out[base_col] = out[base_col]
         if away_col in out.columns:
             out[away_col] = out[away_col]
-    if {"home_team", "offensive_rating_home", "offensive_rating_away"}.issubset(out.columns):
-        print("[MERGE CHECK]")
-        print(out[["home_team", "offensive_rating_home", "offensive_rating_away"]].head())
     return out
 
 
@@ -180,6 +220,10 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         print(f"[NBA ENRICHMENT SOURCE] {source}")
         if team_df is not None:
             mapping = {
+                "offensive_rating_home": "offensive_rating_home",
+                "defensive_rating_home": "defensive_rating_home",
+                "net_rating_home": "net_rating_home",
+                "pace_home": "pace_home",
                 "offensive_rating": "offensive_rating_home",
                 "defensive_rating": "defensive_rating_home",
                 "net_rating": "net_rating_home",
@@ -193,7 +237,7 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             df = _merge_home_away_team_stats(df, team_df, mapping)
         else:
             print("[NBA ENRICHMENT WARNING] No team stat source found.")
-            if source in {"missing", "historical_empty"}:
+            if source in {"missing", "historical_empty", "historical_missing_columns"}:
                 raise RuntimeError("[NBA DATA ERROR] No team stat source found after exhausting external and historical fallbacks.")
         df = enrich_nba_live_features(df, nba_team_stats=None)
         df = build_nba_diff_features(df)
@@ -207,15 +251,18 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         if team_df is not None:
             mapping = {
                 "goalie_save_strength": "goalie_save_strength_home",
-                "special_teams_efficiency": "special_teams_efficiency_home",
+                "goalie_strength": "goalie_save_strength_home",
                 "xgf": "xgf_home",
                 "xga": "xga_home",
+                "xgf_home": "xgf_home",
+                "xga_home": "xga_home",
+                "special_teams_efficiency": "special_teams_efficiency_home",
                 "shot_share": "shot_share_home",
             }
             df = _merge_home_away_team_stats(df, team_df, mapping)
         else:
             print("[NHL ENRICHMENT WARNING] No team stat source found.")
-            if source in {"missing", "historical_empty"}:
+            if source in {"missing", "historical_empty", "historical_missing_columns"}:
                 raise RuntimeError("[NHL DATA ERROR] No team stat source found after exhausting external and historical fallbacks.")
         df = enrich_nhl_live_features(df, nhl_team_stats=None)
         df = build_nhl_diff_features(df)
@@ -233,11 +280,16 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                 "hitting_rating": "hitting_rating_home",
                 "home_split": "home_split_home",
                 "recent_form": "recent_form_home",
+                "starter_rating_home": "starter_rating_home",
+                "bullpen_rating_home": "bullpen_rating_home",
+                "hitting_rating_home": "hitting_rating_home",
+                "home_split_home": "home_split_home",
+                "recent_form_home": "recent_form_home",
             }
             df = _merge_home_away_team_stats(df, team_df, mapping)
         else:
             print("[MLB ENRICHMENT WARNING] No team stat source found.")
-            if source in {"missing", "historical_empty"}:
+            if source in {"missing", "historical_empty", "historical_missing_columns"}:
                 raise RuntimeError("[MLB DATA ERROR] No team stat source found after exhausting external and historical fallbacks.")
         df = enrich_mlb_live_features(df)
         df = build_mlb_features(df)
