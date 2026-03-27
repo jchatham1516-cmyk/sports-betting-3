@@ -1441,9 +1441,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         ).clip(0.01, 0.99)
         df["scaled_injury"] = scale_injury_impact(df["injury_impact_diff"], weight=0.01, cap=0.05)
         df["model_probability"] = (df["model_probability"] + df["scaled_injury"]).clip(0.01, 0.99)
+        # Edge must remain the direct delta between model and market probabilities.
         df["edge"] = df["model_probability"] - df["market_probability"]
-        df["edge_after_injury"] = df["edge"] + (df["injury_impact_diff"] * INJURY_WEIGHT)
-        df["edge"] = df["edge_after_injury"]
         df["decimal_odds"] = df["odds"].apply(_american_to_decimal)
         payout = df["decimal_odds"] - 1
         df["expected_value"] = (
@@ -1458,7 +1457,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             + 0.60 * df["form_edge_adjustment"]
             + 0.45 * df["matchup_edge_adjustment"]
         )
-        df["edge"] = (df["edge"] + 0.50 * df["injury_edge_adjustment"]).clip(-0.99, 0.99)
+        # Keep edge definition exact after all downstream calculations.
+        df["edge"] = df["model_probability"] - df["market_probability"]
 
         print("[NaN DEBUG]")
         print(
