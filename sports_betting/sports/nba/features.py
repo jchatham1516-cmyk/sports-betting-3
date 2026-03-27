@@ -175,7 +175,9 @@ def enrich_nba_live_features(df: pd.DataFrame, nba_team_stats: pd.DataFrame | No
 
 def build_nba_diff_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    out["offensive_rating_diff"] = out["offensive_rating_home"] - out["offensive_rating_away"]
+    out["offensive_rating_diff"] = _coalesce_numeric(out, ["offensive_rating_home"], default=np.nan) - _coalesce_numeric(out, ["offensive_rating_away"], default=np.nan)
+    if out["offensive_rating_diff"].isna().all():
+        out["offensive_rating_diff"] = _coalesce_numeric(out, ["elo_home"], default=0.0) - _coalesce_numeric(out, ["elo_away"], default=0.0)
     out["defensive_rating_diff"] = out["defensive_rating_home"] - out["defensive_rating_away"]
     out["net_rating_diff"] = out["net_rating_home"] - out["net_rating_away"]
     out["pace_diff"] = out["pace_home"] - out["pace_away"]

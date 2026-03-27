@@ -27,17 +27,18 @@ MLB_REQUIRED_SOURCE_COLUMNS = [
 ]
 
 
+def _num(df: pd.DataFrame, col: str, default: float = float("nan")) -> pd.Series:
+    if col in df.columns:
+        return pd.to_numeric(df[col], errors="coerce")
+    return pd.Series(default, index=df.index, dtype=float)
+
+
 def enrich_mlb_live_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
-    if "starter_rating_home" not in out.columns:
-        raise RuntimeError("[MLB ERROR] Missing pitcher data")
-    if "hitting_rating_home" not in out.columns:
-        raise RuntimeError("[MLB ERROR] Missing hitting data")
-
     missing = [col for col in MLB_REQUIRED_SOURCE_COLUMNS if col not in out.columns]
     if missing:
-        raise RuntimeError(f"[DATA ERROR] Missing required source stats: {missing}")
+        print(f"[MLB WARNING] Missing advanced stats: {missing} — using fallback features")
 
     if "home_split_home" not in out.columns:
         out["home_split_home"] = pd.to_numeric(out.get("runs_per_game_home"), errors="coerce")
@@ -97,13 +98,23 @@ def build_mlb_features(df: pd.DataFrame) -> pd.DataFrame:
     df = ensure_mlb_core_columns(df)
     df = df.copy()
 
-    missing = [col for col in MLB_REQUIRED_SOURCE_COLUMNS if col not in df.columns]
-    if missing:
-        raise RuntimeError(f"[DATA ERROR] Missing required source stats: {missing}")
+    if {"starter_rating_home", "starter_rating_away"}.issubset(df.columns):
+        df["starter_rating_diff"] = _num(df, "starter_rating_home") - _num(df, "starter_rating_away")
+    else:
+        df["starter_rating_diff"] = _num(df, "elo_diff")
 
-    df["starter_rating_diff"] = df["starter_rating_home"] - df["starter_rating_away"]
-    df["bullpen_rating_diff"] = df["bullpen_rating_home"] - df["bullpen_rating_away"]
-    df["hitting_rating_diff"] = df["hitting_rating_home"] - df["hitting_rating_away"]
+    if {"bullpen_rating_home", "bullpen_rating_away"}.issubset(df.columns):
+        df["bullpen_rating_diff"] = _num(df, "bullpen_rating_home") - _num(df, "bullpen_rating_away")
+    else:
+        df["bullpen_rating_diff"] = _num(df, "recent_form_home") - _num(df, "recent_form_away")
+
+    if {"hitting_rating_home", "hitting_rating_away"}.issubset(df.columns):
+        df["hitting_rating_diff"] = _num(df, "hitting_rating_home") - _num(df, "hitting_rating_away")
+    else:
+        runs_diff = _num(df, "runs_per_game_home") - _num(df, "runs_per_game_away")
+        recent_form_diff = _num(df, "recent_form_home") - _num(df, "recent_form_away")
+        df["hitting_rating_diff"] = runs_diff.combine_first(recent_form_diff)
+
     df["home_split_diff"] = df["home_split_home"] - df["home_split_away"]
     df["recent_form_diff"] = df["recent_form_home"] - df["recent_form_away"]
     df["injury_impact_diff"] = df["injury_impact_home"] - df["injury_impact_away"]
