@@ -2,6 +2,8 @@ sports_enabled:
   - nba
   - nfl
   - nhl
+  - mlb
+  - soccer
 
 logging:
   level: INFO
@@ -23,6 +25,14 @@ thresholds:
     spread:    {min_edge: 0.00001, min_ev: 0.00001, min_confidence: 0.05}
     total:     {min_edge: 0.00001, min_ev: 0.00001, min_confidence: 0.05}
   nhl:
+    moneyline: {min_edge: 0.00001, min_ev: 0.00001, min_confidence: 0.05}
+    spread:    {min_edge: 0.00001, min_ev: 0.00001, min_confidence: 0.05}
+    total:     {min_edge: 0.00001, min_ev: 0.00001, min_confidence: 0.05}
+  mlb:
+    moneyline: {min_edge: 0.00001, min_ev: 0.00001, min_confidence: 0.05}
+    spread:    {min_edge: 0.00001, min_ev: 0.00001, min_confidence: 0.05}
+    total:     {min_edge: 0.00001, min_ev: 0.00001, min_confidence: 0.05}
+  soccer:
     moneyline: {min_edge: 0.00001, min_ev: 0.00001, min_confidence: 0.05}
     spread:    {min_edge: 0.00001, min_ev: 0.00001, min_confidence: 0.05}
     total:     {min_edge: 0.00001, min_ev: 0.00001, min_confidence: 0.05}

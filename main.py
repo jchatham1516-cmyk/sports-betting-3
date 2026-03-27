@@ -46,8 +46,11 @@ from sports_betting.sports.nba.model import NBAModel
 from sports_betting.sports.nba.simple_model import american_to_implied_prob
 from sports_betting.sports.nba.simple_model import FEATURE_COLUMNS as NBA_RUNTIME_FEATURE_COLUMNS
 from sports_betting.sports.nba.simple_model import train_runtime_model
+from sports_betting.sports.mlb.model import MLBModel
+from sports_betting.sports.mlb.pipeline import run_mlb_pipeline
 from sports_betting.sports.nfl.model import NFLModel
-from sports_betting.sports.nhl.model import NHLModel
+from sports_betting.sports.nhl.model import NHLModel, train_nhl_runtime_model
+from sports_betting.sports.soccer.pipeline import run_soccer_pipeline
 from tracking import log_bets
 
 
@@ -506,9 +509,26 @@ RECOMMENDATION_COLUMNS = [
     "reason_summary",
 ]
 
+UNIFIED_OUTPUT_COLUMNS = [
+    "sport",
+    "event_id",
+    "commence_time",
+    "home_team",
+    "away_team",
+    "market_type",
+    "selection",
+    "odds",
+    "model_probability",
+    "market_probability",
+    "edge",
+    "expected_value",
+    "bet_tier",
+    "confidence",
+]
+
 
 def choose_model(sport: str):
-    return {"nba": NBAModel, "nfl": NFLModel, "nhl": NHLModel}[sport]()
+    return {"nba": NBAModel, "nfl": NFLModel, "nhl": NHLModel, "mlb": MLBModel, "soccer": NFLModel}[sport]()
 
 
 def _american_to_decimal(odds: int) -> float:
@@ -1030,6 +1050,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     logger = setup_logging(cfg["logging"]["level"])
 
     all_predictions: list[dict] = []
+    prebuilt_candidates: list[dict] = []
     game_rows_by_id: dict[str, dict] = {}
 
     sports_to_run = [sport] if sport else cfg["sports_enabled"]
@@ -1078,6 +1099,32 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         runtime_home_win_model = None
         isotonic_model = None
         total_games_processed += len(daily)
+        if sport_name == "mlb":
+            sport_candidates = run_mlb_pipeline(historical_df=historical, daily_df=daily)
+            prebuilt_candidates.extend(sport_candidates)
+            print(
+                f"""
+[SPORT SUMMARY]
+Sport: {sport_name}
+Games processed: {len(daily)}
+Candidates generated: {len(sport_candidates)}
+Final bets: 0
+"""
+            )
+            continue
+        if sport_name == "soccer":
+            sport_candidates = run_soccer_pipeline(historical_df=historical, daily_df=daily)
+            prebuilt_candidates.extend(sport_candidates)
+            print(
+                f"""
+[SPORT SUMMARY]
+Sport: {sport_name}
+Games processed: {len(daily)}
+Candidates generated: {len(sport_candidates)}
+Final bets: 0
+"""
+            )
+            continue
         csv_path = historical_file_path(sport_name)
         print(f"[{sport_name.upper()}] Looking for historical CSV at: {csv_path}")
         print(f"[{sport_name.upper()}] Exists: {csv_path.exists()}")
@@ -1098,7 +1145,10 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 if len(historical_df) < 20:
                     print(f"[{sport_name.upper()}] WARNING: Very small dataset")
                 try:
-                    runtime_home_win_model = train_runtime_model(historical_df)
+                    if sport_name == "nhl":
+                        runtime_home_win_model = train_nhl_runtime_model(historical_df)
+                    else:
+                        runtime_home_win_model = train_runtime_model(historical_df)
                     model.runtime_model = runtime_home_win_model
                     trained_in_run = runtime_home_win_model is not None
                     if runtime_home_win_model is not None:
@@ -1116,15 +1166,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         if not trained_in_run:
             if sport_name == "nhl":
-                nhl_runtime_model = _train_nhl_fallback_runtime_model(daily)
-                if nhl_runtime_model is not None:
-                    model.runtime_model = nhl_runtime_model
-                    runtime_home_win_model = nhl_runtime_model
-                    trained_in_run = True
-                    logger.warning(
-                        "[%s] Historical CSV missing/insufficient; trained lightweight NHL fallback runtime model from current odds snapshot.",
-                        sport_name.upper(),
-                    )
+                raise ValueError("[NHL] Missing historical data - cannot train model")
             if not trained_in_run and artifact_path.exists():
                 model.load_artifact(artifact_path)
                 logger.warning(
@@ -1165,6 +1207,10 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 pred.model_probability = float(np.clip(calibrated_probability, 0.05, 0.65))
                 pred.edge = np.nan
         logger.info("%s games processed for %s (%s predictions generated)", len(daily), sport_name, len(preds))
+        if sport_name == "nhl":
+            non_fallback = [p for p in preds if float(getattr(p, "model_probability", 0.5)) != 0.5]
+            if not non_fallback:
+                raise AssertionError("[NHL] Model probabilities are fallback defaults (0.50)")
 
         predictions_by_game_id: dict[str, list[dict]] = defaultdict(list)
         for pred in preds:
@@ -1191,6 +1237,15 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 "injury_impact_away": float(game_row.get("injury_impact_away", 0.0)),
                 "injury_impact_diff": float(game_row.get("injury_impact_diff", 0.0)),
             }
+        print(
+            f"""
+[SPORT SUMMARY]
+Sport: {sport_name}
+Games processed: {len(daily)}
+Candidates generated: {len(preds)}
+Final bets: 0
+"""
+        )
 
     out_dir = Path("data/outputs")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1206,7 +1261,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     pred_path = out_dir / "predictions.csv"
 
-    if not pred_path.exists() or pred_path.stat().st_size == 0:
+    if (not pred_path.exists() or pred_path.stat().st_size == 0) and not prebuilt_candidates:
         print("No predictions generated today — skipping read.")
         return
 
@@ -1214,16 +1269,19 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     try:
         if not pred_path.exists():
-            print("No predictions file found — skipping.")
-            return
+            if prebuilt_candidates:
+                loaded_predictions_df = pd.DataFrame(columns=PREDICTION_COLUMNS)
+            else:
+                print("No predictions file found — skipping.")
+                return
 
-        if pred_path.stat().st_size < 10:
+        if pred_path.exists() and pred_path.stat().st_size < 10 and not prebuilt_candidates:
             print("Predictions file is empty — skipping.")
             return
 
-        loaded_predictions_df = pd.read_csv(pred_path)
+        loaded_predictions_df = pd.read_csv(pred_path) if pred_path.exists() else pd.DataFrame(columns=PREDICTION_COLUMNS)
 
-        if loaded_predictions_df.empty or len(loaded_predictions_df.columns) == 0:
+        if (loaded_predictions_df.empty or len(loaded_predictions_df.columns) == 0) and not prebuilt_candidates:
             print("Predictions dataframe empty — skipping.")
             return
 
@@ -1250,6 +1308,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             logger.warning("[ODDS_SANITY_SKIP] game_id=%s game=%s reason=%s", game_id, game_context["game"], export_warning)
             continue
         bets.extend(game_bets)
+    if prebuilt_candidates:
+        bets.extend(prebuilt_candidates)
 
     bets_df = pd.DataFrame(bets)
     print("Columns before bet selection:", bets_df.columns.tolist())
@@ -1795,6 +1855,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     recommendations_df = pd.DataFrame(final_bets_records)
     recommendations_df = recommendations_df.reindex(columns=RECOMMENDATION_COLUMNS)
     save_dataframe(recommendations_df, out_dir / "recommended_bets.csv")
+    unified_df = pd.DataFrame(final_bets_records).copy()
+    if not unified_df.empty:
+        unified_df["event_id"] = unified_df.get("event_id", unified_df.get("game_id", ""))
+        unified_df["market_type"] = unified_df.get("market_type", unified_df.get("market", "moneyline"))
+    unified_df = unified_df.reindex(columns=UNIFIED_OUTPUT_COLUMNS)
+    save_dataframe(unified_df, out_dir / "recommended_bets_unified.csv")
     log_bets(final_bets)
 
     parlays_df = build_parlays(final_bets)
