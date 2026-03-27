@@ -72,7 +72,7 @@ FORCE_BETS = True
 LOGGER = logging.getLogger(__name__)
 # Temporary loose-filter thresholds for early-stage model learning/data collection.
 MIN_EDGE = 0.005
-MIN_EV = 0.01
+MIN_EV = 0.005
 MIN_MODEL_PROBABILITY = 0.05
 MAX_BETS_PER_SPORT_PER_DAY = 5
 MAX_EV = 0.15
@@ -1537,7 +1537,10 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print("[LOOSE FILTER MODE ENABLED]")
         print(f"min_ev={min_expected_value}")
 
-        low_ev_mask = df["expected_value"] <= min_expected_value
+        low_ev_mask = ~(
+            ((df["expected_value"] >= min_expected_value) & (df["edge"] >= 0.03))
+            | (df["expected_value"] >= 0.01)
+        )
         deep_negative_ev_mask = df["expected_value"] < -0.05
         high_ev_override_mask = df["expected_value"] > 0.10
         confidence_col = "confidence" if "confidence" in df.columns else "model_probability"
@@ -1563,8 +1566,13 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         if {"home_team", "away_team", "edge", "expected_value", "model_probability"}.issubset(df.columns):
             for _, bet in df.iterrows():
                 fail_reasons = []
-                if bet["expected_value"] <= min_expected_value:
-                    fail_reasons.append(f"ev {bet['expected_value']:.4f} <= {min_expected_value:.4f}")
+                if not (
+                    ((bet["expected_value"] >= min_expected_value) and (bet["edge"] >= 0.03))
+                    or (bet["expected_value"] >= 0.01)
+                ):
+                    fail_reasons.append(
+                        f"ev {bet['expected_value']:.4f} / edge {bet['edge']:.4f} below staged thresholds"
+                    )
                 if bet["expected_value"] < -0.05:
                     fail_reasons.append(f"ev {bet['expected_value']:.4f} < -0.0500")
                 matchup = f"{bet['away_team']} @ {bet['home_team']}"
@@ -1583,11 +1591,13 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         pass_filter_mask = pd.Series(False, index=df.index)
 
-        # PRIMARY PATH (EV-driven)
-        pass_filter_mask = pass_filter_mask | (df["expected_value"] > 0.02)
+        # PRIMARY PATH (EV-driven with edge support for low EV)
+        pass_filter_mask = pass_filter_mask | (
+            (df["expected_value"] >= min_expected_value) & (df["edge"] >= 0.03)
+        )
 
-        # STRONG EV AUTO-PASS
-        pass_filter_mask = pass_filter_mask | (df["expected_value"] > 0.10)
+        # STANDARD EV AUTO-PASS
+        pass_filter_mask = pass_filter_mask | (df["expected_value"] >= 0.01)
 
         # OPTIONAL SAFETY FLOOR
         pass_filter_mask = pass_filter_mask & (df["expected_value"] >= -0.05)
