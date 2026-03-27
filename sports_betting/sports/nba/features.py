@@ -109,6 +109,8 @@ def _merge_nba_team_stats(df: pd.DataFrame, nba_team_stats: pd.DataFrame) -> pd.
         out["away_team_norm"] = out["away_team"].apply(normalize_team_name)
 
     stats["team_norm"] = stats["team"].apply(normalize_team_name)
+    cols_to_drop = [col for col in out.columns if "_home" in col or "_away" in col]
+    out = out.drop(columns=cols_to_drop, errors="ignore")
 
     home_matches = out["home_team_norm"].isin(stats["team_norm"]).sum()
     away_matches = out["away_team_norm"].isin(stats["team_norm"]).sum()
@@ -127,6 +129,10 @@ def _merge_nba_team_stats(df: pd.DataFrame, nba_team_stats: pd.DataFrame) -> pd.
         right_on="team_norm_away",
         how="left",
     )
+    out["offensive_rating_home"] = out["offensive_rating_home"]
+    out["offensive_rating_away"] = out["offensive_rating_away"]
+    out["defensive_rating_home"] = out["defensive_rating_home"]
+    out["defensive_rating_away"] = out["defensive_rating_away"]
     print("[POST MERGE SAMPLE]")
     print(out[["home_team", "offensive_rating_home", "offensive_rating_away"]].head())
     return out

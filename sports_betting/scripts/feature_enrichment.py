@@ -138,18 +138,35 @@ def _resolve_mlb_team_stats() -> tuple[pd.DataFrame | None, str]:
 def _merge_home_away_team_stats(df: pd.DataFrame, team_df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
     out = df.copy()
     stats = team_df.rename(columns={"team": "team_key"}).copy()
-    stats["team_key"] = stats["team_key"].astype(str).str.lower().str.strip()
+
+    def normalize_team(name: object) -> str:
+        return str(name).lower().strip()
+
+    stats["team_key"] = stats["team_key"].apply(normalize_team)
 
     if "home_team_norm" not in out.columns and "home_team" in out.columns:
-        out["home_team_norm"] = out["home_team"].astype(str).str.lower().str.strip()
+        out["home_team_norm"] = out["home_team"].apply(normalize_team)
     if "away_team_norm" not in out.columns and "away_team" in out.columns:
-        out["away_team_norm"] = out["away_team"].astype(str).str.lower().str.strip()
+        out["away_team_norm"] = out["away_team"].apply(normalize_team)
+
+    target_columns = set(mapping.values()) | {dst.replace("_home", "_away") for dst in mapping.values()}
+    cols_to_drop = [col for col in out.columns if col in target_columns or col.endswith("_x") or col.endswith("_y")]
+    out = out.drop(columns=cols_to_drop, errors="ignore")
 
     home_stats = stats.rename(columns={src: dst for src, dst in mapping.items()})
     away_stats = stats.rename(columns={src: dst.replace("_home", "_away") for src, dst in mapping.items()})
 
     out = out.merge(home_stats, left_on="home_team_norm", right_on="team_key", how="left").drop(columns=["team_key"], errors="ignore")
     out = out.merge(away_stats, left_on="away_team_norm", right_on="team_key", how="left").drop(columns=["team_key"], errors="ignore")
+    for base_col in mapping.values():
+        away_col = base_col.replace("_home", "_away")
+        if base_col in out.columns:
+            out[base_col] = out[base_col]
+        if away_col in out.columns:
+            out[away_col] = out[away_col]
+    if {"home_team", "offensive_rating_home", "offensive_rating_away"}.issubset(out.columns):
+        print("[MERGE CHECK]")
+        print(out[["home_team", "offensive_rating_home", "offensive_rating_away"]].head())
     return out
 
 
