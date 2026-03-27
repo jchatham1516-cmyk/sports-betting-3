@@ -1,8 +1,9 @@
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
-from sports_betting.sports.common.feature_engineering import enrich_with_context_features, normalize_status
+from sports_betting.sports.common.feature_engineering import add_market_context_features, enrich_with_context_features, normalize_status
 
 
 def test_normalize_status_aliases():
@@ -99,3 +100,20 @@ def test_enrich_with_context_features_normalizes_accented_team_names(tmp_path: P
     out = enrich_with_context_features(games, "nhl", root)
     assert out.loc[0, "injury_impact_home"] > 0
     assert out.loc[0, "injury_impact_away"] > 0
+
+
+def test_add_market_context_features_applies_lineup_weighted_adjusted_edge():
+    frame = pd.DataFrame(
+        [
+            {
+                "market_prob": 0.50,
+                "model_prob": 0.56,
+                "injury_impact_diff": 0.0,
+                "pitcher_diff": 0.40,
+                "goalie_diff": 0.10,
+            }
+        ]
+    )
+    out = add_market_context_features(frame)
+    assert out.loc[0, "edge"] == pytest.approx(0.015)
+    assert out.loc[0, "adjusted_edge"] == pytest.approx(0.015 + (0.40 * 0.03) + (0.10 * 0.05))

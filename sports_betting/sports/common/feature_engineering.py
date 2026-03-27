@@ -378,6 +378,10 @@ def add_market_context_features(games_df: pd.DataFrame) -> pd.DataFrame:
     injury_impact_diff = _series("injury_impact_diff")
     injury_adjustment = injury_impact_diff * INJURY_EDGE_EV_SCALING_FACTOR
     out["edge"] = (out["adjusted_prob"] - out["market_prob"]) + injury_adjustment
+    pitcher_diff = _series("pitcher_diff")
+    goalie_diff = _series("goalie_diff")
+    out["adjusted_edge"] = out["edge"] + (pitcher_diff * 0.03)
+    out["adjusted_edge"] += goalie_diff * 0.05
     out["expected_value"] = _series("expected_value") + injury_adjustment
     out["open_line"] = _series("open_line") if "open_line" in out.columns else _series("spread_line")
     out["current_line"] = _series("current_line") if "current_line" in out.columns else _series("spread_line")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -22,6 +23,42 @@ def _load_historical_csv(sport_name: str) -> pd.DataFrame | None:
 def _normalize_team(name: object) -> str:
     normalized = str(name).lower().strip()
     return TEAM_NAME_FIXES.get(normalized, normalized)
+
+
+def load_mlb_pitchers() -> dict[str, dict[str, float]]:
+    candidates = [
+        Path("data/inputs/mlb_pitchers.json"),
+        Path("sports_betting/data/inputs/mlb_pitchers.json"),
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            print(f"[MLB PITCHERS WARNING] Invalid JSON in {path}: {exc}")
+            continue
+        if isinstance(payload, dict):
+            return {str(_normalize_team(team)): dict(values) for team, values in payload.items() if isinstance(values, dict)}
+    return {}
+
+
+def load_nhl_goalies() -> dict[str, dict[str, float]]:
+    candidates = [
+        Path("data/inputs/nhl_goalies.json"),
+        Path("sports_betting/data/inputs/nhl_goalies.json"),
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            print(f"[NHL GOALIES WARNING] Invalid JSON in {path}: {exc}")
+            continue
+        if isinstance(payload, dict):
+            return {str(_normalize_team(team)): dict(values) for team, values in payload.items() if isinstance(values, dict)}
+    return {}
 
 
 def build_nba_team_stats(historical: pd.DataFrame) -> pd.DataFrame:
@@ -345,12 +382,12 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                 raise RuntimeError("[NHL DATA ERROR] No team stat source found after exhausting external and historical fallbacks.")
         df = enrich_nhl_live_features(df, nhl_team_stats=None)
         df = build_nhl_diff_features(df)
-        elo_series = pd.to_numeric(df.get("elo_diff", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0.0)
-        recent_goal_series = pd.to_numeric(
-            df.get("recent_goal_diff", pd.Series(0.0, index=df.index)), errors="coerce"
+        goalies = load_nhl_goalies()
+        df["goalie_save_home"] = df["home_team_norm"].map(lambda t: goalies.get(str(t), {}).get("save_pct", 0.0))
+        df["goalie_save_away"] = df["away_team_norm"].map(lambda t: goalies.get(str(t), {}).get("save_pct", 0.0))
+        df["goalie_diff"] = pd.to_numeric(df["goalie_save_home"], errors="coerce").fillna(0.0) - pd.to_numeric(
+            df["goalie_save_away"], errors="coerce"
         ).fillna(0.0)
-        df["goalie_diff"] = elo_series * 0.01
-        df["xgf_diff"] = recent_goal_series
         return df
 
     if sport == "mlb":
@@ -376,6 +413,12 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             print("[MLB ENRICHMENT WARNING] No team stat source found.")
             if source in {"missing", "historical_empty", "historical_missing_columns"}:
                 raise RuntimeError("[MLB DATA ERROR] No team stat source found after exhausting external and historical fallbacks.")
+        pitchers = load_mlb_pitchers()
+        df["pitcher_era_home"] = df["home_team_norm"].map(lambda t: pitchers.get(str(t), {}).get("era", 0.0))
+        df["pitcher_era_away"] = df["away_team_norm"].map(lambda t: pitchers.get(str(t), {}).get("era", 0.0))
+        df["pitcher_diff"] = pd.to_numeric(df["pitcher_era_away"], errors="coerce").fillna(0.0) - pd.to_numeric(
+            df["pitcher_era_home"], errors="coerce"
+        ).fillna(0.0)
         df = enrich_mlb_live_features(df)
         df = build_mlb_features(df)
         return df
