@@ -92,6 +92,10 @@ def _american_to_prob(odds: pd.Series) -> pd.Series:
     return pd.Series(prob, index=odds.index, dtype="float64")
 
 
+def normalize_team_name(name: object) -> str:
+    return str(name).lower().strip()
+
+
 def _merge_nba_team_stats(df: pd.DataFrame, nba_team_stats: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     stats = nba_team_stats.copy()
@@ -101,23 +105,30 @@ def _merge_nba_team_stats(df: pd.DataFrame, nba_team_stats: pd.DataFrame) -> pd.
     if "home_team_norm" not in out.columns or "away_team_norm" not in out.columns:
         if "home_team" not in out.columns or "away_team" not in out.columns:
             raise RuntimeError("[DATA ERROR] Missing team columns required for NBA stat merge")
-        out["home_team_norm"] = out["home_team"].astype(str).str.lower().str.strip()
-        out["away_team_norm"] = out["away_team"].astype(str).str.lower().str.strip()
+        out["home_team_norm"] = out["home_team"].apply(normalize_team_name)
+        out["away_team_norm"] = out["away_team"].apply(normalize_team_name)
 
-    stats["team"] = stats["team"].astype(str).str.lower().str.strip()
+    stats["team_norm"] = stats["team"].apply(normalize_team_name)
+
+    home_matches = out["home_team_norm"].isin(stats["team_norm"]).sum()
+    away_matches = out["away_team_norm"].isin(stats["team_norm"]).sum()
+    print(f"[MERGE DEBUG] Home matches: {home_matches}/{len(out)}")
+    print(f"[MERGE DEBUG] Away matches: {away_matches}/{len(out)}")
+
     out = out.merge(
-        stats,
+        stats.add_suffix("_home"),
         left_on="home_team_norm",
-        right_on="team",
+        right_on="team_norm_home",
         how="left",
     )
     out = out.merge(
-        stats,
+        stats.add_suffix("_away"),
         left_on="away_team_norm",
-        right_on="team",
+        right_on="team_norm_away",
         how="left",
-        suffixes=("_home", "_away"),
     )
+    print("[POST MERGE SAMPLE]")
+    print(out[["home_team", "offensive_rating_home", "offensive_rating_away"]].head())
     return out
 
 
@@ -177,6 +188,7 @@ def build_nba_diff_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["offensive_rating_diff"] = _coalesce_numeric(out, ["offensive_rating_home"], default=np.nan) - _coalesce_numeric(out, ["offensive_rating_away"], default=np.nan)
     if out["offensive_rating_diff"].isna().all():
+        print("[WARNING] No stat matches — fallback triggered")
         out["offensive_rating_diff"] = _coalesce_numeric(out, ["elo_home"], default=0.0) - _coalesce_numeric(out, ["elo_away"], default=0.0)
     out["defensive_rating_diff"] = out["defensive_rating_home"] - out["defensive_rating_away"]
     out["net_rating_diff"] = out["net_rating_home"] - out["net_rating_away"]
