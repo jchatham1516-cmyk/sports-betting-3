@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import pandas as pd
 
+TEAM_NAME_FIXES = {
+    "portland blazers": "portland trail blazers",
+}
+
 NHL_SOURCE_COLUMNS = [
     "goalie_save_strength_home",
     "goalie_save_strength_away",
@@ -35,7 +39,8 @@ def _num(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
 
 
 def normalize_team_name(name: object) -> str:
-    return str(name).lower().strip()
+    normalized = str(name).lower().strip()
+    return TEAM_NAME_FIXES.get(normalized, normalized)
 
 
 def _merge_nhl_team_stats(df: pd.DataFrame, nhl_team_stats: pd.DataFrame) -> pd.DataFrame:
