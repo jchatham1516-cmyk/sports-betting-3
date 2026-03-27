@@ -5,6 +5,8 @@ from __future__ import annotations
 import pandas as pd
 
 MLB_SOURCE_COLUMNS = [
+    "pitcher_era_home",
+    "pitcher_era_away",
     "starter_rating_home",
     "starter_rating_away",
     "bullpen_rating_home",
@@ -87,6 +89,9 @@ def ensure_mlb_core_columns(df: pd.DataFrame) -> pd.DataFrame:
         "implied_home_prob": 0.5,
         "spread_abs": 0.0,
         "is_favorite": 0,
+        "pitcher_era_home": 0.0,
+        "pitcher_era_away": 0.0,
+        "pitcher_diff": 0.0,
     }
     for col, val in defaults.items():
         if col not in df.columns:
@@ -97,6 +102,11 @@ def ensure_mlb_core_columns(df: pd.DataFrame) -> pd.DataFrame:
 def build_mlb_features(df: pd.DataFrame) -> pd.DataFrame:
     df = ensure_mlb_core_columns(df)
     df = df.copy()
+
+    if {"pitcher_era_home", "pitcher_era_away"}.issubset(df.columns):
+        df["pitcher_diff"] = _num(df, "pitcher_era_away", default=0.0) - _num(df, "pitcher_era_home", default=0.0)
+    else:
+        df["pitcher_diff"] = _num(df, "pitcher_diff", default=0.0)
 
     if {"starter_rating_home", "starter_rating_away"}.issubset(df.columns):
         df["starter_rating_diff"] = _num(df, "starter_rating_home") - _num(df, "starter_rating_away")

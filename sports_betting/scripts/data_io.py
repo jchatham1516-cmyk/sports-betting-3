@@ -114,6 +114,13 @@ BASE_FEATURE_COLUMNS = [
     "last10_net_rating_diff",
     "recent_goal_diff",
     "recent_epa_diff",
+    "pitcher_era_home",
+    "pitcher_era_away",
+    "pitcher_diff",
+    "goalie_save_home",
+    "goalie_save_away",
+    "goalie_diff",
+    "adjusted_edge",
 ]
 
 FEATURE_COLUMNS_BY_SPORT = {
@@ -250,6 +257,13 @@ def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFra
         out.loc[missing_adjusted, "adjusted_prob"] = (0.75 * out.loc[missing_adjusted, "market_prob"]) + (0.25 * out.loc[missing_adjusted, "model_prob"])
     out["model_prob"] = out["adjusted_prob"]
     out["edge"] = out["adjusted_prob"] - out["market_prob"]
+    out["pitcher_era_home"] = _coalesce_numeric(out, ["pitcher_era_home"])
+    out["pitcher_era_away"] = _coalesce_numeric(out, ["pitcher_era_away"])
+    out["pitcher_diff"] = _coalesce_numeric(out, ["pitcher_diff", "starter_rating_diff"])
+    out["goalie_save_home"] = _coalesce_numeric(out, ["goalie_save_home", "goalie_save_strength_home"])
+    out["goalie_save_away"] = _coalesce_numeric(out, ["goalie_save_away", "goalie_save_strength_away"])
+    out["goalie_diff"] = _coalesce_numeric(out, ["goalie_diff", "goalie_strength_diff"])
+    out["adjusted_edge"] = out["edge"] + (out["pitcher_diff"] * 0.03) + (out["goalie_diff"] * 0.05)
     out["expected_value"] = _coalesce_numeric(out, ["expected_value"])
     out["line_movement"] = _coalesce_numeric(out, ["line_movement"])
     out["clv_placeholder"] = _coalesce_numeric(out, ["clv_placeholder"])
