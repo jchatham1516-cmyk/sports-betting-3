@@ -151,7 +151,7 @@ def enrich_nba_live_features(df: pd.DataFrame, nba_team_stats: pd.DataFrame | No
     for target, candidates in alias_map.items():
         if target not in out.columns:
             out[target] = _coalesce_numeric(out, candidates, default=np.nan)
-        out[target] = pd.to_numeric(out[target], errors="coerce").fillna(0.0)
+        out[target] = pd.to_numeric(out[target], errors="coerce")
 
     print(
         "[NBA SOURCE DEBUG]",
@@ -168,7 +168,7 @@ def enrich_nba_live_features(df: pd.DataFrame, nba_team_stats: pd.DataFrame | No
         raise RuntimeError(f"[DATA ERROR] Missing required source stats: {missing}")
 
     for col in NBA_SOURCE_COLUMNS:
-        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+        out[col] = pd.to_numeric(out[col], errors="coerce")
 
     return out
 

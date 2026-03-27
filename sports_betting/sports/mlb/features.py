@@ -40,17 +40,17 @@ def enrich_mlb_live_features(df: pd.DataFrame) -> pd.DataFrame:
         raise RuntimeError(f"[DATA ERROR] Missing required source stats: {missing}")
 
     if "home_split_home" not in out.columns:
-        out["home_split_home"] = pd.to_numeric(out.get("runs_per_game_home", 0.0), errors="coerce").fillna(0.0)
+        out["home_split_home"] = pd.to_numeric(out.get("runs_per_game_home"), errors="coerce")
     if "home_split_away" not in out.columns:
-        out["home_split_away"] = pd.to_numeric(out.get("runs_per_game_away", 0.0), errors="coerce").fillna(0.0)
+        out["home_split_away"] = pd.to_numeric(out.get("runs_per_game_away"), errors="coerce")
 
     if "recent_form_home" not in out.columns:
-        out["recent_form_home"] = pd.to_numeric(out.get("pitcher_last3_starts_home", 0.0), errors="coerce").fillna(0.0)
+        out["recent_form_home"] = pd.to_numeric(out.get("pitcher_last3_starts_home"), errors="coerce")
     if "recent_form_away" not in out.columns:
-        out["recent_form_away"] = pd.to_numeric(out.get("pitcher_last3_starts_away", 0.0), errors="coerce").fillna(0.0)
+        out["recent_form_away"] = pd.to_numeric(out.get("pitcher_last3_starts_away"), errors="coerce")
 
     for col in MLB_SOURCE_COLUMNS:
-        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+        out[col] = pd.to_numeric(out[col], errors="coerce")
 
     print(
         "[MLB SOURCE DEBUG]",
