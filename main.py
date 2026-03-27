@@ -77,6 +77,9 @@ MIN_MODEL_PROBABILITY = 0.05
 MAX_BETS_PER_SPORT_PER_DAY = 5
 MAX_EV = 0.15
 MAX_HEAVY_FAVORITE_ODDS = -300
+TIER_A_THRESHOLDS = {"expected_value": 0.05, "edge": 0.02, "confidence": 0.20}
+TIER_B_THRESHOLDS = {"expected_value": 0.025, "edge": 0.01, "confidence": 0.15}
+TIER_C_THRESHOLDS = {"expected_value": 0.01, "edge": 0.005, "confidence": 0.10}
 REQUIRED_FEATURES = [
     "injury_impact_diff",
 ]
@@ -495,6 +498,8 @@ RECOMMENDATION_COLUMNS = [
     "edge",
     "expected_value",
     "confidence",
+    "bet_tier",
+    "units",
     "support_count",
     "composite_score",
     "reason_summary",
@@ -1533,87 +1538,109 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print("expected_value:", df["expected_value"].head(10).tolist())
 
         df = df.copy()
-        min_expected_value = MIN_EV
-        print("[LOOSE FILTER MODE ENABLED]")
-        print(f"min_ev={min_expected_value}")
-
-        low_ev_mask = ~(
-            ((df["expected_value"] >= min_expected_value) & (df["edge"] >= 0.03))
-            | (df["expected_value"] >= 0.01)
-        )
-        deep_negative_ev_mask = df["expected_value"] < -0.05
-        high_ev_override_mask = df["expected_value"] > 0.10
+        print("[TIERED FILTER MODE ENABLED]")
         confidence_col = "confidence" if "confidence" in df.columns else "model_probability"
-        df.loc[df["edge"] < 0, confidence_col] = df.loc[df["edge"] < 0, confidence_col] * 0.8
+        df[confidence_col] = pd.to_numeric(df[confidence_col], errors="coerce").fillna(0.0)
+        df["expected_value"] = pd.to_numeric(df["expected_value"], errors="coerce").fillna(0.0)
+        df["edge"] = pd.to_numeric(df["edge"], errors="coerce").fillna(0.0)
+        df["model_probability"] = pd.to_numeric(df["model_probability"], errors="coerce").fillna(0.0)
+        df["market_probability"] = pd.to_numeric(df["market_probability"], errors="coerce").fillna(0.0)
 
-        filter_fail_summary = {
-            "low_ev": int(low_ev_mask.sum()),
-            "deep_negative_ev": int(deep_negative_ev_mask.sum()),
-        }
-        if low_ev_mask.any():
-            print(f"Rejected bet due to low EV: {filter_fail_summary['low_ev']}")
-        if deep_negative_ev_mask.any():
-            print(f"Rejected bet due to deep negative EV: {filter_fail_summary['deep_negative_ev']}")
-        if high_ev_override_mask.any():
-            print("Allowed high EV override bet")
-        any_rejection_mask = low_ev_mask | deep_negative_ev_mask
-        print(
-            "[FILTER SUMMARY] "
-            f"total_games={len(df)}, passed={int((~any_rejection_mask).sum())}, "
-            f"rejected={int(any_rejection_mask.sum())}, details={filter_fail_summary}"
+        hard_reject_mask = (
+            (df["expected_value"] <= 0.0)
+            | (df["model_probability"] <= 0.0)
+            | (df["market_probability"] <= 0.0)
+            | (df["edge"] <= -0.02)
         )
+
+        tier_a_mask = (
+            (df["expected_value"] >= TIER_A_THRESHOLDS["expected_value"])
+            & (df["edge"] >= TIER_A_THRESHOLDS["edge"])
+            & (df[confidence_col] >= TIER_A_THRESHOLDS["confidence"])
+        )
+        tier_b_mask = (
+            (df["expected_value"] >= TIER_B_THRESHOLDS["expected_value"])
+            & (df["edge"] >= TIER_B_THRESHOLDS["edge"])
+            & (df[confidence_col] >= TIER_B_THRESHOLDS["confidence"])
+        )
+        tier_c_mask = (
+            (df["expected_value"] >= TIER_C_THRESHOLDS["expected_value"])
+            & (df["edge"] >= TIER_C_THRESHOLDS["edge"])
+            & (df[confidence_col] >= TIER_C_THRESHOLDS["confidence"])
+        )
+
+        tier_a_only_mask = (~hard_reject_mask) & tier_a_mask
+        tier_b_only_mask = (~hard_reject_mask) & (~tier_a_only_mask) & tier_b_mask
+        tier_c_only_mask = (~hard_reject_mask) & (~tier_a_only_mask) & (~tier_b_only_mask) & tier_c_mask
+        pass_filter_mask = tier_a_only_mask | tier_b_only_mask | tier_c_only_mask
+
+        bet_tier = pd.Series("", index=df.index, dtype="object")
+        bet_tier.loc[tier_a_only_mask] = "Tier A"
+        bet_tier.loc[tier_b_only_mask] = "Tier B"
+        bet_tier.loc[tier_c_only_mask] = "Tier C"
+
+        candidates_before_filters = len(df)
+        count_after_hard_reject = int((~hard_reject_mask).sum())
+        count_after_tier_filters = int(pass_filter_mask.sum())
+
+        print("[FILTER TIER DEBUG]")
+        print(f"Tier A passed: {int(tier_a_only_mask.sum())}")
+        print(f"Tier B passed: {int(tier_b_only_mask.sum())}")
+        print(f"Tier C passed: {int(tier_c_only_mask.sum())}")
+        print(f"Hard rejected: {int(hard_reject_mask.sum())}")
+        print(f"Final bets: {count_after_tier_filters}")
+        print(f"Candidates before filters: {candidates_before_filters}")
+        print(f"Count after hard rejection: {count_after_hard_reject}")
+        print(f"Count after tier filters: {count_after_tier_filters}")
 
         if {"home_team", "away_team", "edge", "expected_value", "model_probability"}.issubset(df.columns):
             for _, bet in df.iterrows():
                 fail_reasons = []
-                if not (
-                    ((bet["expected_value"] >= min_expected_value) and (bet["edge"] >= 0.03))
-                    or (bet["expected_value"] >= 0.01)
-                ):
-                    fail_reasons.append(
-                        f"ev {bet['expected_value']:.4f} / edge {bet['edge']:.4f} below staged thresholds"
-                    )
-                if bet["expected_value"] < -0.05:
-                    fail_reasons.append(f"ev {bet['expected_value']:.4f} < -0.0500")
                 matchup = f"{bet['away_team']} @ {bet['home_team']}"
-                if fail_reasons:
+
+                if bet["expected_value"] <= 0.0:
+                    fail_reasons.append("ev <= 0")
+                if bet["model_probability"] <= 0.0:
+                    fail_reasons.append("model_probability <= 0")
+                if bet["market_probability"] <= 0.0:
+                    fail_reasons.append("market_probability <= 0")
+                if bet["edge"] <= -0.02:
+                    fail_reasons.append("edge <= -0.02")
+
+                if not fail_reasons:
+                    tier_fail_reasons = []
+                    if not (
+                        (bet["expected_value"] >= TIER_A_THRESHOLDS["expected_value"])
+                        and (bet["edge"] >= TIER_A_THRESHOLDS["edge"])
+                        and (bet[confidence_col] >= TIER_A_THRESHOLDS["confidence"])
+                    ):
+                        tier_fail_reasons.append("Tier A unmet")
+                    if not (
+                        (bet["expected_value"] >= TIER_B_THRESHOLDS["expected_value"])
+                        and (bet["edge"] >= TIER_B_THRESHOLDS["edge"])
+                        and (bet[confidence_col] >= TIER_B_THRESHOLDS["confidence"])
+                    ):
+                        tier_fail_reasons.append("Tier B unmet")
+                    if not (
+                        (bet["expected_value"] >= TIER_C_THRESHOLDS["expected_value"])
+                        and (bet["edge"] >= TIER_C_THRESHOLDS["edge"])
+                        and (bet[confidence_col] >= TIER_C_THRESHOLDS["confidence"])
+                    ):
+                        tier_fail_reasons.append("Tier C unmet")
+                    if len(tier_fail_reasons) == 3:
+                        fail_reasons.append("ev/edge/conf below Tier C minimums")
+
+                if fail_reasons or bet_tier.loc[bet.name] == "":
                     print(f"[FILTER FAIL] {matchup} | {'; '.join(fail_reasons)}")
                 else:
+                    tier_label = bet_tier.loc[bet.name]
                     print(
-                        f"[FILTER PASS] {matchup} | "
+                        f"[FILTER PASS - {tier_label}] {matchup} | "
                         f"edge={bet['edge']:.4f}, ev={bet['expected_value']:.4f}, conf={bet[confidence_col]:.4f}"
                     )
-                    print(
-                        f"Bet Passed - Edge: {bet['edge']} | "
-                        f"Expected Value: {bet['expected_value']} | "
-                        f"Confidence: {bet[confidence_col]}"
-                    )
 
-        pass_filter_mask = pd.Series(False, index=df.index)
-
-        # PRIMARY PATH (EV-driven with edge support for low EV)
-        pass_filter_mask = pass_filter_mask | (
-            (df["expected_value"] >= min_expected_value) & (df["edge"] >= 0.03)
-        )
-
-        # STANDARD EV AUTO-PASS
-        pass_filter_mask = pass_filter_mask | (df["expected_value"] >= 0.01)
-
-        # OPTIONAL SAFETY FLOOR
-        pass_filter_mask = pass_filter_mask & (df["expected_value"] >= -0.05)
-
-        for edge, expected_value, confidence, pass_filter in zip(
-            df["edge"],
-            df["expected_value"],
-            df[confidence_col],
-            pass_filter_mask,
-        ):
-            print("[FINAL FILTER DEBUG]")
-            print("EV:", expected_value)
-            print("Confidence:", confidence)
-            print("Units:", "N/A")
-
-        filtered_bets = df[pass_filter_mask]
+        filtered_bets = df[pass_filter_mask].copy()
+        filtered_bets["bet_tier"] = bet_tier.loc[filtered_bets.index]
         final_bets = filtered_bets.copy()
 
         final_bets = final_bets[
@@ -1621,10 +1648,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             (final_bets["odds"] < 300)
         ]
 
-        if "confidence" in final_bets.columns:
-            final_bets = final_bets.sort_values(by="confidence", ascending=False)
-        else:
-            final_bets = final_bets.sort_values(by="expected_value", ascending=False)
+        final_bets = final_bets.sort_values(
+            by=["expected_value", "edge", confidence_col], ascending=[False, False, False]
+        )
 
         if "sport" in final_bets.columns:
             final_bets = (
@@ -1636,20 +1662,21 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         else:
             final_bets = final_bets.head(MAX_BETS_PER_SPORT_PER_DAY)
     else:
-        final_bets = df.head(MAX_BETS_PER_SPORT_PER_DAY).copy()
+        final_bets = pd.DataFrame().copy()
+        print("No candidates with required columns available for tiered filtering.")
 
     def assign_units(row):
-        if row["expected_value"] > 0.15:
-            return 2.0  # strong play
-        elif row["expected_value"] > 0.08:
-            return 1.5  # medium play
-        else:
-            return 1.0  # small play
+        tier = row.get("bet_tier", "")
+        if tier == "Tier A":
+            return 2.0
+        if tier == "Tier B":
+            return 1.5
+        return 1.0
 
     if not final_bets.empty and "expected_value" in final_bets.columns:
         final_bets["units"] = final_bets.apply(assign_units, axis=1)
         print("[BET TIER DEBUG]")
-        print(final_bets[["expected_value", "units"]])
+        print(final_bets[["expected_value", "edge", confidence_col, "bet_tier", "units"]])
 
     if not final_bets.empty and {"odds", "model_probability", "market_probability", "edge", "expected_value"}.issubset(final_bets.columns):
         print("FINAL EV CHECK:")
@@ -1695,6 +1722,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             "market_probability",
             "edge",
             "expected_value",
+            "bet_tier",
             "units"
         ]])
 
