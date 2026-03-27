@@ -50,6 +50,7 @@ from sports_betting.sports.mlb.model import MLBModel
 from sports_betting.sports.mlb.pipeline import run_mlb_pipeline
 from sports_betting.sports.nfl.model import NFLModel
 from sports_betting.sports.nhl.model import NHLModel, train_nhl_runtime_model
+from sports_betting.sports.nhl.features import build_nhl_features
 from sports_betting.sports.soccer.pipeline import run_soccer_pipeline
 from tracking import log_bets
 
@@ -98,6 +99,7 @@ INJURY_WEIGHT = 0.02
 MODEL_PROBABILITY_INJURY_WEIGHT = 0.01
 CONFIDENCE_MOVING_WINDOW = 10
 CONFIDENCE_THRESHOLD_MULTIPLIER = 2.0
+REQUIRED_NHL_FEATURES = ["goalie_diff", "special_teams_diff"]
 
 
 def ensure_required_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -1095,6 +1097,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 daily["injury_impact_home"] = 0
                 daily["injury_impact_away"] = 0
                 daily["injury_impact_diff"] = 0
+        if sport_name == "nhl":
+            daily = build_nhl_features(daily)
+            for col in REQUIRED_NHL_FEATURES:
+                if col not in daily.columns:
+                    daily[col] = 0.0
+            print("[NHL DEBUG] Feature columns ready:", daily[["goalie_diff", "special_teams_diff"]].head())
         print("[DEBUG] Daily columns BEFORE prediction:", list(daily.columns))
         runtime_home_win_model = None
         isotonic_model = None
