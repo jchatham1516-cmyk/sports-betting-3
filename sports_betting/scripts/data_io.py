@@ -17,6 +17,7 @@ import pandas as pd
 from sports_betting.sports.common.team_names import normalize_team_name
 from sports_betting.sports.common.feature_engineering import SPORT_EFFICIENCY_FEATURES, add_elo_features, enrich_with_context_features
 from sports_betting.sports.common.game_filters import current_sports_day_window, filter_games_window
+from sports_betting.sports.mlb.build_historical import build_mlb_historical
 from sports_betting.sports.mlb.schema import MLB_HISTORICAL_COLUMNS, MLB_REQUIRED_FEATURES
 
 from sports_betting.scripts.build_nba_historical_dataset import NBA_HISTORICAL_COLUMNS
@@ -697,13 +698,21 @@ def load_historical_and_daily(sport: str, today_only: bool = True) -> tuple[pd.D
 
     if historical.empty and not model_artifact_path(sport).exists():
         if sport == "mlb":
+            if not hist_path.exists():
+                print("[MLB] No historical file found — attempting to build...")
+                build_mlb_historical()
+                historical = load_csv_or_empty(hist_path)
+                if not historical.empty:
+                    historical = ensure_required_columns(historical)
+                    historical = _standardize_historical_features(historical, sport)
+
+            if historical.empty:
+                raise RuntimeError("[MLB] Could not build historical dataset")
+        else:
             raise RuntimeError(
-                "[MLB] Missing both mlb_historical.csv and mlb_model.pkl. Build historical data or train and save a model artifact."
+                f"[{sport.upper()}] Missing historical file at {hist_path}. "
+                "Live mode does not auto-generate synthetic training data and no trained model artifact was found."
             )
-        raise RuntimeError(
-            f"[{sport.upper()}] Missing historical file at {hist_path}. "
-            "Live mode does not auto-generate synthetic training data and no trained model artifact was found."
-        )
 
     if historical.empty:
         LOGGER.warning(
