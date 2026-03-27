@@ -102,9 +102,11 @@ def ensure_mlb_core_columns(df: pd.DataFrame) -> pd.DataFrame:
 def build_mlb_features(df: pd.DataFrame) -> pd.DataFrame:
     df = ensure_mlb_core_columns(df)
     df = df.copy()
+    df["pitcher_era_home"] = _num(df, "pitcher_era_home", default=4.20).replace(0, 4.20).fillna(4.20)
+    df["pitcher_era_away"] = _num(df, "pitcher_era_away", default=4.20).replace(0, 4.20).fillna(4.20)
 
     if {"pitcher_era_home", "pitcher_era_away"}.issubset(df.columns):
-        df["pitcher_diff"] = _num(df, "pitcher_era_away", default=0.0) - _num(df, "pitcher_era_home", default=0.0)
+        df["pitcher_diff"] = df["pitcher_era_away"] - df["pitcher_era_home"]
     else:
         df["pitcher_diff"] = _num(df, "pitcher_diff", default=0.0)
 

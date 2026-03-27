@@ -77,7 +77,7 @@ EV_THRESHOLD = 0.01
 FORCE_BETS = False
 LOGGER = logging.getLogger(__name__)
 # Temporary loose-filter thresholds for early-stage model learning/data collection.
-MIN_EDGE = EDGE_THRESHOLD
+MIN_EDGE = 0.03
 MIN_EV = EV_THRESHOLD
 MAX_BETS_PER_DAY = 5
 MIN_MODEL_PROBABILITY = 0.05
