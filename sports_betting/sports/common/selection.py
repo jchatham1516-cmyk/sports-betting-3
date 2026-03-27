@@ -133,12 +133,12 @@ def qualify_prediction(
     if expected_value < -0.05:
         pass_filter = False
 
-    # PRIMARY PATH (EV-driven)
-    if expected_value > 0.02:
+    # PRIMARY PATH (lower EV allowed only when edge is strong)
+    if expected_value >= 0.005 and edge >= 0.03:
         pass_filter = True
 
-    # STRONG EV AUTO-PASS
-    if expected_value > 0.10:
+    # STANDARD EV AUTO-PASS
+    if expected_value >= 0.01:
         pass_filter = True
 
     confidence_multiplier = max(0.5, min(1.2, confidence))
