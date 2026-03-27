@@ -2,6 +2,7 @@ import json
 import pandas as pd
 from pathlib import Path
 from urllib.request import urlopen
+from sports_betting.sports.common.team_names import normalize_team_name as shared_normalize_team_name
 
 STAR_PLAYER_MULTIPLIER = 2.0
 ROLE_MULTIPLIERS = {
@@ -52,17 +53,13 @@ def _normalize_team_name(name: str | None) -> str:
 def normalize_team_name(name):
     if not isinstance(name, str):
         return ""
-    return (
-        name.lower()
-        .replace("trail blazers", "blazers")
-        .replace("76ers", "sixers")
-        .replace("la clippers", "los angeles clippers")
-        .replace("la lakers", "los angeles lakers")
-        .replace("okc thunder", "oklahoma city thunder")
-        .replace("utah mammoth", "utah hockey club")
-        .replace("montréal", "montreal")
-        .strip()
-    )
+    normalized = str(shared_normalize_team_name(name)).strip()
+    replacements = {
+        "portland blazers": "portland trail blazers",
+        "st louis blues": "st. louis blues",
+        "utah mammoth": "utah hockey club",
+    }
+    return replacements.get(normalized, normalized)
 
 
 def _team_tokens(team_name: str | None) -> set[str]:

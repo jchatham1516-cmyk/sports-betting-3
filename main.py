@@ -77,8 +77,8 @@ EV_THRESHOLD = 0.01
 FORCE_BETS = False
 LOGGER = logging.getLogger(__name__)
 # Temporary loose-filter thresholds for early-stage model learning/data collection.
-MIN_EDGE = 0.025
-MIN_EV = EV_THRESHOLD
+MIN_EDGE = 0.02
+MIN_EV = -0.01
 MAX_BETS_PER_DAY = 5
 MIN_MODEL_PROBABILITY = 0.05
 MAX_BETS_PER_SPORT_PER_DAY = 5
@@ -1013,10 +1013,7 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
 
 
 def _normalize_team_key(value: str) -> str:
-    text = str(value or "").lower().strip()
-    text = re.sub(r"[^\w\s]", "", text)
-    text = re.sub(r"\s+", " ", text)
-    return text
+    return _normalize_team_name(str(value or ""))
 
 
 def _align_moneyline_model_probability(df: pd.DataFrame) -> pd.DataFrame:
@@ -1028,8 +1025,8 @@ def _align_moneyline_model_probability(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     moneyline_mask = out["market"] == "moneyline"
     if moneyline_mask.any():
-        normalized_home = out.loc[moneyline_mask, "home_team"].astype(str).str.lower().str.strip()
-        normalized_selection = out.loc[moneyline_mask, "selection"].astype(str).str.lower().str.strip()
+        normalized_home = out.loc[moneyline_mask, "home_team"].astype(str).map(_normalize_team_key)
+        normalized_selection = out.loc[moneyline_mask, "selection"].astype(str).map(_normalize_team_key)
 
         out.loc[moneyline_mask, "favorite_team"] = np.where(
             out.loc[moneyline_mask, "home_odds"] < out.loc[moneyline_mask, "away_odds"],
@@ -1729,7 +1726,7 @@ Final bets: 0
         df["market_probability"] = pd.to_numeric(df["market_probability"], errors="coerce").fillna(0.0)
 
         hard_reject_mask = (
-            (df["expected_value"] <= 0.0)
+            (df["expected_value"] <= MIN_EV)
             | (df["model_probability"] <= 0.0)
             | (df["market_probability"] <= 0.0)
             | (df["edge"] <= -0.02)
@@ -1781,14 +1778,18 @@ Final bets: 0
         print(f"Candidates before filters: {candidates_before_filters}")
         print(f"Count after hard rejection: {count_after_hard_reject}")
         print(f"Count after tier filters: {count_after_tier_filters}")
+        print("EDGE SUMMARY:")
+        print(df["edge"].describe())
+        print("EV SUMMARY:")
+        print(df["expected_value"].describe())
 
         if {"home_team", "away_team", "edge", "expected_value", "model_probability"}.issubset(df.columns):
             for _, bet in df.iterrows():
                 fail_reasons = []
                 matchup = f"{bet['away_team']} @ {bet['home_team']}"
 
-                if bet["expected_value"] <= 0.0:
-                    fail_reasons.append("ev <= 0")
+                if bet["expected_value"] <= MIN_EV:
+                    fail_reasons.append(f"ev <= {MIN_EV}")
                 if bet["model_probability"] <= 0.0:
                     fail_reasons.append("model_probability <= 0")
                 if bet["market_probability"] <= 0.0:
@@ -1850,6 +1851,7 @@ Final bets: 0
             )
         else:
             final_bets = final_bets.head(MAX_BETS_PER_SPORT_PER_DAY)
+        print("BETS PASSED FILTER:", len(final_bets))
     else:
         final_bets = pd.DataFrame().copy()
         print("No candidates with required columns available for tiered filtering.")
