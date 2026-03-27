@@ -15,10 +15,13 @@ def build_nhl_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
     # Goalie diff
-    if "goalie_strength_home" in out.columns and "goalie_strength_away" in out.columns:
+    if "goalie_save_strength_home" in out.columns and "goalie_save_strength_away" in out.columns:
+        out["goalie_diff"] = _num(out, "goalie_save_strength_home") - _num(out, "goalie_save_strength_away")
+    elif "goalie_strength_home" in out.columns and "goalie_strength_away" in out.columns:
         out["goalie_diff"] = _num(out, "goalie_strength_home") - _num(out, "goalie_strength_away")
     else:
         out["goalie_diff"] = 0.0
+    out["goalie_diff"] = pd.to_numeric(out["goalie_diff"], errors="coerce").fillna(0.0)
 
     out["xgf_diff"] = _num(out, "xgf_home") - _num(out, "xgf_away")
 
@@ -29,6 +32,7 @@ def build_nhl_features(df: pd.DataFrame) -> pd.DataFrame:
         out["special_teams_diff"] = _num(out, "pp_home") - _num(out, "pk_away")
     else:
         out["special_teams_diff"] = 0.0
+    out["special_teams_diff"] = pd.to_numeric(out["special_teams_diff"], errors="coerce").fillna(0.0)
 
     out["rest_diff"] = _num(out, "rest_home") - _num(out, "rest_away")
     if "injury_impact_diff" not in out.columns:

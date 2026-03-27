@@ -102,6 +102,13 @@ MODEL_PROBABILITY_INJURY_WEIGHT = 0.01
 CONFIDENCE_MOVING_WINDOW = 10
 CONFIDENCE_THRESHOLD_MULTIPLIER = 2.0
 REQUIRED_NHL_FEATURES = ["goalie_diff", "special_teams_diff"]
+REQUIRED_NBA_FEATURES = [
+    "offensive_rating_diff",
+    "defensive_rating_diff",
+    "true_shooting_diff",
+    "rebound_rate_diff",
+    "turnover_rate_diff",
+]
 
 
 def ensure_required_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -109,6 +116,30 @@ def ensure_required_features(df: pd.DataFrame) -> pd.DataFrame:
     for col in REQUIRED_FEATURES:
         if col not in out.columns:
             out[col] = 0.0
+    return out
+
+
+def ensure_required_nba_features(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    # Prefer real home-away differentials whenever the source columns exist.
+    derived_diff_map = {
+        "offensive_rating_diff": ("offensive_rating_home", "offensive_rating_away"),
+        "defensive_rating_diff": ("defensive_rating_home", "defensive_rating_away"),
+        "true_shooting_diff": ("true_shooting_home", "true_shooting_away"),
+        "rebound_rate_diff": ("rebound_rate_home", "rebound_rate_away"),
+        "turnover_rate_diff": ("turnover_rate_home", "turnover_rate_away"),
+    }
+
+    for diff_col, (home_col, away_col) in derived_diff_map.items():
+        if home_col in out.columns and away_col in out.columns:
+            out[diff_col] = pd.to_numeric(out[home_col], errors="coerce") - pd.to_numeric(out[away_col], errors="coerce")
+
+    for col in REQUIRED_NBA_FEATURES:
+        if col not in out.columns:
+            out[col] = 0
+        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+
     return out
 
 
@@ -1073,6 +1104,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         historical, daily = load_historical_and_daily(sport_name)
         historical = ensure_required_features(historical)
         daily = ensure_required_features(daily)
+        if sport_name == "nba":
+            historical = ensure_required_nba_features(historical)
+            daily = ensure_required_nba_features(daily)
         daily = _ensure_runtime_prediction_columns(daily)
         if sport_name in {"nba", "nhl"}:
             try:
@@ -1102,6 +1136,16 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 if col not in daily.columns:
                     daily[col] = 0.0
             print("[NHL DEBUG] Feature columns ready:", daily[["goalie_diff", "special_teams_diff"]].head())
+        feature_debug_columns = [
+            "goalie_diff",
+            "special_teams_diff",
+            "offensive_rating_diff",
+            "defensive_rating_diff",
+        ]
+        available_debug_columns = [col for col in feature_debug_columns if col in daily.columns]
+        if available_debug_columns:
+            print("[FEATURE DEBUG]")
+            print(daily[available_debug_columns].describe())
         print("[DEBUG] Daily columns BEFORE prediction:", list(daily.columns))
         runtime_home_win_model = None
         isotonic_model = None
