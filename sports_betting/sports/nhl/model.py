@@ -7,6 +7,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
 from sports_betting.sports.common.baseline_model import DisciplinedBaselineModel
+from sports_betting.sports.nhl.features import build_nhl_features
 
 
 class NHLModel(DisciplinedBaselineModel):
@@ -26,24 +27,10 @@ NHL_RUNTIME_FEATURES = [
     "injury_impact_diff",
 ]
 
-
 def _num(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
     if col in df.columns:
         return pd.to_numeric(df[col], errors="coerce").fillna(default)
     return pd.Series(default, index=df.index, dtype=float)
-
-
-def build_nhl_features(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out["goalie_diff"] = _num(out, "goalie_strength_home") - _num(out, "goalie_strength_away")
-    out["xgf_diff"] = _num(out, "xgf_home") - _num(out, "xgf_away")
-    out["special_teams_diff"] = _num(out, "pp_home") - _num(out, "pk_away")
-    out["rest_diff"] = _num(out, "rest_home") - _num(out, "rest_away")
-    if "injury_impact_diff" not in out.columns:
-        out["injury_impact_diff"] = _num(out, "injury_impact_home") - _num(out, "injury_impact_away")
-    else:
-        out["injury_impact_diff"] = _num(out, "injury_impact_diff")
-    return out
 
 
 def train_nhl_runtime_model(historical_df: pd.DataFrame):
