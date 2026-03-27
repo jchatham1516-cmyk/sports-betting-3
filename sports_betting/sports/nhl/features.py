@@ -17,6 +17,17 @@ NHL_SOURCE_COLUMNS = [
     "shot_share_away",
 ]
 
+NHL_REQUIRED_SOURCE_COLUMNS = [
+    "goalie_save_strength_home",
+    "goalie_save_strength_away",
+    "special_teams_efficiency_home",
+    "special_teams_efficiency_away",
+    "xgf_home",
+    "xgf_away",
+    "xga_home",
+    "xga_away",
+]
+
 
 def _num(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
     if col in df.columns:
@@ -24,28 +35,46 @@ def _num(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
     return pd.Series(default, index=df.index, dtype=float)
 
 
-def enrich_nhl_live_features(df: pd.DataFrame) -> pd.DataFrame:
+def _merge_nhl_team_stats(df: pd.DataFrame, nhl_team_stats: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    stats = nhl_team_stats.copy()
+    if "team" not in stats.columns:
+        raise RuntimeError("[DATA ERROR] nhl_team_stats is missing required column: team")
+
+    if "home_team_norm" not in out.columns or "away_team_norm" not in out.columns:
+        if "home_team" not in out.columns or "away_team" not in out.columns:
+            raise RuntimeError("[DATA ERROR] Missing team columns required for NHL stat merge")
+        out["home_team_norm"] = out["home_team"].astype(str).str.lower().str.strip()
+        out["away_team_norm"] = out["away_team"].astype(str).str.lower().str.strip()
+
+    stats["team"] = stats["team"].astype(str).str.lower().str.strip()
+    out = out.merge(
+        stats,
+        left_on="home_team_norm",
+        right_on="team",
+        how="left",
+    )
+    out = out.merge(
+        stats,
+        left_on="away_team_norm",
+        right_on="team",
+        how="left",
+        suffixes=("_home", "_away"),
+    )
+    return out
+
+
+def enrich_nhl_live_features(df: pd.DataFrame, nhl_team_stats: pd.DataFrame | None = None) -> pd.DataFrame:
     out = df.copy()
 
-    if "goalie_save_strength_home" not in out.columns:
-        out["goalie_save_strength_home"] = _num(out, "goalie_strength_home")
-    if "goalie_save_strength_away" not in out.columns:
-        out["goalie_save_strength_away"] = _num(out, "goalie_strength_away")
+    if nhl_team_stats is not None:
+        out = _merge_nhl_team_stats(out, nhl_team_stats)
 
-    if "special_teams_efficiency_home" not in out.columns:
-        if "pp_home" in out.columns and "pk_home" in out.columns:
-            out["special_teams_efficiency_home"] = _num(out, "pp_home") + _num(out, "pk_home")
-        else:
-            out["special_teams_efficiency_home"] = _num(out, "special_teams_impact_home")
-    if "special_teams_efficiency_away" not in out.columns:
-        if "pp_away" in out.columns and "pk_away" in out.columns:
-            out["special_teams_efficiency_away"] = _num(out, "pp_away") + _num(out, "pk_away")
-        else:
-            out["special_teams_efficiency_away"] = _num(out, "special_teams_impact_away")
+    missing = [col for col in NHL_REQUIRED_SOURCE_COLUMNS if col not in out.columns]
+    if missing:
+        raise RuntimeError(f"[DATA ERROR] Missing required source stats: {missing}")
 
     for col in NHL_SOURCE_COLUMNS:
-        if col not in out.columns:
-            out[col] = 0.0
         out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
 
     print(

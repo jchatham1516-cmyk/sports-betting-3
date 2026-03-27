@@ -40,6 +40,25 @@ NBA_SOURCE_COLUMNS = [
     "free_throw_rate_away",
 ]
 
+NBA_REQUIRED_SOURCE_COLUMNS = [
+    "offensive_rating_home",
+    "offensive_rating_away",
+    "defensive_rating_home",
+    "defensive_rating_away",
+    "net_rating_home",
+    "net_rating_away",
+    "true_shooting_home",
+    "true_shooting_away",
+    "effective_fg_home",
+    "effective_fg_away",
+    "turnover_rate_home",
+    "turnover_rate_away",
+    "rebound_rate_home",
+    "rebound_rate_away",
+    "free_throw_rate_home",
+    "free_throw_rate_away",
+]
+
 # Conservative hard caps to keep outliers from dominating tree splits.
 FEATURE_CLIP_BOUNDS: dict[str, tuple[float, float]] = {
     "elo_diff": (-450.0, 450.0),
@@ -73,8 +92,40 @@ def _american_to_prob(odds: pd.Series) -> pd.Series:
     return pd.Series(prob, index=odds.index, dtype="float64")
 
 
-def enrich_nba_live_features(df: pd.DataFrame) -> pd.DataFrame:
+def _merge_nba_team_stats(df: pd.DataFrame, nba_team_stats: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
+    stats = nba_team_stats.copy()
+    if "team" not in stats.columns:
+        raise RuntimeError("[DATA ERROR] nba_team_stats is missing required column: team")
+
+    if "home_team_norm" not in out.columns or "away_team_norm" not in out.columns:
+        if "home_team" not in out.columns or "away_team" not in out.columns:
+            raise RuntimeError("[DATA ERROR] Missing team columns required for NBA stat merge")
+        out["home_team_norm"] = out["home_team"].astype(str).str.lower().str.strip()
+        out["away_team_norm"] = out["away_team"].astype(str).str.lower().str.strip()
+
+    stats["team"] = stats["team"].astype(str).str.lower().str.strip()
+    out = out.merge(
+        stats,
+        left_on="home_team_norm",
+        right_on="team",
+        how="left",
+    )
+    out = out.merge(
+        stats,
+        left_on="away_team_norm",
+        right_on="team",
+        how="left",
+        suffixes=("_home", "_away"),
+    )
+    return out
+
+
+def enrich_nba_live_features(df: pd.DataFrame, nba_team_stats: pd.DataFrame | None = None) -> pd.DataFrame:
+    out = df.copy()
+
+    if nba_team_stats is not None:
+        out = _merge_nba_team_stats(out, nba_team_stats)
 
     alias_map: dict[str, list[str]] = {
         "offensive_rating_home": ["offensive_rating_home", "off_rating_home"],
@@ -99,7 +150,7 @@ def enrich_nba_live_features(df: pd.DataFrame) -> pd.DataFrame:
 
     for target, candidates in alias_map.items():
         if target not in out.columns:
-            out[target] = _coalesce_numeric(out, candidates, default=0.0)
+            out[target] = _coalesce_numeric(out, candidates, default=np.nan)
         out[target] = pd.to_numeric(out[target], errors="coerce").fillna(0.0)
 
     print(
@@ -112,9 +163,12 @@ def enrich_nba_live_features(df: pd.DataFrame) -> pd.DataFrame:
         ]].head(),
     )
 
+    missing = [col for col in NBA_REQUIRED_SOURCE_COLUMNS if col not in out.columns]
+    if missing:
+        raise RuntimeError(f"[DATA ERROR] Missing required source stats: {missing}")
+
     for col in NBA_SOURCE_COLUMNS:
-        if col not in out.columns:
-            out[col] = 0.0
+        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
 
     return out
 
