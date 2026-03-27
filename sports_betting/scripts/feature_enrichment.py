@@ -385,9 +385,9 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         goalies = load_nhl_goalies()
         df["goalie_save_home"] = df["home_team_norm"].map(lambda t: goalies.get(str(t), {}).get("save_pct", 0.0))
         df["goalie_save_away"] = df["away_team_norm"].map(lambda t: goalies.get(str(t), {}).get("save_pct", 0.0))
-        df["goalie_diff"] = pd.to_numeric(df["goalie_save_home"], errors="coerce").fillna(0.0) - pd.to_numeric(
-            df["goalie_save_away"], errors="coerce"
-        ).fillna(0.0)
+        df["goalie_save_home"] = pd.to_numeric(df["goalie_save_home"], errors="coerce").fillna(0.905)
+        df["goalie_save_away"] = pd.to_numeric(df["goalie_save_away"], errors="coerce").fillna(0.905)
+        df["goalie_diff"] = df["goalie_save_home"] - df["goalie_save_away"]
         return df
 
     if sport == "mlb":
@@ -416,9 +416,9 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         pitchers = load_mlb_pitchers()
         df["pitcher_era_home"] = df["home_team_norm"].map(lambda t: pitchers.get(str(t), {}).get("era", 0.0))
         df["pitcher_era_away"] = df["away_team_norm"].map(lambda t: pitchers.get(str(t), {}).get("era", 0.0))
-        df["pitcher_diff"] = pd.to_numeric(df["pitcher_era_away"], errors="coerce").fillna(0.0) - pd.to_numeric(
-            df["pitcher_era_home"], errors="coerce"
-        ).fillna(0.0)
+        df["pitcher_era_home"] = pd.to_numeric(df["pitcher_era_home"], errors="coerce").replace(0, 4.20).fillna(4.20)
+        df["pitcher_era_away"] = pd.to_numeric(df["pitcher_era_away"], errors="coerce").replace(0, 4.20).fillna(4.20)
+        df["pitcher_diff"] = df["pitcher_era_away"] - df["pitcher_era_home"]
         df = enrich_mlb_live_features(df)
         df = build_mlb_features(df)
         return df
