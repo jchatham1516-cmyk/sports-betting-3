@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
+
+
+def _load_team_stats_csv(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise RuntimeError(f"[DATA ERROR] Missing required team stats file: {path}")
+    return pd.read_csv(path)
 
 
 def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.DataFrame:
@@ -11,14 +19,16 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
     if sport == "nba":
         from sports_betting.sports.nba.features import enrich_nba_live_features, build_nba_diff_features
 
-        df = enrich_nba_live_features(df)
+        nba_team_stats = _load_team_stats_csv(Path("sports_betting/data/external/nba_team_stats.csv"))
+        df = enrich_nba_live_features(df, nba_team_stats=nba_team_stats)
         df = build_nba_diff_features(df)
         return df
 
     if sport == "nhl":
         from sports_betting.sports.nhl.features import enrich_nhl_live_features, build_nhl_diff_features
 
-        df = enrich_nhl_live_features(df)
+        nhl_team_stats = _load_team_stats_csv(Path("sports_betting/data/external/nhl_team_stats.csv"))
+        df = enrich_nhl_live_features(df, nhl_team_stats=nhl_team_stats)
         df = build_nhl_diff_features(df)
         return df
 
@@ -47,12 +57,20 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
 
 
 def validate_feature_signal(df: pd.DataFrame, sport_name: str) -> None:
+    def validate_not_zero(frame: pd.DataFrame, cols: list[str], sport_label: str) -> None:
+        for col in cols:
+            if col not in frame.columns:
+                raise RuntimeError(f"[{sport_label}] Missing required validation feature: {col}")
+            series = pd.to_numeric(frame[col], errors="coerce").fillna(0.0)
+            if series.abs().sum() == 0:
+                raise RuntimeError(f"[{sport_label}] Feature {col} is all zero — data pipeline broken")
+
     sport = str(sport_name).lower()
 
     checks = {
-        "nba": ["offensive_rating_diff", "defensive_rating_diff", "net_rating_diff"],
-        "nhl": ["goalie_diff", "special_teams_diff", "xgf_diff"],
-        "mlb": ["starter_rating_diff", "bullpen_rating_diff", "hitting_rating_diff"],
+        "nba": ["offensive_rating_diff", "defensive_rating_diff"],
+        "nhl": ["goalie_diff", "special_teams_diff"],
+        "mlb": ["starter_rating_diff", "hitting_rating_diff"],
         "nfl": ["epa_per_play_diff", "success_rate_diff", "qb_efficiency_diff"],
     }
 
@@ -60,16 +78,4 @@ def validate_feature_signal(df: pd.DataFrame, sport_name: str) -> None:
     if not cols:
         return
 
-    existing = [c for c in cols if c in df.columns]
-    if not existing:
-        print(f"[{sport.upper()} VALIDATION] No feature-signal columns found.")
-        return
-
-    zero_like: list[str] = []
-    for col in existing:
-        series = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-        if series.abs().sum() == 0:
-            zero_like.append(col)
-
-    if zero_like:
-        print(f"[{sport.upper()} VALIDATION WARNING] Zero-signal columns: {zero_like}")
+    validate_not_zero(df, cols, sport.upper())
