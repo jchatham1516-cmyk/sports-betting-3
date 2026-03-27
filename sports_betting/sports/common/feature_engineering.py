@@ -62,6 +62,27 @@ SPORT_EFFICIENCY_FEATURES: dict[str, list[str]] = {
         "goalie_strength",
         "special_teams_diff_proxy",
     ],
+    "mlb": [
+        "runs_per_game",
+        "ops",
+        "slugging",
+        "team_k_rate",
+        "pitcher_era",
+        "pitcher_xera",
+        "pitcher_whip",
+        "pitcher_k_rate",
+        "pitcher_last3_starts",
+        "bullpen_era",
+        "bullpen_usage",
+    ],
+    "soccer": [
+        "xg_for",
+        "xg_against",
+        "form_last5",
+        "home_advantage",
+        "rest_days",
+        "injury_impact",
+    ],
 }
 
 

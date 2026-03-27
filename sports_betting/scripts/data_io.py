@@ -23,13 +23,15 @@ from sports_betting.scripts.build_nba_historical_dataset import NBA_HISTORICAL_C
 
 ROOT = Path(__file__).resolve().parents[1] / "data"
 LOGGER = logging.getLogger(__name__)
-SUPPORTED_SPORTS = ("nba", "nfl", "nhl")
+SUPPORTED_SPORTS = ("nba", "nfl", "nhl", "mlb", "soccer")
 ALLOW_MINIMAL_DATASET = True
 
 SPORT_TO_ODDS_API_KEY = {
     "nba": "basketball_nba",
     "nfl": "americanfootball_nfl",
     "nhl": "icehockey_nhl",
+    "mlb": "baseball_mlb",
+    "soccer": "soccer_usa_mls",
 }
 
 # Shared training feature space used by all sports models.
@@ -109,6 +111,8 @@ FEATURE_COLUMNS_BY_SPORT = {
     "nba": list(BASE_FEATURE_COLUMNS) + [f"{f}_diff" for f in SPORT_EFFICIENCY_FEATURES["nba"]],
     "nfl": list(BASE_FEATURE_COLUMNS) + [f"{f}_diff" for f in SPORT_EFFICIENCY_FEATURES["nfl"]],
     "nhl": list(BASE_FEATURE_COLUMNS) + [f"{f}_diff" for f in SPORT_EFFICIENCY_FEATURES["nhl"]],
+    "mlb": list(BASE_FEATURE_COLUMNS) + [f"{f}_diff" for f in SPORT_EFFICIENCY_FEATURES.get("nhl", [])],
+    "soccer": list(BASE_FEATURE_COLUMNS) + [f"{f}_diff" for f in SPORT_EFFICIENCY_FEATURES.get("nfl", [])],
 }
 TARGET_COLUMNS = ["home_win", "home_cover", "over_hit"]
 NBA_CORE_REQUIRED_COLUMNS = [
@@ -157,6 +161,13 @@ def _coalesce_numeric(df: pd.DataFrame, candidates: list[str], default: float = 
         if col in df.columns:
             return pd.to_numeric(df[col], errors="coerce").fillna(default)
     return pd.Series(default, index=df.index, dtype="float64")
+
+
+def _american_to_prob(odds: pd.Series | float | int) -> pd.Series:
+    series = pd.to_numeric(odds, errors="coerce")
+    return series.apply(
+        lambda x: abs(x) / (abs(x) + 100) if x < 0 else (100 / (x + 100) if x > 0 else 0.5)
+    )
 
 
 def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFrame:
@@ -349,6 +360,11 @@ def validate_historical_requirements(
             missing_cols = [col for col in required_cols if col not in df.columns]
             missing_columns = sorted(set(missing_raw + missing_cols))
             if missing_columns:
+                if missing_raw:
+                    schema_messages.append(
+                        f"- {sport.upper()}: {hist_path} is missing columns: {', '.join(sorted(missing_raw))}"
+                    )
+                    continue
                 if ALLOW_MINIMAL_DATASET:
                     print(f"[WARNING] Skipping strict schema validation. Missing columns: {missing_columns[:10]}...")
                     continue
@@ -489,10 +505,12 @@ def _extract_market_prices(event: dict, market_key: str) -> dict[str, int | floa
                 away_outcome = outcomes.get(raw_away) or normalized_outcomes.get(parsed_away)
                 if not (home_outcome and away_outcome):
                     continue
+                draw_outcome = outcomes.get("Draw") or outcomes.get("draw")
                 return {
                     "sportsbook": book.get("key", "unknown"),
                     "home_odds": int(home_outcome["price"]),
                     "away_odds": int(away_outcome["price"]),
+                    "draw_odds": int(draw_outcome["price"]) if draw_outcome else 0,
                     "sportsbook_event_home_team": str(raw_home or ""),
                     "sportsbook_event_away_team": str(raw_away or ""),
                     "sportsbook_home_outcome_name": str(home_outcome.get("name", "")),
