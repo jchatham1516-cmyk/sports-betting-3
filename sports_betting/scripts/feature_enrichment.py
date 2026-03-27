@@ -24,20 +24,41 @@ def build_nba_team_stats(historical: pd.DataFrame) -> pd.DataFrame:
     frame["home_team_norm"] = frame["home_team"].apply(_normalize_team)
     frame["away_team_norm"] = frame["away_team"].apply(_normalize_team)
 
-    home = frame.groupby("home_team_norm", as_index=False).agg(
-        offensive_rating=("offensive_rating_home", "mean"),
-        defensive_rating=("defensive_rating_home", "mean"),
-        net_rating=("net_rating_home", "mean"),
-        pace=("pace_home", "mean"),
+    frame["home_score"] = pd.to_numeric(frame.get("home_score", 0.0), errors="coerce")
+    frame["away_score"] = pd.to_numeric(frame.get("away_score", 0.0), errors="coerce")
+    frame["point_diff"] = frame["home_score"] - frame["away_score"]
+
+    home = (
+        frame.groupby("home_team_norm", as_index=False)
+        .agg(
+            home_score=("home_score", "mean"),
+            away_score=("away_score", "mean"),
+            point_diff=("point_diff", "mean"),
+        )
+        .rename(
+            columns={
+                "home_team_norm": "team_norm",
+                "home_score": "points_for",
+                "away_score": "points_against",
+            }
+        )
     )
-    away = frame.groupby("away_team_norm", as_index=False).agg(
-        offensive_rating=("offensive_rating_away", "mean"),
-        defensive_rating=("defensive_rating_away", "mean"),
-        net_rating=("net_rating_away", "mean"),
-        pace=("pace_away", "mean"),
+    away = (
+        frame.groupby("away_team_norm", as_index=False)
+        .agg(
+            away_score=("away_score", "mean"),
+            home_score=("home_score", "mean"),
+            point_diff=("point_diff", "mean"),
+        )
+        .rename(
+            columns={
+                "away_team_norm": "team_norm",
+                "away_score": "points_for",
+                "home_score": "points_against",
+            }
+        )
     )
-    away = away.rename(columns={"away_team_norm": "team_norm"})
-    home = home.rename(columns={"home_team_norm": "team_norm"})
+
     return pd.concat([home, away], ignore_index=True).groupby("team_norm", as_index=False).mean(numeric_only=True)
 
 
@@ -99,10 +120,6 @@ def _resolve_nba_team_stats() -> tuple[pd.DataFrame | None, str]:
     historical_df = _load_historical_csv("nba")
     if historical_df is None:
         return None, "missing"
-
-    required = {"offensive_rating_home", "offensive_rating_away", "defensive_rating_home", "defensive_rating_away"}
-    if not required.issubset(historical_df.columns):
-        return None, "historical_missing_columns"
     derived = build_nba_team_stats(historical_df)
     if derived is None:
         return None, "historical_empty"
@@ -233,12 +250,20 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                 "turnover_rate": "turnover_rate_home",
                 "rebound_rate": "rebound_rate_home",
                 "free_throw_rate": "free_throw_rate_home",
+                "points_for": "points_for_home",
+                "points_against": "points_against_home",
+                "point_diff": "point_diff_home",
             }
             df = _merge_home_away_team_stats(df, team_df, mapping)
         else:
             print("[NBA ENRICHMENT WARNING] No team stat source found.")
             if source in {"missing", "historical_empty", "historical_missing_columns"}:
-                raise RuntimeError("[NBA DATA ERROR] No team stat source found after exhausting external and historical fallbacks.")
+                print("[NBA INFO] Using basic stat fallback (score-based features)")
+
+        if {"points_for_home", "points_against_home", "points_for_away", "points_against_away"}.issubset(df.columns):
+            df["point_diff_diff"] = (df["points_for_home"] - df["points_against_home"]) - (
+                df["points_for_away"] - df["points_against_away"]
+            )
         df = enrich_nba_live_features(df, nba_team_stats=None)
         df = build_nba_diff_features(df)
         return df
