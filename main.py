@@ -72,12 +72,14 @@ PREDICTION_COLUMNS = [
 ]
 
 TOP_BETS_DAILY = 6
-EDGE_THRESHOLD = 0.01
-FORCE_BETS = True
+EDGE_THRESHOLD = 0.02
+EV_THRESHOLD = 0.01
+FORCE_BETS = False
 LOGGER = logging.getLogger(__name__)
 # Temporary loose-filter thresholds for early-stage model learning/data collection.
-MIN_EDGE = 0.005
-MIN_EV = 0.005
+MIN_EDGE = EDGE_THRESHOLD
+MIN_EV = EV_THRESHOLD
+MAX_BETS_PER_DAY = 5
 MIN_MODEL_PROBABILITY = 0.05
 MAX_BETS_PER_SPORT_PER_DAY = 5
 MAX_EV = 0.15
@@ -439,22 +441,19 @@ def apply_smart_bet_filter(df):
     print("[DEBUG] Top edges (FINAL ONLY):")
     print(df[["edge", "expected_value"]].sort_values(by="expected_value", ascending=False).head(10))
 
-    if FORCE_BETS:
-        return df_sorted.head(3)
-
     # PRIMARY FILTER (normal mode)
     filtered = df[
-        (df["edge"] > EDGE_THRESHOLD) &
-        (df["expected_value"] > 0) &
-        (df["adjusted_prob"].between(0.50, 0.75))
+        (df["edge"] > MIN_EDGE)
+        & (df["expected_value"] > MIN_EV)
+        & (df["adjusted_prob"].between(0.50, 0.75))
     ]
 
-    # 🔥 FALLBACK MODE (CRITICAL)
-    if len(filtered) == 0:
-        print("No strong bets → using fallback mode")
-        return df_sorted.head(5)
+    print(f"[FILTER DEBUG] Total candidates: {len(df)}")
+    print(f"[FILTER DEBUG] After filtering: {len(filtered)}")
+    print(df[["edge", "expected_value"]].describe())
 
-    return filtered.sort_values(by=sort_key, ascending=False).head(5)
+    filtered = filtered.sort_values("expected_value", ascending=False)
+    return filtered.head(MAX_BETS_PER_DAY)
 
 
 def _normalize_team_name(name: str | None) -> str:
