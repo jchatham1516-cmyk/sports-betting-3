@@ -19,6 +19,27 @@ NBA_FEATURE_COLUMNS = [
     "market_prob_home",
 ]
 
+NBA_SOURCE_COLUMNS = [
+    "offensive_rating_home",
+    "offensive_rating_away",
+    "defensive_rating_home",
+    "defensive_rating_away",
+    "net_rating_home",
+    "net_rating_away",
+    "pace_home",
+    "pace_away",
+    "true_shooting_home",
+    "true_shooting_away",
+    "effective_fg_home",
+    "effective_fg_away",
+    "turnover_rate_home",
+    "turnover_rate_away",
+    "rebound_rate_home",
+    "rebound_rate_away",
+    "free_throw_rate_home",
+    "free_throw_rate_away",
+]
+
 # Conservative hard caps to keep outliers from dominating tree splits.
 FEATURE_CLIP_BOUNDS: dict[str, tuple[float, float]] = {
     "elo_diff": (-450.0, 450.0),
@@ -50,6 +71,66 @@ def _american_to_prob(odds: pd.Series) -> pd.Series:
         np.where(numeric_odds > 0, 100.0 / (numeric_odds + 100.0), np.nan),
     )
     return pd.Series(prob, index=odds.index, dtype="float64")
+
+
+def enrich_nba_live_features(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    alias_map: dict[str, list[str]] = {
+        "offensive_rating_home": ["offensive_rating_home", "off_rating_home"],
+        "offensive_rating_away": ["offensive_rating_away", "off_rating_away"],
+        "defensive_rating_home": ["defensive_rating_home", "def_rating_home"],
+        "defensive_rating_away": ["defensive_rating_away", "def_rating_away"],
+        "net_rating_home": ["net_rating_home"],
+        "net_rating_away": ["net_rating_away"],
+        "pace_home": ["pace_home"],
+        "pace_away": ["pace_away"],
+        "true_shooting_home": ["true_shooting_home"],
+        "true_shooting_away": ["true_shooting_away"],
+        "effective_fg_home": ["effective_fg_home", "efg_home"],
+        "effective_fg_away": ["effective_fg_away", "efg_away"],
+        "turnover_rate_home": ["turnover_rate_home"],
+        "turnover_rate_away": ["turnover_rate_away"],
+        "rebound_rate_home": ["rebound_rate_home"],
+        "rebound_rate_away": ["rebound_rate_away"],
+        "free_throw_rate_home": ["free_throw_rate_home"],
+        "free_throw_rate_away": ["free_throw_rate_away"],
+    }
+
+    for target, candidates in alias_map.items():
+        if target not in out.columns:
+            out[target] = _coalesce_numeric(out, candidates, default=0.0)
+        out[target] = pd.to_numeric(out[target], errors="coerce").fillna(0.0)
+
+    print(
+        "[NBA SOURCE DEBUG]",
+        out[[
+            "offensive_rating_home",
+            "offensive_rating_away",
+            "defensive_rating_home",
+            "defensive_rating_away",
+        ]].head(),
+    )
+
+    for col in NBA_SOURCE_COLUMNS:
+        if col not in out.columns:
+            out[col] = 0.0
+
+    return out
+
+
+def build_nba_diff_features(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["offensive_rating_diff"] = out["offensive_rating_home"] - out["offensive_rating_away"]
+    out["defensive_rating_diff"] = out["defensive_rating_home"] - out["defensive_rating_away"]
+    out["net_rating_diff"] = out["net_rating_home"] - out["net_rating_away"]
+    out["pace_diff"] = out["pace_home"] - out["pace_away"]
+    out["true_shooting_diff"] = out["true_shooting_home"] - out["true_shooting_away"]
+    out["effective_fg_diff"] = out["effective_fg_home"] - out["effective_fg_away"]
+    out["turnover_rate_diff"] = out["turnover_rate_home"] - out["turnover_rate_away"]
+    out["rebound_rate_diff"] = out["rebound_rate_home"] - out["rebound_rate_away"]
+    out["free_throw_rate_diff"] = out["free_throw_rate_home"] - out["free_throw_rate_away"]
+    return out
 
 
 def build_nba_features(df: pd.DataFrame) -> pd.DataFrame:

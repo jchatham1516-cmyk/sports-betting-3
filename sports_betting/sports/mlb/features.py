@@ -4,6 +4,89 @@ from __future__ import annotations
 
 import pandas as pd
 
+MLB_SOURCE_COLUMNS = [
+    "starter_rating_home",
+    "starter_rating_away",
+    "bullpen_rating_home",
+    "bullpen_rating_away",
+    "hitting_rating_home",
+    "hitting_rating_away",
+    "home_split_home",
+    "home_split_away",
+    "recent_form_home",
+    "recent_form_away",
+]
+
+
+def enrich_mlb_live_features(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    if "starter_rating_home" not in out.columns:
+        if "pitcher_xera_home" in out.columns and "pitcher_whip_home" in out.columns:
+            out["starter_rating_home"] = -(pd.to_numeric(out["pitcher_xera_home"], errors="coerce").fillna(0.0) + pd.to_numeric(out["pitcher_whip_home"], errors="coerce").fillna(0.0))
+        elif "pitcher_era_home" in out.columns:
+            out["starter_rating_home"] = -pd.to_numeric(out["pitcher_era_home"], errors="coerce").fillna(0.0)
+        else:
+            out["starter_rating_home"] = 0.0
+
+    if "starter_rating_away" not in out.columns:
+        if "pitcher_xera_away" in out.columns and "pitcher_whip_away" in out.columns:
+            out["starter_rating_away"] = -(pd.to_numeric(out["pitcher_xera_away"], errors="coerce").fillna(0.0) + pd.to_numeric(out["pitcher_whip_away"], errors="coerce").fillna(0.0))
+        elif "pitcher_era_away" in out.columns:
+            out["starter_rating_away"] = -pd.to_numeric(out["pitcher_era_away"], errors="coerce").fillna(0.0)
+        else:
+            out["starter_rating_away"] = 0.0
+
+    if "bullpen_rating_home" not in out.columns:
+        out["bullpen_rating_home"] = -pd.to_numeric(out.get("bullpen_era_home", 0.0), errors="coerce").fillna(0.0)
+    if "bullpen_rating_away" not in out.columns:
+        out["bullpen_rating_away"] = -pd.to_numeric(out.get("bullpen_era_away", 0.0), errors="coerce").fillna(0.0)
+
+    if "hitting_rating_home" not in out.columns:
+        if "ops_home" in out.columns:
+            out["hitting_rating_home"] = pd.to_numeric(out["ops_home"], errors="coerce").fillna(0.0)
+        elif "slugging_home" in out.columns:
+            out["hitting_rating_home"] = pd.to_numeric(out["slugging_home"], errors="coerce").fillna(0.0)
+        else:
+            out["hitting_rating_home"] = 0.0
+
+    if "hitting_rating_away" not in out.columns:
+        if "ops_away" in out.columns:
+            out["hitting_rating_away"] = pd.to_numeric(out["ops_away"], errors="coerce").fillna(0.0)
+        elif "slugging_away" in out.columns:
+            out["hitting_rating_away"] = pd.to_numeric(out["slugging_away"], errors="coerce").fillna(0.0)
+        else:
+            out["hitting_rating_away"] = 0.0
+
+    if "home_split_home" not in out.columns:
+        out["home_split_home"] = pd.to_numeric(out.get("runs_per_game_home", 0.0), errors="coerce").fillna(0.0)
+    if "home_split_away" not in out.columns:
+        out["home_split_away"] = pd.to_numeric(out.get("runs_per_game_away", 0.0), errors="coerce").fillna(0.0)
+
+    if "recent_form_home" not in out.columns:
+        out["recent_form_home"] = pd.to_numeric(out.get("pitcher_last3_starts_home", 0.0), errors="coerce").fillna(0.0)
+    if "recent_form_away" not in out.columns:
+        out["recent_form_away"] = pd.to_numeric(out.get("pitcher_last3_starts_away", 0.0), errors="coerce").fillna(0.0)
+
+    for col in MLB_SOURCE_COLUMNS:
+        if col not in out.columns:
+            out[col] = 0.0
+        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+
+    print(
+        "[MLB SOURCE DEBUG]",
+        out[[
+            "starter_rating_home",
+            "starter_rating_away",
+            "bullpen_rating_home",
+            "bullpen_rating_away",
+            "hitting_rating_home",
+            "hitting_rating_away",
+        ]].head(),
+    )
+
+    return out
+
 
 def ensure_mlb_core_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()

@@ -37,6 +37,7 @@ from sports_betting.scripts.data_io import (
     model_artifact_path,
     validate_historical_requirements,
 )
+from sports_betting.scripts.feature_enrichment import enrich_daily_features_by_sport, validate_feature_signal
 from sports_betting.sports.common.final_game_filter import filter_predictions_today
 from sports_betting.sports.common.logging_utils import setup_logging
 from sports_betting.sports.common.odds import expected_value
@@ -50,7 +51,6 @@ from sports_betting.sports.mlb.model import MLBModel, load_mlb_model_bundle, tra
 from sports_betting.sports.mlb.pipeline import run_mlb_pipeline
 from sports_betting.sports.nfl.model import NFLModel
 from sports_betting.sports.nhl.model import NHLModel, train_nhl_runtime_model
-from sports_betting.sports.nhl.features import build_nhl_features
 from sports_betting.sports.soccer.pipeline import run_soccer_pipeline
 from tracking import log_bets
 
@@ -1113,7 +1113,6 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         daily = ensure_required_features(daily)
         if sport_name == "nba":
             historical = ensure_required_nba_features(historical)
-            daily = ensure_required_nba_features(daily)
         daily = _ensure_runtime_prediction_columns(daily)
         if sport_name in {"nba", "nhl"}:
             try:
@@ -1137,32 +1136,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 daily["injury_impact_home"] = 0
                 daily["injury_impact_away"] = 0
                 daily["injury_impact_diff"] = 0
-        if sport_name == "nhl":
-            daily = build_nhl_features(daily)
-            for col in REQUIRED_NHL_FEATURES:
-                if col not in daily.columns:
-                    daily[col] = 0.0
-            print("[NHL DEBUG] Feature columns ready:", daily[["goalie_diff", "special_teams_diff"]].head())
-        # Keep explicit post-fix feature diagnostics in runtime logs.
-        if "offensive_rating_diff" not in daily.columns:
-            daily["offensive_rating_diff"] = 0.0
-        if "defensive_rating_diff" not in daily.columns:
-            daily["defensive_rating_diff"] = 0.0
-        if "goalie_diff" not in daily.columns:
-            daily["goalie_diff"] = 0.0
-        if "special_teams_diff" not in daily.columns:
-            daily["special_teams_diff"] = 0.0
-        print("[FEATURE DEBUG AFTER FIX]")
-        print(
-            daily[
-                [
-                    "offensive_rating_diff",
-                    "defensive_rating_diff",
-                    "goalie_diff",
-                    "special_teams_diff",
-                ]
-            ].describe()
-        )
+        daily = enrich_daily_features_by_sport(daily, sport_name)
+        validate_feature_signal(daily, sport_name)
         print("[DEBUG] Daily columns BEFORE prediction:", list(daily.columns))
         runtime_home_win_model = None
         isotonic_model = None
@@ -1200,6 +1175,11 @@ Final bets: 0
             )
             continue
         if sport_name == "soccer":
+            if historical.empty or len(historical) < 30:
+                logger.error(
+                    "[SOCCER] Historical dataset/model artifact requirement not met. Need at least 30 historical rows for training before soccer can run."
+                )
+                continue
             sport_candidates = run_soccer_pipeline(historical_df=historical, daily_df=daily)
             prebuilt_candidates.extend(sport_candidates)
             print(

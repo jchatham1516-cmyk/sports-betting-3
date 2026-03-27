@@ -9,25 +9,11 @@ import pandas as pd
 
 from sports_betting.sports.common.odds import american_to_implied_probability, expected_value, remove_vig_two_way
 
-from .features import build_mlb_features
+from .features import build_mlb_features, enrich_mlb_live_features
 from .model import MLBModelBundle, predict_mlb_model, save_mlb_model_bundle, train_mlb_model
 
 
 LOGGER = logging.getLogger(__name__)
-MLB_LIVE_OPTIONAL_FEATURES = [
-    "starter_rating_home",
-    "starter_rating_away",
-    "bullpen_rating_home",
-    "bullpen_rating_away",
-    "hitting_rating_home",
-    "hitting_rating_away",
-    "home_split_home",
-    "home_split_away",
-    "recent_form_home",
-    "recent_form_away",
-]
-
-
 def _ensure_daily_mlb_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["game_id"] = out.get("game_id", out.get("event_id", "")).astype(str)
@@ -47,12 +33,9 @@ def _ensure_daily_mlb_columns(df: pd.DataFrame) -> pd.DataFrame:
         out.get("implied_home_prob", out["home_moneyline"].apply(american_to_implied_probability)),
         errors="coerce",
     ).fillna(0.5)
-    for feature_name in MLB_LIVE_OPTIONAL_FEATURES:
-        if feature_name not in out.columns:
-            LOGGER.info("[MLB] Missing live feature feed: %s, using neutral default.", feature_name)
-            out[feature_name] = 0.0
     out["injury_impact_home"] = pd.to_numeric(out.get("injury_impact_home", 0.0), errors="coerce").fillna(0.0)
     out["injury_impact_away"] = pd.to_numeric(out.get("injury_impact_away", 0.0), errors="coerce").fillna(0.0)
+    out = enrich_mlb_live_features(out)
     return build_mlb_features(out)
 
 

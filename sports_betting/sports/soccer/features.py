@@ -33,3 +33,19 @@ def build_soccer_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         out["injury_impact_diff"] = _num(out, "injury_impact_diff")
     return out
+
+
+def enrich_soccer_live_features(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    # Soccer still depends on historical data/model artifacts; this only normalizes live columns.
+    for col in [
+        "xg_for_home",
+        "xg_for_away",
+        "xg_against_home",
+        "xg_against_away",
+        "form_last5_home",
+        "form_last5_away",
+    ]:
+        if col not in out.columns:
+            out[col] = 0.0
+    return out
