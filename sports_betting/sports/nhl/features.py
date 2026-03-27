@@ -75,7 +75,7 @@ def enrich_nhl_live_features(df: pd.DataFrame, nhl_team_stats: pd.DataFrame | No
         raise RuntimeError(f"[DATA ERROR] Missing required source stats: {missing}")
 
     for col in NHL_SOURCE_COLUMNS:
-        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+        out[col] = pd.to_numeric(out[col], errors="coerce")
 
     print(
         "[NHL SOURCE DEBUG]",
