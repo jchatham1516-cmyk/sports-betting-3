@@ -17,6 +17,7 @@ import pandas as pd
 from sports_betting.sports.common.team_names import normalize_team_name
 from sports_betting.sports.common.feature_engineering import SPORT_EFFICIENCY_FEATURES, add_elo_features, enrich_with_context_features
 from sports_betting.sports.common.game_filters import current_sports_day_window, filter_games_window
+from sports_betting.sports.mlb.schema import MLB_HISTORICAL_COLUMNS, MLB_REQUIRED_FEATURES
 
 from sports_betting.scripts.build_nba_historical_dataset import NBA_HISTORICAL_COLUMNS
 
@@ -118,7 +119,7 @@ FEATURE_COLUMNS_BY_SPORT = {
     "nba": list(BASE_FEATURE_COLUMNS) + [f"{f}_diff" for f in SPORT_EFFICIENCY_FEATURES["nba"]],
     "nfl": list(BASE_FEATURE_COLUMNS) + [f"{f}_diff" for f in SPORT_EFFICIENCY_FEATURES["nfl"]],
     "nhl": list(BASE_FEATURE_COLUMNS) + [f"{f}_diff" for f in SPORT_EFFICIENCY_FEATURES["nhl"]],
-    "mlb": list(BASE_FEATURE_COLUMNS) + [f"{f}_diff" for f in SPORT_EFFICIENCY_FEATURES.get("nhl", [])],
+    "mlb": list(BASE_FEATURE_COLUMNS) + list(MLB_REQUIRED_FEATURES),
     "soccer": list(BASE_FEATURE_COLUMNS) + [f"{f}_diff" for f in SPORT_EFFICIENCY_FEATURES.get("nfl", [])],
 }
 TARGET_COLUMNS = ["home_win", "home_cover", "over_hit"]
@@ -151,6 +152,8 @@ def required_historical_columns(sport: str) -> list[str]:
         raise ValueError(f"Unsupported sport '{sport}'. Supported sports: {', '.join(sorted(FEATURE_COLUMNS_BY_SPORT))}")
     if sport == "nba":
         return sorted(set(NBA_HISTORICAL_COLUMNS + FEATURE_COLUMNS_BY_SPORT[sport] + ["spread_line", "total_line"]))
+    if sport == "mlb":
+        return sorted(set(MLB_HISTORICAL_COLUMNS))
     core = ["date", "home_team", "away_team", "home_score", "away_score", "closing_moneyline_home", "closing_moneyline_away", "closing_spread_home", "closing_total"]
     return sorted(set(core + FEATURE_COLUMNS_BY_SPORT[sport] + ["spread_line", "total_line"] + TARGET_COLUMNS))
 
@@ -693,6 +696,10 @@ def load_historical_and_daily(sport: str, today_only: bool = True) -> tuple[pd.D
         return historical, daily
 
     if historical.empty and not model_artifact_path(sport).exists():
+        if sport == "mlb":
+            raise RuntimeError(
+                "[MLB] Missing both mlb_historical.csv and mlb_model.pkl. Build historical data or train and save a model artifact."
+            )
         raise RuntimeError(
             f"[{sport.upper()}] Missing historical file at {hist_path}. "
             "Live mode does not auto-generate synthetic training data and no trained model artifact was found."
