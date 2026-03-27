@@ -6,6 +6,10 @@ from pathlib import Path
 
 import pandas as pd
 
+TEAM_NAME_FIXES = {
+    "portland blazers": "portland trail blazers",
+}
+
 
 def _safe_read_csv(path: Path) -> pd.DataFrame | None:
     return pd.read_csv(path) if path.exists() else None
@@ -16,7 +20,8 @@ def _load_historical_csv(sport_name: str) -> pd.DataFrame | None:
 
 
 def _normalize_team(name: object) -> str:
-    return str(name).lower().strip()
+    normalized = str(name).lower().strip()
+    return TEAM_NAME_FIXES.get(normalized, normalized)
 
 
 def build_nba_team_stats(historical: pd.DataFrame) -> pd.DataFrame:
@@ -257,6 +262,15 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
     if sport == "nba":
         from sports_betting.sports.nba.features import enrich_nba_live_features, build_nba_diff_features
 
+        fallback_point_diff = None
+        if {"points_for_home", "points_against_home", "points_for_away", "points_against_away"}.issubset(df.columns):
+            fallback_point_diff = (
+                pd.to_numeric(df["points_for_home"], errors="coerce").fillna(0.0)
+                - pd.to_numeric(df["points_against_home"], errors="coerce").fillna(0.0)
+                - pd.to_numeric(df["points_for_away"], errors="coerce").fillna(0.0)
+                + pd.to_numeric(df["points_against_away"], errors="coerce").fillna(0.0)
+            )
+
         team_df, source = _resolve_nba_team_stats()
         print(f"[NBA ENRICHMENT SOURCE] {source}")
         if source == "historical_derived":
@@ -290,8 +304,22 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             df["point_diff_diff"] = (df["points_for_home"] - df["points_against_home"]) - (
                 df["points_for_away"] - df["points_against_away"]
             )
+        if "point_diff_diff" in df.columns:
+            df["offensive_rating_diff"] = df["point_diff_diff"]
+            df["defensive_rating_diff"] = -df["point_diff_diff"]
         df = enrich_nba_live_features(df, nba_team_stats=None)
         df = build_nba_diff_features(df)
+        if fallback_point_diff is not None:
+            df["point_diff_diff"] = fallback_point_diff
+        elif {"points_for_home", "points_against_home", "points_for_away", "points_against_away"}.issubset(df.columns):
+            df["point_diff_diff"] = (df["points_for_home"] - df["points_against_home"]) - (
+                df["points_for_away"] - df["points_against_away"]
+            )
+        if "point_diff_diff" in df.columns:
+            off_signal = pd.to_numeric(df.get("offensive_rating_diff", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0.0)
+            if off_signal.abs().sum() == 0:
+                df["offensive_rating_diff"] = pd.to_numeric(df["point_diff_diff"], errors="coerce").fillna(0.0)
+                df["defensive_rating_diff"] = -pd.to_numeric(df["point_diff_diff"], errors="coerce").fillna(0.0)
         return df
 
     if sport == "nhl":
@@ -317,6 +345,12 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                 raise RuntimeError("[NHL DATA ERROR] No team stat source found after exhausting external and historical fallbacks.")
         df = enrich_nhl_live_features(df, nhl_team_stats=None)
         df = build_nhl_diff_features(df)
+        elo_series = pd.to_numeric(df.get("elo_diff", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0.0)
+        recent_goal_series = pd.to_numeric(
+            df.get("recent_goal_diff", pd.Series(0.0, index=df.index)), errors="coerce"
+        ).fillna(0.0)
+        df["goalie_diff"] = elo_series * 0.01
+        df["xgf_diff"] = recent_goal_series
         return df
 
     if sport == "mlb":
@@ -392,5 +426,9 @@ def validate_feature_signal(df: pd.DataFrame, sport_name: str) -> None:
     cols = checks.get(sport, [])
     if not cols:
         return
+
+    if sport == "nba" and "offensive_rating_diff" in df.columns:
+        print("[FEATURE CHECK]")
+        print(df[["offensive_rating_diff"]].describe())
 
     validate_not_zero(df, cols, sport.upper())
