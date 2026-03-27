@@ -8,6 +8,7 @@ from collections import defaultdict
 from datetime import datetime
 import logging
 import os
+import re
 import subprocess
 from dataclasses import asdict
 from pathlib import Path
@@ -823,21 +824,31 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
     home_team = str(game_row["home_team"])
     away_team = str(game_row["away_team"])
     total_line = float(game_row.get("total_line", 0.0))
+    home_team_norm = _normalize_team_key(home_team)
+    away_team_norm = _normalize_team_key(away_team)
 
     for pred in predictions:
         market = "totals" if pred["market"] in {"total", "totals"} else pred["market"]
         side = str(pred["side"])
+        side_norm = _normalize_team_key(side)
         key = None
         if market == "moneyline":
-            key = (market, "moneyline_home" if side == home_team else "moneyline_away")
+            if side_norm == home_team_norm:
+                key = (market, "moneyline_home")
+            elif side_norm == away_team_norm:
+                key = (market, "moneyline_away")
         elif market == "spread":
-            key = (market, "spread_home" if side.startswith(home_team) else "spread_away")
+            if side_norm.startswith(home_team_norm):
+                key = (market, "spread_home")
+            elif side_norm.startswith(away_team_norm):
+                key = (market, "spread_away")
         elif market == "totals":
             key = (market, "over" if side.startswith("Over") else "under")
         if key:
             prediction_map[key] = pred
 
     home_moneyline_pred = prediction_map.get(("moneyline", "moneyline_home"), {})
+    away_moneyline_pred = prediction_map.get(("moneyline", "moneyline_away"), {})
     home_model_prob_raw = home_moneyline_pred.get("model_probability")
     if home_model_prob_raw is None:
         home_metadata = home_moneyline_pred.get("metadata", {})
@@ -848,6 +859,10 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
                 home_metadata = {}
         if isinstance(home_metadata, dict):
             home_model_prob_raw = home_metadata.get("predicted_home_win_prob")
+    if home_model_prob_raw is None:
+        away_model_prob_raw = away_moneyline_pred.get("model_probability")
+        if away_model_prob_raw is not None:
+            home_model_prob_raw = 1.0 - float(away_model_prob_raw)
     home_model_prob = None
     if home_model_prob_raw is not None:
         home_model_prob = float(np.clip(float(home_model_prob_raw), 0.01, 0.99))
@@ -868,7 +883,7 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
             continue
 
         pred_row = prediction_map.get((market, selection), {})
-        model_probability = float(pred_row.get("model_probability", 0.5))
+        model_probability = float(np.clip(float(pred_row.get("model_probability", 0.5)), 0.01, 0.99))
         if market == "moneyline" and home_model_prob is not None:
             model_probability = home_model_prob if selection == "moneyline_home" else 1.0 - home_model_prob
         market_probability = american_to_prob(american_odds)
@@ -916,7 +931,11 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
                 "odds": american_odds,
                 "home_odds": int(game_row["home_odds"]),
                 "away_odds": int(game_row["away_odds"]),
-                "model_prob": home_model_prob if market == "moneyline" and home_model_prob is not None else np.nan,
+                "model_prob": (
+                    home_model_prob
+                    if market == "moneyline" and home_model_prob is not None
+                    else model_probability
+                ),
                 "model_probability": model_probability,
                 "market_probability": market_probability,
                 "edge": edge,
@@ -934,6 +953,12 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
     return bets
 
 
+def _normalize_team_key(value: str) -> str:
+    text = str(value or "").lower().strip()
+    text = re.sub(r"[^\w\s]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text
+
 
 def _align_moneyline_model_probability(df: pd.DataFrame) -> pd.DataFrame:
     """Align model_prob (favorite win prob) onto home-team perspective for moneyline rows."""
@@ -943,27 +968,30 @@ def _align_moneyline_model_probability(df: pd.DataFrame) -> pd.DataFrame:
 
     out = df.copy()
     moneyline_mask = out["market"] == "moneyline"
-    if not moneyline_mask.any():
-        return out
+    if moneyline_mask.any():
+        normalized_home = out.loc[moneyline_mask, "home_team"].astype(str).str.lower().str.strip()
+        normalized_selection = out.loc[moneyline_mask, "selection"].astype(str).str.lower().str.strip()
 
-    normalized_home = out.loc[moneyline_mask, "home_team"].astype(str).str.lower().str.strip()
-    normalized_selection = out.loc[moneyline_mask, "selection"].astype(str).str.lower().str.strip()
-
-    out.loc[moneyline_mask, "favorite_team"] = np.where(
-        out.loc[moneyline_mask, "home_odds"] < out.loc[moneyline_mask, "away_odds"],
-        out.loc[moneyline_mask, "home_team"],
-        out.loc[moneyline_mask, "away_team"],
-    )
-    out.loc[moneyline_mask, "model_prob_home"] = np.where(
-        out.loc[moneyline_mask, "favorite_team"] == out.loc[moneyline_mask, "home_team"],
-        out.loc[moneyline_mask, "model_prob"],
-        1 - out.loc[moneyline_mask, "model_prob"],
-    )
-    out.loc[moneyline_mask, "model_probability"] = np.where(
-        normalized_selection == normalized_home,
-        out.loc[moneyline_mask, "model_prob_home"],
-        1 - out.loc[moneyline_mask, "model_prob_home"],
-    )
+        out.loc[moneyline_mask, "favorite_team"] = np.where(
+            out.loc[moneyline_mask, "home_odds"] < out.loc[moneyline_mask, "away_odds"],
+            out.loc[moneyline_mask, "home_team"],
+            out.loc[moneyline_mask, "away_team"],
+        )
+        out.loc[moneyline_mask, "model_prob_home"] = np.where(
+            out.loc[moneyline_mask, "favorite_team"] == out.loc[moneyline_mask, "home_team"],
+            out.loc[moneyline_mask, "model_prob"],
+            1 - out.loc[moneyline_mask, "model_prob"],
+        )
+        out.loc[moneyline_mask, "model_probability"] = np.where(
+            normalized_selection == normalized_home,
+            out.loc[moneyline_mask, "model_prob_home"],
+            1 - out.loc[moneyline_mask, "model_prob_home"],
+        )
+    non_moneyline_mask = ~moneyline_mask
+    if non_moneyline_mask.any():
+        out.loc[non_moneyline_mask, "model_probability"] = pd.to_numeric(
+            out.loc[non_moneyline_mask, "model_probability"], errors="coerce"
+        ).fillna(pd.to_numeric(out.loc[non_moneyline_mask, "model_prob"], errors="coerce"))
     return out
 
 
@@ -1225,6 +1253,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     bets_df = pd.DataFrame(bets)
     print("Columns before bet selection:", bets_df.columns.tolist())
+    df_model = bets_df.reindex(columns=["home_team", "away_team"]).copy()
+    df_odds = pd.DataFrame(game_rows_by_id.values()).reindex(
+        columns=["sportsbook_event_home_team", "sportsbook_event_away_team"]
+    )
+    print("Model teams:", df_model[["home_team", "away_team"]].head())
+    print("Odds teams:", df_odds[["sportsbook_event_home_team", "sportsbook_event_away_team"]].head())
 
     df = bets_df.copy()
     injuries = load_injuries()
@@ -1318,7 +1352,6 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         if {"selection", "home_team", "away_team", "home_odds", "away_odds", "model_prob", "market"}.issubset(df.columns):
             df = _align_moneyline_model_probability(df)
-            df = df[df["market"] == "moneyline"].copy()
             required_columns = ["favorite_team", "model_prob_home"]
             missing_debug_columns = [col for col in required_columns if col not in df.columns]
             if missing_debug_columns:
@@ -1411,6 +1444,10 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         df = games
 
+        df["model_prob"] = pd.to_numeric(df.get("model_prob"), errors="coerce").fillna(
+            pd.to_numeric(df.get("model_probability"), errors="coerce").fillna(0.5)
+        )
+
         def apply_injury_adjustment(row):
             # If injury matching already created impacts, prefer those exact values.
             home_penalty = 0.02 * float(row.get("injury_impact_home", 0.0))
@@ -1419,11 +1456,29 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 home_penalty = get_team_injury_penalty(row["home_team"], injuries)
                 away_penalty = get_team_injury_penalty(row["away_team"], injuries)
 
-            # Adjust model probabilities
-            adj_home_prob = row["model_prob"] - home_penalty + away_penalty
-            adj_home_prob = max(0.01, min(0.99, adj_home_prob))
+            market = str(row.get("market", ""))
+            selection_norm = _normalize_team_key(str(row.get("selection", "")))
+            home_norm = _normalize_team_key(str(row.get("home_team", "")))
+            away_norm = _normalize_team_key(str(row.get("away_team", "")))
+            base_prob = float(row.get("model_probability", row.get("model_prob", 0.5)))
 
-            return adj_home_prob
+            if market == "moneyline":
+                home_prob = float(row.get("model_prob", np.nan))
+                if np.isnan(home_prob):
+                    is_home_moneyline = selection_norm == home_norm
+                    home_prob = base_prob if is_home_moneyline else (1.0 - base_prob)
+                adj_home_prob = max(0.01, min(0.99, home_prob - home_penalty + away_penalty))
+                is_home_moneyline = selection_norm == home_norm
+                return adj_home_prob if is_home_moneyline else (1.0 - adj_home_prob)
+
+            if market == "spread":
+                if selection_norm.startswith(home_norm):
+                    base_prob = base_prob - home_penalty + away_penalty
+                elif selection_norm.startswith(away_norm):
+                    base_prob = base_prob - away_penalty + home_penalty
+                return max(0.01, min(0.99, base_prob))
+
+            return max(0.01, min(0.99, base_prob))
 
         df["model_prob"] = df.apply(apply_injury_adjustment, axis=1)
 
@@ -1580,8 +1635,15 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         bet_tier.loc[tier_c_only_mask] = "Tier C"
 
         candidates_before_filters = len(df)
+        unique_games = int(df["game"].nunique()) if "game" in df.columns else int(df["game_id"].nunique()) if "game_id" in df.columns else 0
+        candidates_per_game = float(candidates_before_filters / unique_games) if unique_games else 0.0
         count_after_hard_reject = int((~hard_reject_mask).sum())
         count_after_tier_filters = int(pass_filter_mask.sum())
+
+        print("[PRE-FILTER DEBUG]")
+        print(f"Total candidates: {candidates_before_filters}")
+        print(f"Unique games: {unique_games}")
+        print(f"Candidates per game: {candidates_per_game:.2f}")
 
         print("[FILTER TIER DEBUG]")
         print(f"Tier A passed: {int(tier_a_only_mask.sum())}")
