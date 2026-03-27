@@ -30,9 +30,8 @@ NHL_REQUIRED_SOURCE_COLUMNS = [
 
 
 def _num(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
-    if col in df.columns:
-        return pd.to_numeric(df[col], errors="coerce").fillna(default)
-    return pd.Series(default, index=df.index, dtype=float)
+    series = df.get(col, pd.Series(default, index=df.index, dtype=float))
+    return pd.to_numeric(series, errors="coerce").fillna(default)
 
 
 def _merge_nhl_team_stats(df: pd.DataFrame, nhl_team_stats: pd.DataFrame) -> pd.DataFrame:
@@ -75,16 +74,17 @@ def enrich_nhl_live_features(df: pd.DataFrame, nhl_team_stats: pd.DataFrame | No
         print(f"[NHL WARNING] Missing advanced stats: {missing} — using fallback features")
 
     for col in NHL_SOURCE_COLUMNS:
-        out[col] = pd.to_numeric(out[col], errors="coerce")
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
 
     print(
         "[NHL SOURCE DEBUG]",
-        out[[
+        out.reindex(columns=[
             "goalie_save_strength_home",
             "goalie_save_strength_away",
             "special_teams_efficiency_home",
             "special_teams_efficiency_away",
-        ]].head(),
+        ]).head(),
     )
     return out
 
@@ -92,17 +92,23 @@ def enrich_nhl_live_features(df: pd.DataFrame, nhl_team_stats: pd.DataFrame | No
 def build_nhl_diff_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     if {"goalie_save_strength_home", "goalie_save_strength_away"}.issubset(out.columns):
-        out["goalie_diff"] = _num(out, "goalie_save_strength_home") - _num(out, "goalie_save_strength_away")
+        out["goalie_diff"] = pd.to_numeric(out.get("goalie_save_strength_home", 0), errors="coerce").fillna(0.0) - pd.to_numeric(
+            out.get("goalie_save_strength_away", 0), errors="coerce"
+        ).fillna(0.0)
     else:
         out["goalie_diff"] = _num(out, "elo_diff") * 0.01
 
     if {"special_teams_efficiency_home", "special_teams_efficiency_away"}.issubset(out.columns):
-        out["special_teams_diff"] = _num(out, "special_teams_efficiency_home") - _num(out, "special_teams_efficiency_away")
+        out["special_teams_diff"] = pd.to_numeric(out.get("special_teams_efficiency_home", 0), errors="coerce").fillna(
+            0.0
+        ) - pd.to_numeric(out.get("special_teams_efficiency_away", 0), errors="coerce").fillna(0.0)
     else:
         out["special_teams_diff"] = _num(out, "recent_goal_diff")
 
     if {"xgf_home", "xgf_away"}.issubset(out.columns):
-        out["xgf_diff"] = _num(out, "xgf_home") - _num(out, "xgf_away")
+        out["xgf_diff"] = pd.to_numeric(out.get("xgf_home", 0), errors="coerce").fillna(0.0) - pd.to_numeric(
+            out.get("xgf_away", 0), errors="coerce"
+        ).fillna(0.0)
     else:
         out["xgf_diff"] = _num(out, "elo_diff")
 
@@ -113,6 +119,10 @@ def build_nhl_diff_features(df: pd.DataFrame) -> pd.DataFrame:
         out["injury_impact_diff"] = _num(out, "injury_impact_home") - _num(out, "injury_impact_away")
     else:
         out["injury_impact_diff"] = _num(out, "injury_impact_diff")
+
+    for col in ["goalie_diff", "special_teams_diff", "xgf_diff"]:
+        if col not in out.columns:
+            out[col] = 0
     return out
 
 
