@@ -104,9 +104,9 @@ def enrich_nhl_live_features(df: pd.DataFrame, nhl_team_stats: pd.DataFrame | No
 def build_nhl_diff_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     if {"goalie_save_strength_home", "goalie_save_strength_away"}.issubset(out.columns):
-        out["goalie_diff"] = pd.to_numeric(out.get("goalie_save_strength_home", 0), errors="coerce").fillna(0.0) - pd.to_numeric(
-            out.get("goalie_save_strength_away", 0), errors="coerce"
-        ).fillna(0.0)
+        out["goalie_save_strength_home"] = pd.to_numeric(out.get("goalie_save_strength_home", 0.905), errors="coerce").fillna(0.905)
+        out["goalie_save_strength_away"] = pd.to_numeric(out.get("goalie_save_strength_away", 0.905), errors="coerce").fillna(0.905)
+        out["goalie_diff"] = out["goalie_save_strength_home"] - out["goalie_save_strength_away"]
     else:
         out["goalie_diff"] = _num(out, "elo_diff") * 0.01
 
