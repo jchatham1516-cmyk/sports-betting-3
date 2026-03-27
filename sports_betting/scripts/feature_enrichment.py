@@ -6,10 +6,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
-
-TEAM_NAME_FIXES = {
-    "portland blazers": "portland trail blazers",
-}
+from sports_betting.sports.common.team_names import normalize_team_name
 
 
 def _safe_read_csv(path: Path) -> pd.DataFrame | None:
@@ -21,8 +18,7 @@ def _load_historical_csv(sport_name: str) -> pd.DataFrame | None:
 
 
 def _normalize_team(name: object) -> str:
-    normalized = str(name).lower().strip()
-    return TEAM_NAME_FIXES.get(normalized, normalized)
+    return str(normalize_team_name(name))
 
 
 def load_mlb_pitchers() -> dict[str, dict[str, float]]:
@@ -65,7 +61,7 @@ def build_nba_team_stats(historical: pd.DataFrame) -> pd.DataFrame:
     frame = historical.copy()
 
     def norm(x: object) -> str:
-        return str(x).lower().strip()
+        return str(normalize_team_name(x))
 
     frame["home_team_norm"] = frame["home_team"].apply(norm)
     frame["away_team_norm"] = frame["away_team"].apply(norm)
@@ -357,6 +353,7 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             if off_signal.abs().sum() == 0:
                 df["offensive_rating_diff"] = pd.to_numeric(df["point_diff_diff"], errors="coerce").fillna(0.0)
                 df["defensive_rating_diff"] = -pd.to_numeric(df["point_diff_diff"], errors="coerce").fillna(0.0)
+        print("Non-zero offensive_diff:", (pd.to_numeric(df.get("offensive_rating_diff"), errors="coerce").fillna(0.0) != 0).sum())
         return df
 
     if sport == "nhl":
@@ -388,6 +385,7 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         df["goalie_save_home"] = pd.to_numeric(df["goalie_save_home"], errors="coerce").fillna(0.905)
         df["goalie_save_away"] = pd.to_numeric(df["goalie_save_away"], errors="coerce").fillna(0.905)
         df["goalie_diff"] = df["goalie_save_home"] - df["goalie_save_away"]
+        print("Non-zero goalie_diff:", (df["goalie_diff"] != 0).sum())
         return df
 
     if sport == "mlb":
@@ -420,6 +418,13 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         df["pitcher_era_away"] = pd.to_numeric(df["pitcher_era_away"], errors="coerce").replace(0, 4.20).fillna(4.20)
         df["pitcher_diff"] = df["pitcher_era_away"] - df["pitcher_era_home"]
         df = enrich_mlb_live_features(df)
+        df["starter_rating_home"] = pd.to_numeric(df["starter_rating_home"], errors="coerce").replace(0, 50).fillna(50)
+        df["starter_rating_away"] = pd.to_numeric(df["starter_rating_away"], errors="coerce").replace(0, 50).fillna(50)
+        df["hitting_rating_home"] = pd.to_numeric(df["hitting_rating_home"], errors="coerce").replace(0, 100).fillna(100)
+        df["hitting_rating_away"] = pd.to_numeric(df["hitting_rating_away"], errors="coerce").replace(0, 100).fillna(100)
+        df["starter_rating_diff"] = df["starter_rating_home"] - df["starter_rating_away"]
+        df["hitting_rating_diff"] = df["hitting_rating_home"] - df["hitting_rating_away"]
+        print("Non-zero starter_diff:", (df["starter_rating_diff"] != 0).sum())
         df = build_mlb_features(df)
         return df
 

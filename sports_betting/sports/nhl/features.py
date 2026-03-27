@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
-
-TEAM_NAME_FIXES = {
-    "portland blazers": "portland trail blazers",
-}
+from sports_betting.sports.common.team_names import normalize_team_name as shared_normalize_team_name
 
 NHL_SOURCE_COLUMNS = [
     "goalie_save_strength_home",
@@ -39,8 +36,7 @@ def _num(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
 
 
 def normalize_team_name(name: object) -> str:
-    normalized = str(name).lower().strip()
-    return TEAM_NAME_FIXES.get(normalized, normalized)
+    return str(shared_normalize_team_name(name))
 
 
 def _merge_nhl_team_stats(df: pd.DataFrame, nhl_team_stats: pd.DataFrame) -> pd.DataFrame:

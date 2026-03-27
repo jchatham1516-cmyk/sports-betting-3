@@ -6,6 +6,7 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
+from sports_betting.sports.common.team_names import normalize_team_name as shared_normalize_team_name
 
 NBA_FEATURE_COLUMNS = [
     "elo_diff",
@@ -93,7 +94,7 @@ def _american_to_prob(odds: pd.Series) -> pd.Series:
 
 
 def normalize_team_name(name: object) -> str:
-    return str(name).lower().strip()
+    return str(shared_normalize_team_name(name))
 
 
 def _merge_nba_team_stats(df: pd.DataFrame, nba_team_stats: pd.DataFrame) -> pd.DataFrame:
@@ -169,6 +170,9 @@ def enrich_nba_live_features(df: pd.DataFrame, nba_team_stats: pd.DataFrame | No
         if target not in out.columns:
             out[target] = _coalesce_numeric(out, candidates, default=np.nan)
         out[target] = pd.to_numeric(out[target], errors="coerce")
+
+    for col in ["offensive_rating_home", "offensive_rating_away", "defensive_rating_home", "defensive_rating_away"]:
+        out[col] = pd.to_numeric(out[col], errors="coerce").replace(0, 110)
 
     print(
         "[NBA SOURCE DEBUG]",
