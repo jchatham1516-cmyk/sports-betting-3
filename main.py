@@ -46,7 +46,7 @@ from sports_betting.sports.nba.model import NBAModel
 from sports_betting.sports.nba.simple_model import american_to_implied_prob
 from sports_betting.sports.nba.simple_model import FEATURE_COLUMNS as NBA_RUNTIME_FEATURE_COLUMNS
 from sports_betting.sports.nba.simple_model import train_runtime_model
-from sports_betting.sports.mlb.model import MLBModel
+from sports_betting.sports.mlb.model import MLBModel, load_mlb_model_bundle, train_mlb_model
 from sports_betting.sports.mlb.pipeline import run_mlb_pipeline
 from sports_betting.sports.nfl.model import NFLModel
 from sports_betting.sports.nhl.model import NHLModel, train_nhl_runtime_model
@@ -1108,7 +1108,26 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         isotonic_model = None
         total_games_processed += len(daily)
         if sport_name == "mlb":
-            sport_candidates = run_mlb_pipeline(historical_df=historical, daily_df=daily)
+            mlb_model_bundle = None
+            artifact_path = model_artifact_path("mlb")
+            if not historical.empty:
+                print(f"[MLB] Historical rows loaded: {len(historical)}")
+                mlb_model_bundle = train_mlb_model(historical)
+                logger.info("[MLB] Runtime model training completed from historical CSV.")
+            elif artifact_path.exists():
+                mlb_model_bundle = load_mlb_model_bundle(artifact_path)
+                logger.info("[MLB] Loaded trained model artifact from %s", artifact_path)
+            else:
+                raise RuntimeError(
+                    "[MLB] Missing both mlb_historical.csv and mlb_model.pkl. Build historical data or train and save a model artifact."
+                )
+
+            sport_candidates = run_mlb_pipeline(
+                historical_df=historical,
+                daily_df=daily,
+                model_bundle=mlb_model_bundle,
+                artifact_path=artifact_path if not historical.empty else None,
+            )
             prebuilt_candidates.extend(sport_candidates)
             print(
                 f"""

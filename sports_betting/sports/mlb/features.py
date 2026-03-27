@@ -5,64 +5,56 @@ from __future__ import annotations
 import pandas as pd
 
 
-MLB_FEATURE_COLUMNS = [
-    "implied_home_prob",
-    "pitcher_era_diff",
-    "pitcher_xera_diff",
-    "pitcher_whip_diff",
-    "pitcher_k_rate_diff",
-    "pitcher_last3_diff",
-    "bullpen_era_diff",
-    "bullpen_fatigue_diff",
-    "runs_per_game_diff",
-    "ops_diff",
-    "slugging_diff",
-    "team_k_rate_diff",
-    "home_split_diff",
-    "last10_diff",
-    "rest_diff",
-    "injury_impact_diff",
-]
-
-
-def _num(df: pd.DataFrame, cols: list[str], default: float = 0.0) -> pd.Series:
-    for col in cols:
-        if col in df.columns:
-            return pd.to_numeric(df[col], errors="coerce").fillna(default)
-    return pd.Series(default, index=df.index, dtype=float)
+def ensure_mlb_core_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    defaults = {
+        "elo_diff": 0.0,
+        "starter_rating_home": 0.0,
+        "starter_rating_away": 0.0,
+        "bullpen_rating_home": 0.0,
+        "bullpen_rating_away": 0.0,
+        "hitting_rating_home": 0.0,
+        "hitting_rating_away": 0.0,
+        "home_split_home": 0.0,
+        "home_split_away": 0.0,
+        "recent_form_home": 0.0,
+        "recent_form_away": 0.0,
+        "injury_impact_home": 0.0,
+        "injury_impact_away": 0.0,
+        "rest_days_home": 0.0,
+        "rest_days_away": 0.0,
+        "travel_distance_home": 0.0,
+        "travel_distance_away": 0.0,
+        "home_moneyline": 0.0,
+        "spread": 0.0,
+        "implied_home_prob": 0.5,
+        "spread_abs": 0.0,
+        "is_favorite": 0,
+    }
+    for col, val in defaults.items():
+        if col not in df.columns:
+            df[col] = val
+    return df
 
 
 def build_mlb_features(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
+    df = ensure_mlb_core_columns(df)
+    df = df.copy()
 
-    out["implied_home_prob"] = _num(out, ["implied_home_prob"])
-    if "implied_home_prob" not in df.columns and "home_odds" in out.columns:
-        home_odds = pd.to_numeric(out["home_odds"], errors="coerce").fillna(0)
-        out["implied_home_prob"] = home_odds.apply(
-            lambda odds: abs(odds) / (abs(odds) + 100) if odds < 0 else (100 / (odds + 100) if odds > 0 else 0.5)
-        )
+    df["starter_rating_diff"] = df["starter_rating_home"] - df["starter_rating_away"]
+    df["bullpen_rating_diff"] = df["bullpen_rating_home"] - df["bullpen_rating_away"]
+    df["hitting_rating_diff"] = df["hitting_rating_home"] - df["hitting_rating_away"]
+    df["home_split_diff"] = df["home_split_home"] - df["home_split_away"]
+    df["recent_form_diff"] = df["recent_form_home"] - df["recent_form_away"]
+    df["injury_impact_diff"] = df["injury_impact_home"] - df["injury_impact_away"]
+    df["rest_diff"] = df["rest_days_home"] - df["rest_days_away"]
+    df["travel_distance"] = df["travel_distance_home"].fillna(0) + df["travel_distance_away"].fillna(0)
+    df["travel_fatigue_diff"] = df["travel_distance_home"].fillna(0) - df["travel_distance_away"].fillna(0)
 
-    out["pitcher_era_diff"] = _num(out, ["pitcher_era_home"]) - _num(out, ["pitcher_era_away"])
-    out["pitcher_xera_diff"] = _num(out, ["pitcher_xera_home", "pitcher_xERA_home"]) - _num(out, ["pitcher_xera_away", "pitcher_xERA_away"])
-    out["pitcher_whip_diff"] = _num(out, ["pitcher_whip_home"]) - _num(out, ["pitcher_whip_away"])
-    out["pitcher_k_rate_diff"] = _num(out, ["pitcher_k_rate_home"]) - _num(out, ["pitcher_k_rate_away"])
-    out["pitcher_last3_diff"] = _num(out, ["pitcher_last3_starts_home", "pitcher_recent_form_home"]) - _num(out, ["pitcher_last3_starts_away", "pitcher_recent_form_away"])
-
-    out["bullpen_era_diff"] = _num(out, ["bullpen_era_home"]) - _num(out, ["bullpen_era_away"])
-    out["bullpen_fatigue_diff"] = _num(out, ["bullpen_usage_home", "bullpen_fatigue_home"]) - _num(out, ["bullpen_usage_away", "bullpen_fatigue_away"])
-
-    out["runs_per_game_diff"] = _num(out, ["runs_per_game_home"]) - _num(out, ["runs_per_game_away"])
-    out["ops_diff"] = _num(out, ["ops_home", "OPS_home"]) - _num(out, ["ops_away", "OPS_away"])
-    out["slugging_diff"] = _num(out, ["slugging_home", "slg_home"]) - _num(out, ["slugging_away", "slg_away"])
-    out["team_k_rate_diff"] = _num(out, ["team_k_rate_home"]) - _num(out, ["team_k_rate_away"])
-
-    out["home_split_diff"] = _num(out, ["home_split_home", "home_record_strength"]) - _num(out, ["away_split_away", "away_record_strength"])
-    out["last10_diff"] = _num(out, ["last10_home", "last10_wins_home"]) - _num(out, ["last10_away", "last10_wins_away"])
-    out["rest_diff"] = _num(out, ["rest_days_home"]) - _num(out, ["rest_days_away"])
-
-    if "injury_impact_diff" not in out.columns:
-        out["injury_impact_diff"] = _num(out, ["injury_impact_home"]) - _num(out, ["injury_impact_away"])
-    else:
-        out["injury_impact_diff"] = _num(out, ["injury_impact_diff"])
-
-    return out
+    df["home_moneyline"] = pd.to_numeric(df["home_moneyline"], errors="coerce").fillna(0.0)
+    df["spread"] = pd.to_numeric(df["spread"], errors="coerce").fillna(0.0)
+    df["implied_home_prob"] = pd.to_numeric(df["implied_home_prob"], errors="coerce").fillna(0.5)
+    df["spread_abs"] = pd.to_numeric(df["spread_abs"], errors="coerce").fillna(df["spread"].abs())
+    df["is_favorite"] = pd.to_numeric(df["is_favorite"], errors="coerce").fillna((df["home_moneyline"] < 0).astype(int)).astype(int)
+    df["elo_diff"] = pd.to_numeric(df["elo_diff"], errors="coerce").fillna(0.0)
+    return df
