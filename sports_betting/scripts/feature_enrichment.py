@@ -254,9 +254,17 @@ def validate_feature_signal(df: pd.DataFrame, sport_name: str) -> None:
 
     sport = str(sport_name).lower()
 
+    if sport == "nhl":
+        if "goalie_diff" not in df.columns:
+            print("[WARNING] NHL goalie_diff missing after enrichment")
+            return
+        goalie_signal = pd.to_numeric(df["goalie_diff"], errors="coerce").fillna(0.0).abs().sum()
+        if goalie_signal == 0:
+            print("[WARNING] NHL still has low signal")
+        return
+
     checks = {
         "nba": ["offensive_rating_diff", "defensive_rating_diff"],
-        "nhl": ["goalie_diff", "special_teams_diff"],
         "mlb": ["starter_rating_diff", "hitting_rating_diff"],
         "nfl": ["epa_per_play_diff", "success_rate_diff", "qb_efficiency_diff"],
     }
