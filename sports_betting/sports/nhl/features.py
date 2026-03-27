@@ -24,6 +24,8 @@ def build_nhl_features(df: pd.DataFrame) -> pd.DataFrame:
     out["goalie_diff"] = pd.to_numeric(out["goalie_diff"], errors="coerce").fillna(0.0)
 
     out["xgf_diff"] = _num(out, "xgf_home") - _num(out, "xgf_away")
+    out["xga_diff"] = _num(out, "xga_home") - _num(out, "xga_away")
+    out["shot_share_diff"] = _num(out, "shot_share_home") - _num(out, "shot_share_away")
 
     # Special teams diff
     if "special_teams_efficiency_home" in out.columns and "special_teams_efficiency_away" in out.columns:
@@ -40,4 +42,5 @@ def build_nhl_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         out["injury_impact_diff"] = _num(out, "injury_impact_diff")
 
+    out.fillna(0, inplace=True)
     return out
