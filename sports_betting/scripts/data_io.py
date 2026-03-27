@@ -24,7 +24,14 @@ from sports_betting.scripts.build_nba_historical_dataset import NBA_HISTORICAL_C
 ROOT = Path(__file__).resolve().parents[1] / "data"
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_SPORTS = ("nba", "nfl", "nhl", "mlb", "soccer")
+OPTIONAL_SPORTS = {"mlb", "soccer"}
 ALLOW_MINIMAL_DATASET = True
+REQUIRED_DEFAULT_COLUMNS = [
+    "home_cover",
+    "over_hit",
+    "spread_line",
+    "total_line",
+]
 
 SPORT_TO_ODDS_API_KEY = {
     "nba": "basketball_nba",
@@ -163,6 +170,15 @@ def _coalesce_numeric(df: pd.DataFrame, candidates: list[str], default: float = 
     return pd.Series(default, index=df.index, dtype="float64")
 
 
+def ensure_required_columns(df: pd.DataFrame) -> pd.DataFrame:
+    missing_cols = [col for col in REQUIRED_DEFAULT_COLUMNS if col not in df.columns]
+    if missing_cols:
+        for col in missing_cols:
+            df[col] = 0
+        print(f"[DATA FIX] Added missing columns: {missing_cols}")
+    return df
+
+
 def _american_to_prob(odds: pd.Series | float | int) -> pd.Series:
     series = pd.to_numeric(odds, errors="coerce")
     return series.apply(
@@ -291,7 +307,9 @@ def load_historical_dataset(sport: str) -> pd.DataFrame:
     hist_path = historical_file_path(sport)
     if not hist_path.exists():
         raise RuntimeError(f"[{sport.upper()}] Historical CSV does not exist: {hist_path}")
-    return _standardize_historical_features(pd.read_csv(hist_path), sport)
+    df = pd.read_csv(hist_path)
+    df = ensure_required_columns(df)
+    return _standardize_historical_features(df, sport)
 
 
 def load_nba_historical_dataset() -> pd.DataFrame:
@@ -300,6 +318,7 @@ def load_nba_historical_dataset() -> pd.DataFrame:
         raise RuntimeError(f"[NBA] Historical CSV does not exist: {hist_path}")
 
     df = pd.read_csv(hist_path)
+    df = ensure_required_columns(df)
     missing_core = [c for c in NBA_CORE_REQUIRED_COLUMNS if c not in df.columns]
     if missing_core:
         raise RuntimeError(
@@ -336,7 +355,8 @@ def validate_historical_requirements(
     validate_schema: bool = True,
 ) -> None:
     sports_to_check = _normalize_sports(sports)
-    missing_messages: list[str] = []
+    missing_errors: list[str] = []
+    warnings: list[str] = []
     schema_messages: list[str] = []
 
     for sport in sports_to_check:
@@ -345,26 +365,26 @@ def validate_historical_requirements(
         hist_exists = hist_path.exists()
         artifact_exists = artifact_path.exists()
 
-        if not hist_exists and not (allow_model_artifacts and artifact_exists):
-            missing_messages.append(
-                f"- {sport.upper()}: missing both historical CSV ({hist_path}) and trained model artifact ({artifact_path})."
-            )
+        has_csv = hist_exists
+        has_model = allow_model_artifacts and artifact_exists
+
+        if not has_csv and not has_model:
+            if sport.lower() in OPTIONAL_SPORTS:
+                warnings.append(f"[{sport.upper()}] Skipping (no data/model yet)")
+            else:
+                missing_errors.append(
+                    f"- {sport.upper()}: missing both historical CSV ({hist_path}) and trained model artifact ({artifact_path})."
+                )
             continue
 
         if validate_schema and hist_exists:
             raw_df = pd.read_csv(hist_path, nrows=5)
-            required_raw = ["home_win", "home_cover", "over_hit", "spread_line", "total_line"]
-            missing_raw = [col for col in required_raw if col not in raw_df.columns]
+            raw_df = ensure_required_columns(raw_df)
             df = _standardize_historical_features(raw_df, sport)
             required_cols = required_historical_columns(sport)
             missing_cols = [col for col in required_cols if col not in df.columns]
-            missing_columns = sorted(set(missing_raw + missing_cols))
+            missing_columns = sorted(set(missing_cols))
             if missing_columns:
-                if missing_raw:
-                    schema_messages.append(
-                        f"- {sport.upper()}: {hist_path} is missing columns: {', '.join(sorted(missing_raw))}"
-                    )
-                    continue
                 if ALLOW_MINIMAL_DATASET:
                     print(f"[WARNING] Skipping strict schema validation. Missing columns: {missing_columns[:10]}...")
                     continue
@@ -372,7 +392,11 @@ def validate_historical_requirements(
                     f"- {sport.upper()}: {hist_path} is missing columns: {', '.join(missing_columns)}"
                 )
 
-    if missing_messages or schema_messages:
+    if warnings:
+        for warning in warnings:
+            print(warning)
+
+    if missing_errors or schema_messages:
         details = [
             "Historical data preflight failed.",
             "Required historical CSV files:",
@@ -385,8 +409,8 @@ def validate_historical_requirements(
         ]
         for sport in sports_to_check:
             details.append(f"- {sport.upper()}: {', '.join(required_historical_columns(sport))}")
-        if missing_messages:
-            details.extend(["", "Missing data/model files:", *missing_messages])
+        if missing_errors:
+            details.extend(["", "Missing data/model files:", *missing_errors])
         if schema_messages:
             details.extend(["", "Schema issues:", *schema_messages])
         raise RuntimeError("\n".join(details))
@@ -654,6 +678,7 @@ def load_historical_and_daily(sport: str, today_only: bool = True) -> tuple[pd.D
 
     historical = load_csv_or_empty(hist_path)
     if not historical.empty:
+        historical = ensure_required_columns(historical)
         historical = _standardize_historical_features(historical, sport)
 
     if _is_test_mode():
