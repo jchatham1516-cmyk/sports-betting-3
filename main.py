@@ -1733,6 +1733,12 @@ Final bets: 0
             (df["expected_value"] > MIN_EV)
         ].copy()
 
+        print("\n🚨 FINAL STAGE REACHED 🚨")
+        print("Columns available:", list(df.columns))
+        print("Row count before final:", len(df))
+        print("🚨 FORCING 3 TEST BETS 🚨")
+        bets_df = df.head(3)
+
         print("\n===== FINAL FILTER DEBUG =====")
         print("Total rows:", len(df))
 
