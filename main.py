@@ -1760,26 +1760,31 @@ Final bets: 0
         print(df["expected_value"].describe())
 
         print("STEP 14: before final edge/ev filter", len(df))
-        bets_df = df[
+        df = df[
             (df["edge"] > MIN_EDGE)
             & (df["expected_value"] > MIN_EV)
         ].copy()
 
-        bets_df = bets_df.sort_values(by="expected_value", ascending=False)
-        bets_df = bets_df.head(MAX_BETS)
-        print("FINAL BET COUNT:", len(bets_df))
+        df = df.sort_values(by="expected_value", ascending=False)
+        df = df.head(MAX_BETS)
+        print("FINAL BET COUNT:", len(df))
 
-        if bets_df.empty:
+        if df.empty:
             print("⚠️ No bets passed filter — using fallback")
-            bets_df = original_df.sort_values(by="expected_value", ascending=False).head(2)
+            df = original_df.sort_values(by="expected_value", ascending=False).head(2)
 
-        final_bets = bets_df.copy()
+        final_bets = df.copy()
         final_bets["bet_tier"] = "Relaxed"
 
         final_bets = final_bets[
             (final_bets["odds"] > -300) &
             (final_bets["odds"] < 300)
         ]
+
+        if final_bets.empty:
+            print("⚠️ Odds guard removed all bets — using fallback")
+            final_bets = original_df.sort_values(by="expected_value", ascending=False).head(2).copy()
+            final_bets["bet_tier"] = "Fallback"
 
         final_bets = final_bets.sort_values(
             by=["expected_value", "edge", confidence_col], ascending=[False, False, False]
