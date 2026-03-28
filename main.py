@@ -293,6 +293,7 @@ def adjust_for_injury_impact(predictions: pd.DataFrame, injury_data: pd.DataFram
 
 
 def adjust_confidence_and_thresholds(predictions: pd.DataFrame) -> pd.DataFrame:
+    print("ENTERING FUNCTION: adjust_confidence_and_thresholds", len(predictions))
     out = predictions.copy()
     if out.empty or "confidence" not in out.columns:
         return out
@@ -363,6 +364,7 @@ def build_parlays(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def apply_smart_bet_filter(df):
+    print("ENTERING FUNCTION: apply_smart_bet_filter", len(df))
 
     import pandas as pd
 
@@ -885,6 +887,7 @@ def _apply_runtime_home_win_probabilities(
 
 def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_name: str, game: str) -> list[dict]:
     """Create candidate bets for a game from model prediction rows."""
+    print("ENTERING FUNCTION: _build_game_candidate_bets", len(predictions))
     prediction_map: dict[tuple[str, str], dict] = {}
     home_team = str(game_row["home_team"])
     away_team = str(game_row["away_team"])
@@ -1024,6 +1027,7 @@ def _normalize_team_key(value: str) -> str:
 
 def _align_moneyline_model_probability(df: pd.DataFrame) -> pd.DataFrame:
     """Align model_prob (favorite win prob) onto home-team perspective for moneyline rows."""
+    print("ENTERING FUNCTION: _align_moneyline_model_probability", len(df))
     required = {"market", "home_odds", "away_odds", "home_team", "away_team", "selection", "model_prob"}
     if df.empty or not required.issubset(df.columns):
         return df
@@ -1324,9 +1328,13 @@ Final bets: 0
     logger.info("Total games processed: %s", total_games_processed)
 
     predictions_df = pd.DataFrame(all_predictions)
+    print("STEP 1: after loading data", len(predictions_df))
     predictions_df = predictions_df.reindex(columns=PREDICTION_COLUMNS)
+    print("STEP 2: after feature engineering", len(predictions_df))
     predictions_df = filter_predictions_today(predictions_df)
+    print("STEP 3: after predictions", len(predictions_df))
     predictions_df = apply_smart_bet_filter(predictions_df)
+    print("STEP 4: after bet filtering", len(predictions_df))
     save_dataframe(predictions_df, out_dir / "predictions.csv")
 
     pred_path = out_dir / "predictions.csv"
@@ -1469,7 +1477,9 @@ Final bets: 0
         print("Odds rows:", int(df["odds"].notna().sum()))
 
         # Safe bet filtering: remove extreme longshots/heavy favorites before final selection.
+        print("STEP 5: pre-odds-range filter", len(df))
         df = df[(df["odds"] > -300) & (df["odds"] < 300)].copy()
+        print("STEP 6: after odds-range filter", len(df))
 
         # Ensure required post-prediction features exist for runtime safety.
         required_cols = ["injury_impact_diff"]
@@ -1507,7 +1517,9 @@ Final bets: 0
                 )
             print("Merged rows:", len(df))
             print("Null model_prob rows:", int(df["model_probability"].isnull().sum()))
+            print("STEP 7: before model_probability notna filter", len(df))
             df = df[df["model_probability"].notna()].copy()
+            print("STEP 8: after model_probability notna filter", len(df))
 
         df["market_probability"] = df["odds"].apply(american_to_prob)
         print("Model nulls:", int(df["model_probability"].isnull().sum()))
@@ -1664,6 +1676,7 @@ Final bets: 0
         )
 
         df = df.dropna(subset=["model_probability", "market_probability"]).copy()
+        print("STEP 9: after dropna model/market probability", len(df))
         df["profit_per_unit"] = df["odds"].apply(get_payout)
         df["expected_value"] = (
             df["model_probability"] * df["profit_per_unit"]
@@ -1679,7 +1692,9 @@ Final bets: 0
             df["expected_value"] = df["expected_value"].replace([np.inf, -np.inf], np.nan)
             df["expected_value"] = df["expected_value"].fillna(0)
             df["expected_value"] = df["expected_value"].clip(-1, 1)
+            print("STEP 10: before model_prob bounds filter", len(df))
             df = df[df["model_prob"].between(0.01, 0.99)].copy()
+            print("STEP 11: after model_prob bounds filter", len(df))
             print("[EV STATS]:", df["expected_value"].describe())
 
         if df["expected_value"].max() >= 1:
@@ -1687,7 +1702,9 @@ Final bets: 0
         print("Proceeding with predictions...")
 
         # Remove unrealistic EV outliers before bet selection.
+        print("STEP 12: before expected_value upper filter", len(df))
         df = df[df["expected_value"] < 0.25].copy()
+        print("STEP 13: after expected_value upper filter", len(df))
 
         print("[INJURY ADJUSTMENT APPLIED]")
         print(df[["away_team", "home_team", "model_probability", "edge", "expected_value"]].head())
@@ -1734,10 +1751,17 @@ Final bets: 0
         MIN_EDGE = 0.0
         MIN_EV = -0.1
 
+        print("🔥 FILTER KILLING ALL BETS FOUND 🔥")
+        if "market_prob" not in df.columns and "market_probability" in df.columns:
+            df["market_prob"] = df["market_probability"]
+        print(df[["edge", "expected_value", "model_prob", "market_prob"]].describe())
+
+        print("STEP 14: before final edge/ev filter", len(df))
         bets_df = df[
             (df["edge"] > MIN_EDGE) &
             (df["expected_value"] > MIN_EV)
         ].copy()
+        print("STEP 15: after final edge/ev filter", len(bets_df))
 
         print("\n🚨 FINAL STAGE REACHED 🚨")
         print("Columns available:", list(df.columns))

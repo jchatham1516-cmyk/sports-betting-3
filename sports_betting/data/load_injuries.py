@@ -158,6 +158,7 @@ def calculate_injury_impact(player_status_map):
 
 def match_injury_impact(predictions_df, injuries):
     """Map injuries onto home/away teams and compute side-specific + combined impact."""
+    print("ENTERING FUNCTION: match_injury_impact", len(predictions_df))
     out = predictions_df.copy()
     out["injury_impact_home"] = 0.0
     out["injury_impact_away"] = 0.0
@@ -169,6 +170,7 @@ def match_injury_impact(predictions_df, injuries):
         if away_key:
             out.at[idx, "injury_impact_away"] = calculate_injury_impact(injuries.get(away_key, {}))
     out["combined_injury_impact"] = out["injury_impact_home"] + out["injury_impact_away"]
+    print("EXIT FUNCTION: match_injury_impact", len(out))
     return out
 
 
