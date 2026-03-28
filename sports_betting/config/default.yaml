@@ -3,7 +3,7 @@ sports_enabled:
   - nfl
   - nhl
   - mlb
-  - soccer
+  # - soccer  # Temporarily disabled due to missing historical file.
 
 logging:
   level: INFO
