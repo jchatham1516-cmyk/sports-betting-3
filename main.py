@@ -97,7 +97,7 @@ FORM_EDGE_WEIGHT = 0.015
 MATCHUP_EDGE_WEIGHT = 0.0005
 INJURY_IMPACT_FACTOR = 10.0
 INJURY_WEIGHT_FACTOR = 2.0
-INJURY_WEIGHT = 0.02
+INJURY_WEIGHT = 0.01
 MODEL_PROBABILITY_INJURY_WEIGHT = 0.01
 CONFIDENCE_MOVING_WINDOW = 10
 CONFIDENCE_THRESHOLD_MULTIPLIER = 2.0
@@ -487,9 +487,12 @@ def apply_smart_bet_filter(df):
     print("[DEBUG] Top edges (FINAL ONLY):")
     print(df[["edge", "expected_value"]].sort_values(by="expected_value", ascending=False).head(10))
 
+    if "adjusted_edge" not in df.columns:
+        df["adjusted_edge"] = pd.to_numeric(df.get("edge"), errors="coerce").fillna(0.0)
+
     # PRIMARY FILTER (normal mode)
     filtered = df[
-        (df["edge"] > MIN_EDGE)
+        (df["adjusted_edge"] > MIN_EDGE)
         & (df["expected_value"] > MIN_EV)
         & (df["adjusted_prob"].between(0.50, 0.75))
     ]
@@ -1641,10 +1644,20 @@ Final bets: 0
         df["model_probability"] = (
             df["model_probability"] + df["context_edge_adjustment"]
         ).clip(0.01, 0.99)
+        MAX_INJURY_IMPACT = 2.0
+        df["injury_impact_diff"] = pd.to_numeric(df["injury_impact_diff"], errors="coerce").fillna(0.0)
+        df["injury_impact_diff"] = df["injury_impact_diff"].clip(
+            -MAX_INJURY_IMPACT,
+            MAX_INJURY_IMPACT,
+        )
+
         df["scaled_injury"] = scale_injury_impact(df["injury_impact_diff"], weight=0.01, cap=0.05)
         df["model_probability"] = (df["model_probability"] + df["scaled_injury"]).clip(0.01, 0.99)
         # Edge must remain the direct delta between model and market probabilities.
         df["edge"] = df["model_probability"] - df["market_probability"]
+        df["adjusted_edge"] = df["edge"] + (
+            df["injury_impact_diff"] * INJURY_WEIGHT
+        )
         df["decimal_odds"] = df["odds"].apply(_american_to_decimal)
         payout = df["decimal_odds"] - 1
         df["expected_value"] = (
@@ -1748,32 +1761,38 @@ Final bets: 0
         df["model_probability"] = pd.to_numeric(df["model_probability"], errors="coerce").fillna(0.0)
         df["market_probability"] = pd.to_numeric(df["market_probability"], errors="coerce").fillna(0.0)
 
-        MIN_EDGE = 0.015
-        MIN_EV = 0.005
+        MIN_EDGE = 0.005
+        MIN_EV = 0.002
         MAX_BETS = 5
         original_df = df.copy()
 
         print("EDGE SUMMARY:")
         print(df["edge"].describe())
+        print("EDGE RANGE:", df["edge"].min(), df["edge"].max())
+        print("ADJUSTED EDGE RANGE:", df["adjusted_edge"].min(), df["adjusted_edge"].max())
 
         print("EV SUMMARY:")
         print(df["expected_value"].describe())
+        print("EV RANGE:", df["expected_value"].min(), df["expected_value"].max())
 
         print("STEP 14: before final edge/ev filter", len(df))
-        df = df[
-            (df["edge"] > MIN_EDGE)
+        filtered_df = df[
+            (df["adjusted_edge"] > MIN_EDGE)
             & (df["expected_value"] > MIN_EV)
         ].copy()
 
-        df = df.sort_values(by="expected_value", ascending=False)
-        df = df.head(MAX_BETS)
-        print("FINAL BET COUNT:", len(df))
+        if filtered_df.empty:
+            print("⚠️ Fallback triggered — selecting top EV bets")
+            filtered_df = df.sort_values(
+                by="expected_value", ascending=False
+            ).head(3)
 
-        if df.empty:
-            print("⚠️ No bets passed filter — using fallback")
-            df = original_df.sort_values(by="expected_value", ascending=False).head(2)
+        filtered_df = filtered_df.sort_values(
+            by="expected_value", ascending=False
+        ).head(5)
+        print("FINAL BET COUNT:", len(filtered_df))
 
-        final_bets = df.copy()
+        final_bets = filtered_df.copy()
         final_bets["bet_tier"] = "Relaxed"
 
         final_bets = final_bets[
