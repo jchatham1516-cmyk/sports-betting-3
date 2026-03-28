@@ -1725,35 +1725,43 @@ Final bets: 0
         df["model_probability"] = pd.to_numeric(df["model_probability"], errors="coerce").fillna(0.0)
         df["market_probability"] = pd.to_numeric(df["market_probability"], errors="coerce").fillna(0.0)
 
-        MIN_EDGE = 0.01
-        MIN_EV = -0.02  # temporary relaxed threshold
+        MIN_EDGE = 0.005
+        MIN_EV = -0.05
+
+        edge_mask = df["edge"] > MIN_EDGE
+        ev_mask = df["expected_value"] > MIN_EV
 
         bets_df = df[
-            (df["edge"] > MIN_EDGE) &
-            (df["expected_value"] > MIN_EV)
+            edge_mask &
+            ev_mask
         ].copy()
 
-        candidates_before_filters = len(df)
-        unique_games = int(df["game"].nunique()) if "game" in df.columns else int(df["game_id"].nunique()) if "game_id" in df.columns else 0
-        candidates_per_game = float(candidates_before_filters / unique_games) if unique_games else 0.0
-        print("[PRE-FILTER DEBUG]")
-        print(f"Total candidates: {candidates_before_filters}")
-        print(f"Unique games: {unique_games}")
-        print(f"Candidates per game: {candidates_per_game:.2f}")
-        print("\n===== EDGE / EV SUMMARY =====")
+        print("\n===== EDGE / EV DEBUG =====")
+
+        print("EDGE STATS:")
         print(df["edge"].describe())
+
+        print("\nEV STATS:")
         print(df["expected_value"].describe())
 
-        print("\nTOP 10 EDGES:")
-        print(df[["home_team", "away_team", "edge", "expected_value"]]
-              .sort_values("edge", ascending=False)
-              .head(10))
+        print("\nTOP 10 BY EDGE:")
+        print(df.sort_values("edge", ascending=False)[
+            ["home_team", "away_team", "edge", "expected_value"]
+        ].head(10))
 
-        print("\nBETS AFTER FILTER:", len(bets_df))
+        print("\nFILTER RESULTS:")
+        print("Candidates:", len(df))
+        print("After filter:", len(bets_df))
+        print("Failed edge filter:", int((~edge_mask).sum()))
+        print("Failed EV filter:", int((~ev_mask).sum()))
+        print("Failed both filters:", int((~(edge_mask & ev_mask)).sum()))
 
         if len(bets_df) == 0:
-            print("⚠️ No bets passed — selecting top 3 edges for testing")
-            bets_df = df.sort_values("edge", ascending=False).head(3)
+            print("⚠️ No bets passed — selecting best edges")
+
+            bets_df = df[
+                (df["edge"] > 0)
+            ].sort_values("edge", ascending=False).head(3)
 
         final_bets = bets_df.copy()
         final_bets["bet_tier"] = "Relaxed"
