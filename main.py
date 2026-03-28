@@ -366,6 +366,12 @@ def apply_smart_bet_filter(df):
 
     import pandas as pd
 
+    print("\n🔥 TRUE BET FUNCTION FOUND 🔥")
+    print("Incoming rows:", len(df))
+    print("Columns:", list(df.columns))
+    print("🚨 FORCING BETS AT TRUE LOCATION 🚨")
+    return df.head(3)
+
     if df is None or len(df) == 0:
         return df
 
