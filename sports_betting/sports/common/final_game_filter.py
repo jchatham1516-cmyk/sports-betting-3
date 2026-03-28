@@ -6,6 +6,7 @@ ET = pytz.timezone("America/New_York")
 
 
 def filter_predictions_today(df):
+    print("ENTERING FUNCTION: filter_predictions_today", len(df))
     if "metadata" not in df.columns:
         return df
 
@@ -29,4 +30,6 @@ def filter_predictions_today(df):
         except Exception:
             return True
 
-    return df[df.apply(keep_row, axis=1)]
+    out = df[df.apply(keep_row, axis=1)]
+    print("EXIT FUNCTION: filter_predictions_today", len(out))
+    return out
