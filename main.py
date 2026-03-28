@@ -1748,46 +1748,30 @@ Final bets: 0
         df["model_probability"] = pd.to_numeric(df["model_probability"], errors="coerce").fillna(0.0)
         df["market_probability"] = pd.to_numeric(df["market_probability"], errors="coerce").fillna(0.0)
 
-        MIN_EDGE = 0.0
-        MIN_EV = -0.1
+        MIN_EDGE = 0.015
+        MIN_EV = 0.005
+        MAX_BETS = 5
+        original_df = df.copy()
 
-        print("🔥 FILTER KILLING ALL BETS FOUND 🔥")
-        if "market_prob" not in df.columns and "market_probability" in df.columns:
-            df["market_prob"] = df["market_probability"]
-        print(df[["edge", "expected_value", "model_prob", "market_prob"]].describe())
+        print("EDGE SUMMARY:")
+        print(df["edge"].describe())
+
+        print("EV SUMMARY:")
+        print(df["expected_value"].describe())
 
         print("STEP 14: before final edge/ev filter", len(df))
         bets_df = df[
-            (df["edge"] > MIN_EDGE) &
-            (df["expected_value"] > MIN_EV)
+            (df["edge"] > MIN_EDGE)
+            & (df["expected_value"] > MIN_EV)
         ].copy()
-        print("STEP 15: after final edge/ev filter", len(bets_df))
 
-        print("\n🚨 FINAL STAGE REACHED 🚨")
-        print("Columns available:", list(df.columns))
-        print("Row count before final:", len(df))
-        print("🚨 FORCING 3 TEST BETS 🚨")
-        bets_df = df.head(3)
+        bets_df = bets_df.sort_values(by="expected_value", ascending=False)
+        bets_df = bets_df.head(MAX_BETS)
+        print("FINAL BET COUNT:", len(bets_df))
 
-        print("\n===== FINAL FILTER DEBUG =====")
-        print("Total rows:", len(df))
-
-        print("\nEDGE SUMMARY:")
-        print(df["edge"].describe())
-
-        print("\nEV SUMMARY:")
-        print(df["expected_value"].describe())
-
-        print("\nTOP 5 EDGES:")
-        print(df.sort_values("edge", ascending=False)[
-            ["home_team", "away_team", "edge", "expected_value"]
-        ].head(5))
-
-        print("\nAFTER FILTER:", len(bets_df))
-
-        if len(bets_df) == 0:
-            print("🚨 FALLBACK TRIGGERED — TAKING TOP 3")
-            bets_df = df.sort_values("edge", ascending=False).head(3)
+        if bets_df.empty:
+            print("⚠️ No bets passed filter — using fallback")
+            bets_df = original_df.sort_values(by="expected_value", ascending=False).head(2)
 
         final_bets = bets_df.copy()
         final_bets["bet_tier"] = "Relaxed"
