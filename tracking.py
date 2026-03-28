@@ -57,13 +57,14 @@ def _recompute_profit(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def print_performance_summary(df: pd.DataFrame) -> None:
+def print_performance_summary(df: pd.DataFrame, exported_bets_count: int | None = None) -> None:
     settled = df[df["result"].isin(["win", "loss"])].copy()
-    total_bets = len(settled)
+    total_bets = int(exported_bets_count) if exported_bets_count is not None else len(settled)
     wins = int(settled["result"].eq("win").sum())
-    win_rate = (wins / total_bets) if total_bets else 0.0
-    total_profit = float(settled["profit"].sum()) if total_bets else 0.0
-    total_units_wagered = float(settled["units"].sum()) if total_bets and "units" in settled.columns else 0.0
+    settled_bets_count = len(settled)
+    win_rate = (wins / settled_bets_count) if settled_bets_count else 0.0
+    total_profit = float(settled["profit"].sum()) if settled_bets_count else 0.0
+    total_units_wagered = float(settled["units"].sum()) if settled_bets_count and "units" in settled.columns else 0.0
     roi = (total_profit / total_units_wagered) if total_units_wagered else 0.0
 
     print("\n[PERFORMANCE SUMMARY]")
@@ -102,7 +103,7 @@ def log_bets(final_bets: pd.DataFrame) -> None:
     print("File exists:", os.path.exists(file_path))
     print("Current working directory:", os.getcwd())
     print("Absolute path:", file_path)
-    print_performance_summary(df)
+    print_performance_summary(df, exported_bets_count=len(final_bets))
 
 
 def show_performance() -> None:

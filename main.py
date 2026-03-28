@@ -1101,6 +1101,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     all_predictions: list[dict] = []
     prebuilt_candidates: list[dict] = []
     game_rows_by_id: dict[str, dict] = {}
+    sport_run_summaries: list[dict[str, int | str]] = []
 
     sports_to_run = [sport] if sport else cfg["sports_enabled"]
 
@@ -1174,14 +1175,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 artifact_path=artifact_path if not historical.empty else None,
             )
             prebuilt_candidates.extend(sport_candidates)
-            print(
-                f"""
-[SPORT SUMMARY]
-Sport: {sport_name}
-Games processed: {len(daily)}
-Candidates generated: {len(sport_candidates)}
-Final bets: 0
-"""
+            sport_run_summaries.append(
+                {
+                    "sport": sport_name,
+                    "games_processed": len(daily),
+                    "candidates_generated": len(sport_candidates),
+                }
             )
             continue
         if sport_name == "soccer":
@@ -1192,14 +1191,12 @@ Final bets: 0
                 continue
             sport_candidates = run_soccer_pipeline(historical_df=historical, daily_df=daily)
             prebuilt_candidates.extend(sport_candidates)
-            print(
-                f"""
-[SPORT SUMMARY]
-Sport: {sport_name}
-Games processed: {len(daily)}
-Candidates generated: {len(sport_candidates)}
-Final bets: 0
-"""
+            sport_run_summaries.append(
+                {
+                    "sport": sport_name,
+                    "games_processed": len(daily),
+                    "candidates_generated": len(sport_candidates),
+                }
             )
             continue
         csv_path = historical_file_path(sport_name)
@@ -1314,14 +1311,12 @@ Final bets: 0
                 "injury_impact_away": float(game_row.get("injury_impact_away", 0.0)),
                 "injury_impact_diff": float(game_row.get("injury_impact_diff", 0.0)),
             }
-        print(
-            f"""
-[SPORT SUMMARY]
-Sport: {sport_name}
-Games processed: {len(daily)}
-Candidates generated: {len(preds)}
-Final bets: 0
-"""
+        sport_run_summaries.append(
+            {
+                "sport": sport_name,
+                "games_processed": len(daily),
+                "candidates_generated": len(preds),
+            }
         )
 
     out_dir = Path("data/outputs")
@@ -1887,6 +1882,26 @@ Final bets: 0
     ranked_bets = final_bets.to_dict("records")
     final_bets_records = ranked_bets
     logger.info("Total bets exported: %s", len(final_bets_records))
+    print("FINAL EXPORTED BET COUNT:", len(final_bets))
+    if "sport" in final_bets.columns:
+        print("SPORT BET COUNTS BY SPORT:", final_bets["sport"].value_counts(dropna=False))
+    else:
+        print("SPORT BET COUNTS BY SPORT: sport column missing")
+
+    final_bets_by_sport: dict[str, int] = {}
+    if "sport" in final_bets.columns and not final_bets.empty:
+        final_bets_by_sport = final_bets["sport"].value_counts(dropna=False).to_dict()
+    for summary in sport_run_summaries:
+        sport_name = str(summary["sport"])
+        print(
+            f"""
+[SPORT SUMMARY]
+Sport: {sport_name}
+Games processed: {summary['games_processed']}
+Candidates generated: {summary['candidates_generated']}
+Final bets: {int(final_bets_by_sport.get(sport_name, 0))}
+"""
+        )
 
     recommendations_df = pd.DataFrame(final_bets_records)
     recommendations_df = recommendations_df.reindex(columns=RECOMMENDATION_COLUMNS)
