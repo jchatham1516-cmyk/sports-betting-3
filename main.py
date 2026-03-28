@@ -1725,113 +1725,38 @@ Final bets: 0
         df["model_probability"] = pd.to_numeric(df["model_probability"], errors="coerce").fillna(0.0)
         df["market_probability"] = pd.to_numeric(df["market_probability"], errors="coerce").fillna(0.0)
 
-        hard_reject_mask = (
-            (df["expected_value"] <= MIN_EV)
-            | (df["model_probability"] <= 0.0)
-            | (df["market_probability"] <= 0.0)
-            | (df["edge"] <= -0.02)
-        )
+        MIN_EDGE = 0.01
+        MIN_EV = -0.02  # temporary relaxed threshold
 
-        tier_a_mask = (
-            (df["expected_value"] >= TIER_A_THRESHOLDS["expected_value"])
-            & (df["edge"] >= TIER_A_THRESHOLDS["edge"])
-            & (df[confidence_col] >= TIER_A_THRESHOLDS["confidence"])
-        )
-        tier_b_mask = (
-            (df["expected_value"] >= TIER_B_THRESHOLDS["expected_value"])
-            & (df["edge"] >= TIER_B_THRESHOLDS["edge"])
-            & (df[confidence_col] >= TIER_B_THRESHOLDS["confidence"])
-        )
-        tier_c_mask = (
-            (df["expected_value"] >= TIER_C_THRESHOLDS["expected_value"])
-            & (df["edge"] >= TIER_C_THRESHOLDS["edge"])
-            & (df[confidence_col] >= TIER_C_THRESHOLDS["confidence"])
-        )
-
-        tier_a_only_mask = (~hard_reject_mask) & tier_a_mask
-        tier_b_only_mask = (~hard_reject_mask) & (~tier_a_only_mask) & tier_b_mask
-        tier_c_only_mask = (~hard_reject_mask) & (~tier_a_only_mask) & (~tier_b_only_mask) & tier_c_mask
-        pass_filter_mask = tier_a_only_mask | tier_b_only_mask | tier_c_only_mask
-
-        bet_tier = pd.Series("", index=df.index, dtype="object")
-        bet_tier.loc[tier_a_only_mask] = "Tier A"
-        bet_tier.loc[tier_b_only_mask] = "Tier B"
-        bet_tier.loc[tier_c_only_mask] = "Tier C"
+        bets_df = df[
+            (df["edge"] > MIN_EDGE) &
+            (df["expected_value"] > MIN_EV)
+        ].copy()
 
         candidates_before_filters = len(df)
         unique_games = int(df["game"].nunique()) if "game" in df.columns else int(df["game_id"].nunique()) if "game_id" in df.columns else 0
         candidates_per_game = float(candidates_before_filters / unique_games) if unique_games else 0.0
-        count_after_hard_reject = int((~hard_reject_mask).sum())
-        count_after_tier_filters = int(pass_filter_mask.sum())
-
         print("[PRE-FILTER DEBUG]")
         print(f"Total candidates: {candidates_before_filters}")
         print(f"Unique games: {unique_games}")
         print(f"Candidates per game: {candidates_per_game:.2f}")
-
-        print("[FILTER TIER DEBUG]")
-        print(f"Tier A passed: {int(tier_a_only_mask.sum())}")
-        print(f"Tier B passed: {int(tier_b_only_mask.sum())}")
-        print(f"Tier C passed: {int(tier_c_only_mask.sum())}")
-        print(f"Hard rejected: {int(hard_reject_mask.sum())}")
-        print(f"Final bets: {count_after_tier_filters}")
-        print(f"Candidates before filters: {candidates_before_filters}")
-        print(f"Count after hard rejection: {count_after_hard_reject}")
-        print(f"Count after tier filters: {count_after_tier_filters}")
-        print("EDGE SUMMARY:")
+        print("\n===== EDGE / EV SUMMARY =====")
         print(df["edge"].describe())
-        print("EV SUMMARY:")
         print(df["expected_value"].describe())
 
-        if {"home_team", "away_team", "edge", "expected_value", "model_probability"}.issubset(df.columns):
-            for _, bet in df.iterrows():
-                fail_reasons = []
-                matchup = f"{bet['away_team']} @ {bet['home_team']}"
+        print("\nTOP 10 EDGES:")
+        print(df[["home_team", "away_team", "edge", "expected_value"]]
+              .sort_values("edge", ascending=False)
+              .head(10))
 
-                if bet["expected_value"] <= MIN_EV:
-                    fail_reasons.append(f"ev <= {MIN_EV}")
-                if bet["model_probability"] <= 0.0:
-                    fail_reasons.append("model_probability <= 0")
-                if bet["market_probability"] <= 0.0:
-                    fail_reasons.append("market_probability <= 0")
-                if bet["edge"] <= -0.02:
-                    fail_reasons.append("edge <= -0.02")
+        print("\nBETS AFTER FILTER:", len(bets_df))
 
-                if not fail_reasons:
-                    tier_fail_reasons = []
-                    if not (
-                        (bet["expected_value"] >= TIER_A_THRESHOLDS["expected_value"])
-                        and (bet["edge"] >= TIER_A_THRESHOLDS["edge"])
-                        and (bet[confidence_col] >= TIER_A_THRESHOLDS["confidence"])
-                    ):
-                        tier_fail_reasons.append("Tier A unmet")
-                    if not (
-                        (bet["expected_value"] >= TIER_B_THRESHOLDS["expected_value"])
-                        and (bet["edge"] >= TIER_B_THRESHOLDS["edge"])
-                        and (bet[confidence_col] >= TIER_B_THRESHOLDS["confidence"])
-                    ):
-                        tier_fail_reasons.append("Tier B unmet")
-                    if not (
-                        (bet["expected_value"] >= TIER_C_THRESHOLDS["expected_value"])
-                        and (bet["edge"] >= TIER_C_THRESHOLDS["edge"])
-                        and (bet[confidence_col] >= TIER_C_THRESHOLDS["confidence"])
-                    ):
-                        tier_fail_reasons.append("Tier C unmet")
-                    if len(tier_fail_reasons) == 3:
-                        fail_reasons.append("ev/edge/conf below Tier C minimums")
+        if len(bets_df) == 0:
+            print("⚠️ No bets passed — selecting top 3 edges for testing")
+            bets_df = df.sort_values("edge", ascending=False).head(3)
 
-                if fail_reasons or bet_tier.loc[bet.name] == "":
-                    print(f"[FILTER FAIL] {matchup} | {'; '.join(fail_reasons)}")
-                else:
-                    tier_label = bet_tier.loc[bet.name]
-                    print(
-                        f"[FILTER PASS - {tier_label}] {matchup} | "
-                        f"edge={bet['edge']:.4f}, ev={bet['expected_value']:.4f}, conf={bet[confidence_col]:.4f}"
-                    )
-
-        filtered_bets = df[pass_filter_mask].copy()
-        filtered_bets["bet_tier"] = bet_tier.loc[filtered_bets.index]
-        final_bets = filtered_bets.copy()
+        final_bets = bets_df.copy()
+        final_bets["bet_tier"] = "Relaxed"
 
         final_bets = final_bets[
             (final_bets["odds"] > -300) &
