@@ -1115,22 +1115,23 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     injury_data = run_injury_pipeline()
 
-    for sport_name in sports_to_run:
-        print(f"\n🚨 RUNNING SPORT: {sport_name} 🚨")
-        logger.info("Running %s pipeline", sport_name)
-        model = choose_model(sport_name)
+    for sport in sports_to_run:
+        print(f"LOOP SPORT: {sport}")
+        print(f"\n🚨 RUNNING SPORT: {sport} 🚨")
+        logger.info("Running %s pipeline", sport)
+        model = choose_model(sport)
         model.runtime_model = None
-        historical, daily = load_historical_and_daily(sport_name)
+        historical, daily = load_historical_and_daily(sport)
         historical = ensure_required_features(historical)
         daily = ensure_required_features(daily)
-        if sport_name == "nba":
+        if sport == "nba":
             historical = ensure_required_nba_features(historical)
         daily = _ensure_runtime_prediction_columns(daily)
-        if sport_name in {"nba", "nhl"}:
+        if sport in {"nba", "nhl"}:
             try:
-                injuries_df = fetch_injuries(sport_name)
+                injuries_df = fetch_injuries(sport)
                 daily = compute_injury_impact(daily, injuries_df)
-                print(f"[INJURY DEBUG][{sport_name.upper()}]")
+                print(f"[INJURY DEBUG][{sport.upper()}]")
                 print(injuries_df.head())
                 print(
                     daily[
@@ -1144,27 +1145,26 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                     ].head()
                 )
             except Exception:
-                print(f"Injury data failed for {sport_name}, using zeros")
+                print(f"Injury data failed for {sport}, using zeros")
                 daily["injury_impact_home"] = 0
                 daily["injury_impact_away"] = 0
                 daily["injury_impact_diff"] = 0
-        daily = enrich_daily_features_by_sport(daily, sport_name)
-        validate_feature_signal(daily, sport_name)
+        daily = enrich_daily_features_by_sport(daily, sport)
+        validate_feature_signal(daily, sport)
         print("[DEBUG] Daily columns BEFORE prediction:", list(daily.columns))
         runtime_home_win_model = None
         isotonic_model = None
         total_games_processed += len(daily)
-        if sport_name == "mlb":
-            print("\n🚨 MLB PIPELINE TRIGGERED 🚨")
-
+        if sport == "mlb":
+            print("🚨 RUNNING SPORT: mlb 🚨")
             try:
                 from sports_betting.sports.mlb.model import run_mlb
                 run_mlb()
                 print("✅ MLB PIPELINE FINISHED")
             except Exception as e:
-                print("❌ MLB ERROR:", str(e))
+                print("❌ MLB PIPELINE ERROR:", str(e))
             continue
-        if sport_name == "soccer":
+        if sport == "soccer":
             if historical.empty or len(historical) < 30:
                 logger.error(
                     "[SOCCER] Historical dataset/model artifact requirement not met. Need at least 30 historical rows for training before soccer can run."
@@ -1174,17 +1174,17 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             prebuilt_candidates.extend(sport_candidates)
             sport_run_summaries.append(
                 {
-                    "sport": sport_name,
+                    "sport": sport,
                     "games_processed": len(daily),
                     "candidates_generated": len(sport_candidates),
                 }
             )
             continue
-        csv_path = historical_file_path(sport_name)
-        print(f"[{sport_name.upper()}] Looking for historical CSV at: {csv_path}")
-        print(f"[{sport_name.upper()}] Exists: {csv_path.exists()}")
+        csv_path = historical_file_path(sport)
+        print(f"[{sport.upper()}] Looking for historical CSV at: {csv_path}")
+        print(f"[{sport.upper()}] Exists: {csv_path.exists()}")
 
-        artifact_path = model_artifact_path(sport_name)
+        artifact_path = model_artifact_path(sport)
         trained_in_run = False
         if csv_path.exists():
             try:
@@ -1196,11 +1196,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                         historical_df["spread"] = historical_df["spread_line"]
                     elif "closing_spread_home" in historical_df.columns:
                         historical_df["spread"] = historical_df["closing_spread_home"]
-                print(f"[{sport_name.upper()}] Historical rows loaded: {len(historical_df)}")
+                print(f"[{sport.upper()}] Historical rows loaded: {len(historical_df)}")
                 if len(historical_df) < 20:
-                    print(f"[{sport_name.upper()}] WARNING: Very small dataset")
+                    print(f"[{sport.upper()}] WARNING: Very small dataset")
                 try:
-                    if sport_name == "nhl":
+                    if sport == "nhl":
                         runtime_home_win_model = train_nhl_runtime_model(historical_df)
                     else:
                         runtime_home_win_model = train_runtime_model(historical_df)
@@ -1212,30 +1212,30 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                     runtime_home_win_model = None
                     model.runtime_model = None
                     trained_in_run = False
-                logger.info("[%s] Runtime model training completed from historical CSV.", sport_name.upper())
+                logger.info("[%s] Runtime model training completed from historical CSV.", sport.upper())
             except Exception:
-                logger.exception("[%s] Runtime training failed.", sport_name.upper())
-                print(f"[{sport_name.upper()}] Training failed → using fallback model")
+                logger.exception("[%s] Runtime training failed.", sport.upper())
+                print(f"[{sport.upper()}] Training failed → using fallback model")
         else:
-            print(f"[{sport_name.upper()}] Historical CSV missing at {csv_path}")
+            print(f"[{sport.upper()}] Historical CSV missing at {csv_path}")
 
         if not trained_in_run:
-            if sport_name == "nhl":
+            if sport == "nhl":
                 raise ValueError("[NHL] Missing historical data - cannot train model")
             if not trained_in_run and artifact_path.exists():
                 model.load_artifact(artifact_path)
                 logger.warning(
                     "[%s] Falling back to model artifact because runtime training failed or historical CSV is missing: %s",
-                    sport_name.upper(),
+                    sport.upper(),
                     artifact_path,
                 )
             elif not trained_in_run:
                 raise RuntimeError(
-                    f"[{sport_name.upper()}] Runtime training unavailable and no model artifact present at {artifact_path}."
+                    f"[{sport.upper()}] Runtime training unavailable and no model artifact present at {artifact_path}."
                 )
 
         if hasattr(model, "runtime_model") and model.runtime_model is not None:
-            print(f"[{sport_name.upper()}] Using runtime model for predictions")
+            print(f"[{sport.upper()}] Using runtime model for predictions")
             if "home_moneyline" not in daily.columns:
                 if "home_odds" in daily.columns:
                     daily["home_moneyline"] = daily["home_odds"]
@@ -1243,15 +1243,15 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             if "spread" not in daily.columns:
                 if "spread_line" in daily.columns:
                     daily["spread"] = daily["spread_line"]
-            preds = _build_runtime_moneyline_predictions(daily, model.runtime_model, sport_name)
+            preds = _build_runtime_moneyline_predictions(daily, model.runtime_model, sport)
         else:
-            if sport_name == "nhl":
+            if sport == "nhl":
                 raise RuntimeError("[NHL] Runtime model unavailable; baseline fallback is disabled.")
-            print(f"[{sport_name.upper()}] Using baseline model for predictions")
+            print(f"[{sport.upper()}] Using baseline model for predictions")
             try:
                 preds = model.predict_daily(daily)
             except Exception as exc:
-                logger.warning("[%s] Baseline model prediction failed: %s", sport_name.upper(), exc)
+                logger.warning("[%s] Baseline model prediction failed: %s", sport.upper(), exc)
                 preds = []
         preds = _apply_runtime_home_win_probabilities(preds, daily, runtime_home_win_model)
         if isotonic_model is not None and preds:
@@ -1261,8 +1261,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 )
                 pred.model_probability = float(np.clip(calibrated_probability, 0.05, 0.65))
                 pred.edge = np.nan
-        logger.info("%s games processed for %s (%s predictions generated)", len(daily), sport_name, len(preds))
-        if sport_name == "nhl":
+        logger.info("%s games processed for %s (%s predictions generated)", len(daily), sport, len(preds))
+        if sport == "nhl":
             non_fallback = [p for p in preds if float(getattr(p, "model_probability", 0.5)) != 0.5]
             if not non_fallback:
                 raise AssertionError("[NHL] Model probabilities are fallback defaults (0.50)")
@@ -1283,7 +1283,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 "under_odds": game_row["under_odds"],
                 "total_line": game_row.get("total_line", 0.0),
                 "game": pred.metadata.get("game", pred.game_id),
-                "sport": sport_name,
+                "sport": sport,
                 "sportsbook_event_home_team": game_row.get("sportsbook_event_home_team", game_row.get("home_team", "")),
                 "sportsbook_event_away_team": game_row.get("sportsbook_event_away_team", game_row.get("away_team", "")),
                 "sportsbook_home_outcome_name": game_row.get("sportsbook_home_outcome_name", game_row.get("home_team", "")),
@@ -1294,20 +1294,14 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             }
         sport_run_summaries.append(
             {
-                "sport": sport_name,
+                "sport": sport,
                 "games_processed": len(daily),
                 "candidates_generated": len(preds),
             }
         )
 
-    if "mlb" not in sports_to_run:
-        print("❌ MLB NOT IN LOOP — FORCING RUN")
-
-        try:
-            from sports_betting.sports.mlb.model import run_mlb
-            run_mlb()
-        except Exception as e:
-            print("❌ FORCED MLB FAILED:", str(e))
+    if "mlb" in sports_to_run:
+        print("⚠️ MLB WAS EXPECTED — VERIFY IT RAN")
 
     out_dir = Path("data/outputs")
     out_dir.mkdir(parents=True, exist_ok=True)
