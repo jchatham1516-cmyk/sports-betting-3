@@ -1104,6 +1104,10 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     sport_run_summaries: list[dict[str, int | str]] = []
 
     sports_to_run = ["nba", "nfl", "nhl", "mlb"]
+    print("ORIGINAL SPORTS:", sports_to_run)
+    if "mlb" not in sports_to_run:
+        sports_to_run.append("mlb")
+    print("FINAL SPORTS:", sports_to_run)
 
     logger.info("Sports selected for this run: %s", ", ".join(sports_to_run))
 
@@ -1114,6 +1118,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     total_games_processed = 0
 
     injury_data = run_injury_pipeline()
+
+    if "mlb" not in sports_to_run:
+        raise ValueError("MLB NOT IN SPORTS_TO_RUN — CRITICAL ERROR")
 
     for sport in sports_to_run:
         print(f"LOOP SPORT: {sport}")
