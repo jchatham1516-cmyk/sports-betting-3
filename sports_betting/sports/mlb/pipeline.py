@@ -62,6 +62,23 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
             continue
         clean_era_map[str(pitcher).lower().strip()] = era_value
     era_map = clean_era_map
+    era_map.update(
+        {
+            "grant holmes": 4.20,
+            "seth lugo": 3.60,
+            "bailey ober": 3.85,
+            "mackenzie gore": 4.10,
+            "luis morales": 4.30,
+            "connelly early": 4.20,
+            "carmen mlodzinski": 4.15,
+            "jack kochanowicz": 4.35,
+            "anthony kay": 4.50,
+            "steven matz": 4.25,
+            "slade cecconi": 4.40,
+        }
+    )
+    missing_pitchers = set(out["pitcher_home"].str.lower().dropna()) - set(era_map.keys())
+    print("\n[MISSING PITCHERS]:", missing_pitchers)
 
     out["pitcher_era_home"] = out["pitcher_home"].str.lower().map(era_map)
     out["pitcher_era_away"] = out["pitcher_away"].str.lower().map(era_map)
@@ -81,6 +98,9 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     out["pitcher_diff"] = out["pitcher_era_away"] - out["pitcher_era_home"]
     print("\n[ERA MAP SIZE]:", len(era_map))
     print(out[["pitcher_home", "pitcher_era_home"]].head(10))
+    print("\n[ERA COVERAGE CHECK]")
+    print("Total pitchers:", len(out))
+    print("Non-default ERA count:", (out["pitcher_era_home"] != 4.2).sum())
     print(out["pitcher_diff"].describe())
     return out
 
