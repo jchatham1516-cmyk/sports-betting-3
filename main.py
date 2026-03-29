@@ -1126,7 +1126,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     print(f"SPORTS TO RUN BEFORE LOOP: {sports_to_run}")
     print(f"SPORTS LENGTH: {len(sports_to_run)}")
 
-    for sport in sports_to_run:
+    for idx, sport in enumerate(sports_to_run):
         print(f"🔥 LOOP START sport={sport}")
         try:
             sport_clean = str(sport).strip().lower()
@@ -1140,7 +1140,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 print("🚨 RUNNING SPORT: nfl 🚨")
             elif sport_clean == "nhl":
                 print("🚨 RUNNING SPORT: nhl 🚨")
-                print("🧪 NHL COMPLETE — CONTINUING LOOP")
+                print("🧪 NHL COMPLETE — READY FOR NEXT SPORT")
+                if idx + 1 < len(sports_to_run):
+                    print(f"➡️ NEXT SPORT: {sports_to_run[idx + 1]}")
             elif sport_clean == "mlb":
                 print("🚨 RUNNING SPORT: mlb 🚨")
                 print("🚨 MLB PIPELINE TRIGGERED 🚨")
