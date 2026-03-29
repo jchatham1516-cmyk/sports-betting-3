@@ -67,16 +67,22 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     out["pitcher_era_home"] = out["pitcher_home"].map(era_map)
     out["pitcher_era_away"] = out["pitcher_away"].map(era_map)
 
+    out["pitcher_era_home"] = pd.to_numeric(out["pitcher_era_home"], errors="coerce")
+    out["pitcher_era_away"] = pd.to_numeric(out["pitcher_era_away"], errors="coerce")
+
+    out["pitcher_era_home"] = out["pitcher_era_home"].replace([0, np.inf, -np.inf], np.nan)
+    out["pitcher_era_away"] = out["pitcher_era_away"].replace([0, np.inf, -np.inf], np.nan)
+
     out["pitcher_era_home"] = out["pitcher_era_home"].fillna(4.20)
     out["pitcher_era_away"] = out["pitcher_era_away"].fillna(4.20)
-    out.loc[out["pitcher_era_home"] <= 0, "pitcher_era_home"] = 4.20
-    out.loc[out["pitcher_era_away"] <= 0, "pitcher_era_away"] = 4.20
-    print("[ERA VALIDATION CHECK]")
-    print(out[["pitcher_home", "pitcher_era_home"]].head(10))
-    print("ERA STATS:")
-    print(out["pitcher_era_home"].describe())
+
+    out["pitcher_era_home"] = out["pitcher_era_home"].clip(lower=1.5, upper=8.0)
+    out["pitcher_era_away"] = out["pitcher_era_away"].clip(lower=1.5, upper=8.0)
 
     out["pitcher_diff"] = out["pitcher_era_away"] - out["pitcher_era_home"]
+    print("\n[FINAL ERA CHECK]")
+    print(out[["pitcher_home", "pitcher_era_home"]].head(10))
+    print(out["pitcher_era_home"].describe())
     print("[PITCHER DIFF SUMMARY]")
     print(out["pitcher_diff"].describe())
     return out
