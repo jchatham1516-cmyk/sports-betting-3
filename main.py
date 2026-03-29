@@ -1124,7 +1124,21 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     for sport in sports_to_run:
         print(f"LOOP SPORT: {sport}")
-        print(f"\n🚨 RUNNING SPORT: {sport} 🚨")
+        if sport == "nba":
+            print("🚨 RUNNING SPORT: nba 🚨")
+        elif sport == "nfl":
+            print("🚨 RUNNING SPORT: nfl 🚨")
+        elif sport == "nhl":
+            print("🚨 RUNNING SPORT: nhl 🚨")
+        elif sport == "mlb":
+            print("🚨 RUNNING SPORT: mlb 🚨")
+            run_mlb_pipeline()
+            print("✅ MLB PIPELINE FINISHED")
+            continue
+        elif sport == "soccer":
+            print("🚨 RUNNING SPORT: soccer 🚨")
+        else:
+            raise ValueError(f"Unknown sport: {sport}")
         logger.info("Running %s pipeline", sport)
         model = choose_model(sport)
         model.runtime_model = None
@@ -1162,15 +1176,6 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         runtime_home_win_model = None
         isotonic_model = None
         total_games_processed += len(daily)
-        if sport == "mlb":
-            print("🚨 RUNNING SPORT: mlb 🚨")
-            try:
-                from sports_betting.sports.mlb.model import run_mlb
-                run_mlb()
-                print("✅ MLB PIPELINE FINISHED")
-            except Exception as e:
-                print("❌ MLB PIPELINE ERROR:", str(e))
-            continue
         if sport == "soccer":
             if historical.empty or len(historical) < 30:
                 logger.error(
