@@ -1123,6 +1123,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     print(f"SPORTS LENGTH: {len(sports_to_run)}")
 
     for sport in sports_to_run:
+        print(f"🔥 LOOP CHECK: entering sport = {sport}")
         sport_clean = str(sport).strip().lower()
 
         print(f"LOOP SPORT RAW: {sport}")
@@ -1136,7 +1137,20 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             print("🚨 RUNNING SPORT: nhl 🚨")
         elif sport_clean == "mlb":
             print("🚨 RUNNING SPORT: mlb 🚨")
-            run_mlb_pipeline()
+            print("🚨 MLB PIPELINE STARTING 🚨")
+            logger.info("Running %s pipeline", sport_clean)
+            historical, daily = load_historical_and_daily(sport_clean)
+            print("[MLB DEBUG] Checking odds pull...")
+            print(f"[MLB DEBUG] games pulled: {len(daily)}")
+            sport_candidates = run_mlb_pipeline(historical_df=historical, daily_df=daily)
+            prebuilt_candidates.extend(sport_candidates)
+            sport_run_summaries.append(
+                {
+                    "sport": sport_clean,
+                    "games_processed": len(daily),
+                    "candidates_generated": len(sport_candidates),
+                }
+            )
             print("✅ MLB PIPELINE FINISHED")
             continue
         else:
