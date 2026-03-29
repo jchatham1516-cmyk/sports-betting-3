@@ -715,6 +715,7 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         return df
 
     if sport == "mlb":
+        print("\n🚨 MLB PIPELINE STARTED 🚨")
         from sports_betting.sports.mlb.features import enrich_mlb_live_features, build_mlb_features
 
         team_df, source = _resolve_mlb_team_stats()
@@ -745,30 +746,51 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         if "away_team_norm" not in df.columns:
             df["away_team_norm"] = df["away_team"].map(_normalize_team)
 
+        print("\n🚨 BEFORE SCRAPER 🚨")
+        from sports_betting.data_collection.espn_mlb_pitchers import fetch_mlb_probable_pitchers_espn
+
         pitcher_df = fetch_mlb_probable_pitchers_espn()
+
+        print("\n🚨 AFTER SCRAPER 🚨")
+
+        if pitcher_df is None:
+            print("❌ pitcher_df is NONE")
+            pitcher_df = pd.DataFrame(columns=["home_team_norm", "away_team_norm", "home_pitcher", "away_pitcher"])
+        elif pitcher_df.empty:
+            print("❌ pitcher_df is EMPTY")
+        else:
+            print("✅ pitcher_df WORKING")
+            print(pitcher_df.head())
+
         if not pitcher_df.empty:
             pitcher_df["home_team_norm"] = pitcher_df["home_team_norm"].map(_normalize_team)
             pitcher_df["away_team_norm"] = pitcher_df["away_team_norm"].map(_normalize_team)
-            df = df.merge(pitcher_df, on=["home_team_norm", "away_team_norm"], how="left")
-            if "home_probable_pitcher" not in df.columns:
-                df["home_probable_pitcher"] = ""
-            if "away_probable_pitcher" not in df.columns:
-                df["away_probable_pitcher"] = ""
-            df["home_probable_pitcher"] = df["home_probable_pitcher"].astype(str).where(
-                df["home_probable_pitcher"].astype(str).str.strip().ne(""),
-                df["home_pitcher"].fillna("").astype(str),
+        try:
+            df = df.merge(
+                pitcher_df,
+                on=["home_team_norm", "away_team_norm"],
+                how="left",
             )
-            df["away_probable_pitcher"] = df["away_probable_pitcher"].astype(str).where(
-                df["away_probable_pitcher"].astype(str).str.strip().ne(""),
-                df["away_pitcher"].fillna("").astype(str),
-            )
-        else:
+            print("✅ MERGE ATTEMPTED")
+        except Exception as e:
+            print("❌ MERGE FAILED:", str(e))
+
+        if "home_probable_pitcher" not in df.columns:
             df["home_probable_pitcher"] = df.get("home_probable_pitcher", "")
+        if "away_probable_pitcher" not in df.columns:
             df["away_probable_pitcher"] = df.get("away_probable_pitcher", "")
-            if "home_pitcher" not in df.columns:
-                df["home_pitcher"] = None
-            if "away_pitcher" not in df.columns:
-                df["away_pitcher"] = None
+        if "home_pitcher" not in df.columns:
+            df["home_pitcher"] = None
+        if "away_pitcher" not in df.columns:
+            df["away_pitcher"] = None
+        df["home_probable_pitcher"] = df["home_probable_pitcher"].astype(str).where(
+            df["home_probable_pitcher"].astype(str).str.strip().ne(""),
+            df["home_pitcher"].fillna("").astype(str),
+        )
+        df["away_probable_pitcher"] = df["away_probable_pitcher"].astype(str).where(
+            df["away_probable_pitcher"].astype(str).str.strip().ne(""),
+            df["away_pitcher"].fillna("").astype(str),
+        )
 
         print("\n[ESPN PITCHER DEBUG]")
         print(pitcher_df.head(10) if 'pitcher_df' in locals() else pd.DataFrame())
@@ -776,6 +798,8 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
 
         print("\n[POST-MERGE CHECK]")
         print(df[["home_team", "away_team", "home_pitcher", "away_pitcher"]].head(10))
+        print("\n🚨 MLB FINAL CHECK 🚨")
+        print(df[["home_team", "away_team"]].head())
 
         for side in ("home", "away"):
             probable_col = f"{side}_probable_pitcher"
