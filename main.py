@@ -1105,7 +1105,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     sports_to_run = ["nba", "nfl", "nhl", "mlb"]
     print("ORIGINAL SPORTS:", sports_to_run)
-    if "mlb" not in sports_to_run:
+    if "mlb" not in [str(s).strip().lower() for s in sports_to_run]:
+        print("⚠️ MLB NOT IN LIST — FORCING ADD")
         sports_to_run.append("mlb")
     print("FINAL SPORTS:", sports_to_run)
 
@@ -1118,9 +1119,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     total_games_processed = 0
 
     injury_data = run_injury_pipeline()
-
-    if "mlb" not in sports_to_run:
-        raise ValueError("MLB NOT IN SPORTS_TO_RUN — CRITICAL ERROR")
+    print(f"SPORTS TO RUN BEFORE LOOP: {sports_to_run}")
+    print(f"SPORTS LENGTH: {len(sports_to_run)}")
 
     for sport in sports_to_run:
         sport_clean = str(sport).strip().lower()
