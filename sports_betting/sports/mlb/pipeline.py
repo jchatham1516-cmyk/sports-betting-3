@@ -52,6 +52,16 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     print(out[["home_team", "pitcher_home"]].head(10))
 
     era_map = build_pitcher_era_map(pitchers_dict)
+    clean_era_map: dict[str, float] = {}
+    for pitcher, era in era_map.items():
+        try:
+            era_value = float(era)
+        except (TypeError, ValueError):
+            continue
+        if era_value <= 0 or era_value > 15:
+            continue
+        clean_era_map[pitcher] = era_value
+    era_map = clean_era_map
     print("🚨 ERA MAP:", era_map)
 
     out["pitcher_era_home"] = out["pitcher_home"].map(era_map)
@@ -59,7 +69,12 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
 
     out["pitcher_era_home"] = out["pitcher_era_home"].fillna(4.20)
     out["pitcher_era_away"] = out["pitcher_era_away"].fillna(4.20)
+    out.loc[out["pitcher_era_home"] <= 0, "pitcher_era_home"] = 4.20
+    out.loc[out["pitcher_era_away"] <= 0, "pitcher_era_away"] = 4.20
+    print("[ERA VALIDATION CHECK]")
     print(out[["pitcher_home", "pitcher_era_home"]].head(10))
+    print("ERA STATS:")
+    print(out["pitcher_era_home"].describe())
 
     out["pitcher_diff"] = out["pitcher_era_away"] - out["pitcher_era_home"]
     print("[PITCHER DIFF SUMMARY]")
