@@ -1103,7 +1103,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     game_rows_by_id: dict[str, dict] = {}
     sport_run_summaries: list[dict[str, int | str]] = []
 
-    sports_to_run = [sport] if sport else cfg["sports_enabled"]
+    sports_to_run = ["nba", "nfl", "nhl", "mlb"]
 
     logger.info("Sports selected for this run: %s", ", ".join(sports_to_run))
 
@@ -1159,14 +1159,10 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
             try:
                 from sports_betting.sports.mlb.model import run_mlb
-
-                print("✅ IMPORTED MLB MODEL")
-
                 run_mlb()
-
                 print("✅ MLB PIPELINE FINISHED")
             except Exception as e:
-                print("❌ MLB PIPELINE FAILED:", str(e))
+                print("❌ MLB ERROR:", str(e))
             continue
         if sport_name == "soccer":
             if historical.empty or len(historical) < 30:
@@ -1304,13 +1300,14 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             }
         )
 
-    print("\n🚨 FORCING MLB MANUAL RUN 🚨")
+    if "mlb" not in sports_to_run:
+        print("❌ MLB NOT IN LOOP — FORCING RUN")
 
-    try:
-        from sports_betting.sports.mlb.model import run_mlb
-        run_mlb()
-    except Exception as e:
-        print("❌ FORCED MLB FAILED:", str(e))
+        try:
+            from sports_betting.sports.mlb.model import run_mlb
+            run_mlb()
+        except Exception as e:
+            print("❌ FORCED MLB FAILED:", str(e))
 
     out_dir = Path("data/outputs")
     out_dir.mkdir(parents=True, exist_ok=True)
