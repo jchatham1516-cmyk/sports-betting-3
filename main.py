@@ -1116,6 +1116,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     injury_data = run_injury_pipeline()
 
     for sport_name in sports_to_run:
+        print(f"\n🚨 RUNNING SPORT: {sport_name} 🚨")
         logger.info("Running %s pipeline", sport_name)
         model = choose_model(sport_name)
         model.runtime_model = None
@@ -1154,34 +1155,18 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         isotonic_model = None
         total_games_processed += len(daily)
         if sport_name == "mlb":
-            mlb_model_bundle = None
-            artifact_path = model_artifact_path("mlb")
-            if not historical.empty:
-                print(f"[MLB] Historical rows loaded: {len(historical)}")
-                mlb_model_bundle = train_mlb_model(historical)
-                logger.info("[MLB] Runtime model training completed from historical CSV.")
-            elif artifact_path.exists():
-                mlb_model_bundle = load_mlb_model_bundle(artifact_path)
-                logger.info("[MLB] Loaded trained model artifact from %s", artifact_path)
-            else:
-                raise RuntimeError(
-                    "[MLB] Missing both mlb_historical.csv and mlb_model.pkl. Build historical data or train and save a model artifact."
-                )
+            print("\n🚨 MLB PIPELINE TRIGGERED 🚨")
 
-            sport_candidates = run_mlb_pipeline(
-                historical_df=historical,
-                daily_df=daily,
-                model_bundle=mlb_model_bundle,
-                artifact_path=artifact_path if not historical.empty else None,
-            )
-            prebuilt_candidates.extend(sport_candidates)
-            sport_run_summaries.append(
-                {
-                    "sport": sport_name,
-                    "games_processed": len(daily),
-                    "candidates_generated": len(sport_candidates),
-                }
-            )
+            try:
+                from sports_betting.sports.mlb.model import run_mlb
+
+                print("✅ IMPORTED MLB MODEL")
+
+                run_mlb()
+
+                print("✅ MLB PIPELINE FINISHED")
+            except Exception as e:
+                print("❌ MLB PIPELINE FAILED:", str(e))
             continue
         if sport_name == "soccer":
             if historical.empty or len(historical) < 30:
@@ -1318,6 +1303,14 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 "candidates_generated": len(preds),
             }
         )
+
+    print("\n🚨 FORCING MLB MANUAL RUN 🚨")
+
+    try:
+        from sports_betting.sports.mlb.model import run_mlb
+        run_mlb()
+    except Exception as e:
+        print("❌ FORCED MLB FAILED:", str(e))
 
     out_dir = Path("data/outputs")
     out_dir.mkdir(parents=True, exist_ok=True)
