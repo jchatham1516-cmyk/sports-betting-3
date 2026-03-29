@@ -7,7 +7,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from sports_betting.data_collection.mlb_pitchers import PITCHER_ERA, fetch_mlb_probable_pitchers
+from sports_betting.data_collection.mlb_pitchers import PITCHER_ERA, get_probable_pitchers
 from sports_betting.sports.common.odds import american_to_implied_probability, expected_value, remove_vig_two_way
 
 from .features import build_mlb_features, enrich_mlb_live_features
@@ -34,7 +34,7 @@ def normalize_team(team: object) -> str:
 
 def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    pitchers_dict = fetch_mlb_probable_pitchers()
+    pitchers_dict = get_probable_pitchers()
     pitchers_dict = {normalize_team(k): v for k, v in pitchers_dict.items()}
 
     out["home_team_norm"] = out["home_team"].apply(normalize_team)
