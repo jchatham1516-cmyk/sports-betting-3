@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 import requests
+from bs4 import BeautifulSoup
 from sports_betting.sports.common.team_names import normalize_team_name
 
 
@@ -115,6 +116,138 @@ def _extract_pitcher_stats_from_row(
     }
 
 
+
+
+
+MLB_TEAM_ALIASES = {
+    "sox": "sox",
+    "red sox": "boston red sox",
+    "white sox": "chicago white sox",
+    "chi white sox": "chicago white sox",
+    "chi cubs": "chicago cubs",
+    "la dodgers": "los angeles dodgers",
+    "la angels": "los angeles angels",
+    "d backs": "arizona diamondbacks",
+    "dbaks": "arizona diamondbacks",
+}
+
+
+def normalize_team(name: object) -> str:
+    cleaned = str(name or "").lower().strip()
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", cleaned)
+    cleaned = " ".join(cleaned.split())
+    if cleaned in MLB_TEAM_ALIASES:
+        return MLB_TEAM_ALIASES[cleaned]
+    if cleaned.endswith(" red sox"):
+        return "boston red sox"
+    if cleaned.endswith(" white sox"):
+        return "chicago white sox"
+    return cleaned
+
+
+def _coerce_espn_game_rows(payload: object) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    if isinstance(payload, dict):
+        text_blob = " ".join(str(v) for v in payload.values() if isinstance(v, (str, int, float))).lower()
+        if "probable" in text_blob and "pitch" in text_blob:
+            home_team = str(payload.get("homeTeam") or payload.get("home_team") or payload.get("home") or "").strip()
+            away_team = str(payload.get("awayTeam") or payload.get("away_team") or payload.get("away") or "").strip()
+            home_pitcher = str(
+                payload.get("homeProbablePitcher")
+                or payload.get("home_probable_pitcher")
+                or payload.get("homePitcher")
+                or payload.get("home_pitcher")
+                or ""
+            ).strip()
+            away_pitcher = str(
+                payload.get("awayProbablePitcher")
+                or payload.get("away_probable_pitcher")
+                or payload.get("awayPitcher")
+                or payload.get("away_pitcher")
+                or ""
+            ).strip()
+            if home_team and away_team and (home_pitcher or away_pitcher):
+                rows.append(
+                    {
+                        "home_team_norm": normalize_team(home_team),
+                        "away_team_norm": normalize_team(away_team),
+                        "home_pitcher": home_pitcher,
+                        "away_pitcher": away_pitcher,
+                    }
+                )
+        for value in payload.values():
+            rows.extend(_coerce_espn_game_rows(value))
+    elif isinstance(payload, list):
+        for item in payload:
+            rows.extend(_coerce_espn_game_rows(item))
+    return rows
+
+
+def fetch_mlb_probable_pitchers_espn() -> pd.DataFrame:
+    columns = ["home_team_norm", "away_team_norm", "home_pitcher", "away_pitcher"]
+    try:
+        response = requests.get(
+            "https://www.espn.com/mlb/scoreboard",
+            timeout=20,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"[MLB ESPN WARNING] ESPN request failed: {exc}")
+        return pd.DataFrame(columns=columns)
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    rows: list[dict[str, str]] = []
+
+    game_cards = soup.select("section.Scoreboard") or soup.select("article.Scoreboard")
+    for card in game_cards:
+        team_nodes = card.select('[class*="ScoreCell__TeamName"]')
+        pitcher_nodes = card.find_all(string=re.compile(r"[A-Za-z]+\.?\s+[A-Za-z\-']+"))
+        card_text = " ".join(card.stripped_strings)
+        if len(team_nodes) >= 2 and "probable" in card_text.lower():
+            away_team = team_nodes[0].get_text(" ", strip=True)
+            home_team = team_nodes[1].get_text(" ", strip=True)
+            probable_names: list[str] = []
+            for text in pitcher_nodes:
+                snippet = str(text).strip()
+                if not snippet or "probable" in snippet.lower() or len(snippet.split()) < 2:
+                    continue
+                if snippet.lower() in {away_team.lower(), home_team.lower()}:
+                    continue
+                probable_names.append(snippet)
+            away_pitcher = probable_names[0] if len(probable_names) >= 1 else ""
+            home_pitcher = probable_names[1] if len(probable_names) >= 2 else ""
+            rows.append(
+                {
+                    "home_team_norm": normalize_team(home_team),
+                    "away_team_norm": normalize_team(away_team),
+                    "home_pitcher": home_pitcher,
+                    "away_pitcher": away_pitcher,
+                }
+            )
+
+    if not rows:
+        for script in soup.find_all("script"):
+            payload_text = script.string or script.get_text("", strip=True)
+            if not payload_text or "probable" not in payload_text.lower() or "pitch" not in payload_text.lower():
+                continue
+            for candidate in re.finditer(r"\{.*\}", payload_text):
+                fragment = candidate.group(0)
+                try:
+                    decoded = json.loads(fragment)
+                except json.JSONDecodeError:
+                    continue
+                rows.extend(_coerce_espn_game_rows(decoded))
+                if rows:
+                    break
+            if rows:
+                break
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    out = pd.DataFrame(rows, columns=columns)
+    return out.drop_duplicates(subset=["home_team_norm", "away_team_norm"], keep="last")
 
 
 def _normalize_mlb_team_key(name: object) -> str:
@@ -575,14 +708,33 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         if "away_team_norm" not in df.columns:
             df["away_team_norm"] = df["away_team"].map(_normalize_team)
 
-        probable_pitcher_df = fetch_mlb_probable_pitchers()
-        if not probable_pitcher_df.empty:
-            probable_pitcher_df["home_team_norm"] = probable_pitcher_df["home_team_norm"].map(_normalize_team)
-            probable_pitcher_df["away_team_norm"] = probable_pitcher_df["away_team_norm"].map(_normalize_team)
-            df = df.merge(probable_pitcher_df, on=["home_team_norm", "away_team_norm"], how="left")
+        pitcher_df = fetch_mlb_probable_pitchers_espn()
+        if not pitcher_df.empty:
+            pitcher_df["home_team_norm"] = pitcher_df["home_team_norm"].map(_normalize_team)
+            pitcher_df["away_team_norm"] = pitcher_df["away_team_norm"].map(_normalize_team)
+            df = df.merge(pitcher_df, on=["home_team_norm", "away_team_norm"], how="left")
+            if "home_probable_pitcher" not in df.columns:
+                df["home_probable_pitcher"] = ""
+            if "away_probable_pitcher" not in df.columns:
+                df["away_probable_pitcher"] = ""
+            df["home_probable_pitcher"] = df["home_probable_pitcher"].astype(str).where(
+                df["home_probable_pitcher"].astype(str).str.strip().ne(""),
+                df["home_pitcher"].fillna("").astype(str),
+            )
+            df["away_probable_pitcher"] = df["away_probable_pitcher"].astype(str).where(
+                df["away_probable_pitcher"].astype(str).str.strip().ne(""),
+                df["away_pitcher"].fillna("").astype(str),
+            )
         else:
-            df["home_probable_pitcher"] = ""
-            df["away_probable_pitcher"] = ""
+            df["home_probable_pitcher"] = df.get("home_probable_pitcher", "")
+            df["away_probable_pitcher"] = df.get("away_probable_pitcher", "")
+
+        print("\n[ESPN PITCHER DEBUG]")
+        print(pitcher_df.head(10) if 'pitcher_df' in locals() else pd.DataFrame())
+
+        print("\n[MERGED PITCHERS]")
+        merged_cols = [col for col in ["home_team", "away_team", "home_pitcher", "away_pitcher"] if col in df.columns]
+        print(df[merged_cols].head(10) if merged_cols else pd.DataFrame())
 
         for side in ("home", "away"):
             probable_col = f"{side}_probable_pitcher"
@@ -641,11 +793,10 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                 ].to_string(index=False)
             )
 
-        home_probable_exists = pd.Series(df.get("probable_home_pitcher", ""), index=df.index).fillna("").astype(str).str.strip().ne("")
-        away_probable_exists = pd.Series(df.get("probable_away_pitcher", ""), index=df.index).fillna("").astype(str).str.strip().ne("")
-
-        df["pitcher_era_home"] = df["pitcher_era_home"].where(df["pitcher_era_home"].notna(), home_probable_exists.map({True: 3.5, False: 4.2}))
-        df["pitcher_era_away"] = df["pitcher_era_away"].where(df["pitcher_era_away"].notna(), away_probable_exists.map({True: 3.5, False: 4.2}))
+        home_pitcher_series = pd.Series(df.get("home_pitcher", ""), index=df.index)
+        away_pitcher_series = pd.Series(df.get("away_pitcher", ""), index=df.index)
+        df["pitcher_era_home"] = df["pitcher_era_home"].where(df["pitcher_era_home"].notna(), home_pitcher_series.apply(lambda x: 3.5 if pd.notna(x) and str(x).strip() else 4.5))
+        df["pitcher_era_away"] = df["pitcher_era_away"].where(df["pitcher_era_away"].notna(), away_pitcher_series.apply(lambda x: 3.5 if pd.notna(x) and str(x).strip() else 4.5))
         df["pitcher_era_home"] = df["pitcher_era_home"].fillna(pd.to_numeric(df.get("starter_rating_home"), errors="coerce").rsub(125).div(25))
         df["pitcher_era_away"] = df["pitcher_era_away"].fillna(pd.to_numeric(df.get("starter_rating_away"), errors="coerce").rsub(125).div(25))
         df["pitcher_whip_home"] = df["pitcher_whip_home"].fillna((df["pitcher_era_home"] / 4.0).clip(lower=0.9, upper=1.8))
@@ -658,13 +809,13 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         print("\n[PITCHER DEBUG MLB]")
         print(df[["home_team", "away_team", "pitcher_era_home", "pitcher_era_away", "pitcher_diff"]].head(10))
 
-        pitcher_weight = 0.015
+        PITCHER_WEIGHT = 0.015
         if "edge" in df.columns:
             if "adjusted_edge" in df.columns:
                 df["adjusted_edge"] = pd.to_numeric(df["adjusted_edge"], errors="coerce")
-                df["adjusted_edge"] = df["adjusted_edge"].where(df["adjusted_edge"].notna(), pd.to_numeric(df["edge"], errors="coerce") + (df["pitcher_diff"] * pitcher_weight))
+                df["adjusted_edge"] = df["adjusted_edge"].where(df["adjusted_edge"].notna(), pd.to_numeric(df["edge"], errors="coerce") + (df["pitcher_diff"] * PITCHER_WEIGHT))
             else:
-                df["adjusted_edge"] = pd.to_numeric(df["edge"], errors="coerce") + (df["pitcher_diff"] * pitcher_weight)
+                df["adjusted_edge"] = pd.to_numeric(df["edge"], errors="coerce") + (df["pitcher_diff"] * PITCHER_WEIGHT)
         df = enrich_mlb_live_features(df)
         df["starter_rating_home"] = pd.to_numeric(df["starter_rating_home"], errors="coerce").replace(0, 50).fillna(50)
         df["starter_rating_away"] = pd.to_numeric(df["starter_rating_away"], errors="coerce").replace(0, 50).fillna(50)
