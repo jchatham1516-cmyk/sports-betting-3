@@ -96,7 +96,11 @@ def run_mlb_pipeline(
     model_bundle: MLBModelBundle | None = None,
     artifact_path=None,
 ) -> list[dict]:
+    print("⚾ INSIDE MLB PIPELINE")
+    df = daily_df
+    print(f"[MLB DEBUG] rows before filtering: {len(df)}")
     if daily_df.empty:
+        print("🚨 MLB EMPTY DATA — NO GAMES FOUND")
         return []
 
     if model_bundle is None:
