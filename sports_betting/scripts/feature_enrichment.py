@@ -43,12 +43,39 @@ def _normalize_pitcher_name(name: object) -> str:
     return " ".join(str(name or "").strip().lower().split())
 
 
-def _extract_pitcher_era_from_row(
+def load_mlb_probable_pitchers() -> dict[str, dict[str, float | str]]:
+    candidates = [
+        Path("data/inputs/mlb_probable_pitchers.json"),
+        Path("sports_betting/data/inputs/mlb_probable_pitchers.json"),
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            print(f"[MLB PROBABLE WARNING] Invalid JSON in {path}: {exc}")
+            continue
+        if not isinstance(payload, dict):
+            continue
+        normalized: dict[str, dict[str, float | str]] = {}
+        for pitcher_name, values in payload.items():
+            if not isinstance(values, dict):
+                continue
+            norm_name = _normalize_pitcher_name(pitcher_name)
+            if not norm_name:
+                continue
+            normalized[norm_name] = dict(values)
+        return normalized
+    return {}
+
+
+def _extract_pitcher_stats_from_row(
     row: pd.Series,
     side: str,
+    probable_pitchers_by_name: dict[str, dict[str, float | str]],
     pitchers_by_team: dict[str, dict[str, float]],
-    pitchers_by_name: dict[str, dict[str, float]],
-) -> float:
+) -> dict[str, float | str]:
     probable_pitcher_columns = [
         f"{side}_probable_pitcher",
         f"{side}_pitcher",
@@ -62,12 +89,26 @@ def _extract_pitcher_era_from_row(
         pitcher_name = _normalize_pitcher_name(row.get(col))
         if not pitcher_name:
             continue
-        era_val = pitchers_by_name.get(pitcher_name, {}).get("era")
-        if era_val is not None:
-            return float(era_val)
+        probable_stats = probable_pitchers_by_name.get(pitcher_name, {})
+        era_val = probable_stats.get("era")
+        whip_val = probable_stats.get("whip")
+        k_rate_val = probable_stats.get("k_rate")
+        if era_val is not None or whip_val is not None or k_rate_val is not None:
+            return {
+                "pitcher_name": str(row.get(col)),
+                "pitcher_era": float(era_val) if era_val is not None else float("nan"),
+                "pitcher_whip": float(whip_val) if whip_val is not None else float("nan"),
+                "pitcher_k_rate": float(k_rate_val) if k_rate_val is not None else float("nan"),
+            }
 
     team_key = _normalize_team(row.get(f"{side}_team_norm"))
-    return float(pitchers_by_team.get(team_key, {}).get("era", 4.20))
+    team_defaults = pitchers_by_team.get(team_key, {})
+    return {
+        "pitcher_name": "",
+        "pitcher_era": float(team_defaults.get("era")) if team_defaults.get("era") is not None else float("nan"),
+        "pitcher_whip": float(team_defaults.get("whip")) if team_defaults.get("whip") is not None else float("nan"),
+        "pitcher_k_rate": float(team_defaults.get("k_rate")) if team_defaults.get("k_rate") is not None else float("nan"),
+    }
 
 
 def load_nhl_goalies() -> dict[str, dict[str, float]]:
@@ -443,39 +484,80 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             if source in {"missing", "historical_empty", "historical_missing_columns"}:
                 raise RuntimeError("[MLB DATA ERROR] No team stat source found after exhausting external and historical fallbacks.")
         pitchers = load_mlb_pitchers()
-        pitchers_by_name = {
-            _normalize_pitcher_name(name): values
-            for name, values in pitchers.items()
-            if isinstance(name, str)
-        }
-        # Safe defaults before MLB feature engineering.
-        df["pitcher_era_home"] = df.get("pitcher_era_home", 4.20)
-        df["pitcher_era_away"] = df.get("pitcher_era_away", 4.20)
-        df["pitcher_era_home"] = df.apply(
-            lambda row: _extract_pitcher_era_from_row(
+        probable_pitchers = load_mlb_probable_pitchers()
+
+        home_pitcher_stats = df.apply(
+            lambda row: _extract_pitcher_stats_from_row(
                 row,
                 side="home",
+                probable_pitchers_by_name=probable_pitchers,
                 pitchers_by_team=pitchers,
-                pitchers_by_name=pitchers_by_name,
             ),
             axis=1,
         )
-        df["pitcher_era_away"] = df.apply(
-            lambda row: _extract_pitcher_era_from_row(
+        away_pitcher_stats = df.apply(
+            lambda row: _extract_pitcher_stats_from_row(
                 row,
                 side="away",
+                probable_pitchers_by_name=probable_pitchers,
                 pitchers_by_team=pitchers,
-                pitchers_by_name=pitchers_by_name,
             ),
             axis=1,
         )
-        df["pitcher_era_home"] = pd.to_numeric(df["pitcher_era_home"], errors="coerce").replace(0, 4.20)
-        df["pitcher_era_away"] = pd.to_numeric(df["pitcher_era_away"], errors="coerce").replace(0, 4.20)
-        df["pitcher_era_home"] = df["pitcher_era_home"].fillna(4.20)
-        df["pitcher_era_away"] = df["pitcher_era_away"].fillna(4.20)
+
+        df["pitcher_name_home"] = home_pitcher_stats.map(lambda v: v.get("pitcher_name", "")).astype(str)
+        df["pitcher_name_away"] = away_pitcher_stats.map(lambda v: v.get("pitcher_name", "")).astype(str)
+        df["pitcher_era_home"] = pd.to_numeric(home_pitcher_stats.map(lambda v: v.get("pitcher_era")), errors="coerce")
+        df["pitcher_era_away"] = pd.to_numeric(away_pitcher_stats.map(lambda v: v.get("pitcher_era")), errors="coerce")
+        df["pitcher_whip_home"] = pd.to_numeric(home_pitcher_stats.map(lambda v: v.get("pitcher_whip")), errors="coerce")
+        df["pitcher_whip_away"] = pd.to_numeric(away_pitcher_stats.map(lambda v: v.get("pitcher_whip")), errors="coerce")
+        df["pitcher_k_rate_home"] = pd.to_numeric(home_pitcher_stats.map(lambda v: v.get("pitcher_k_rate")), errors="coerce")
+        df["pitcher_k_rate_away"] = pd.to_numeric(away_pitcher_stats.map(lambda v: v.get("pitcher_k_rate")), errors="coerce")
+
+        missing_pitchers = df[
+            df["pitcher_name_home"].eq("")
+            | df["pitcher_name_away"].eq("")
+            | df["pitcher_era_home"].isna()
+            | df["pitcher_era_away"].isna()
+        ]
+        if not missing_pitchers.empty:
+            print("[MLB PITCHER MISSING]")
+            print(
+                missing_pitchers[
+                    [
+                        "home_team",
+                        "away_team",
+                        "pitcher_name_home",
+                        "pitcher_name_away",
+                        "pitcher_era_home",
+                        "pitcher_era_away",
+                    ]
+                ].to_string(index=False)
+            )
+
+        df["pitcher_era_home"] = df["pitcher_era_home"].fillna(pd.to_numeric(df.get("starter_rating_home"), errors="coerce").rsub(125).div(25))
+        df["pitcher_era_away"] = df["pitcher_era_away"].fillna(pd.to_numeric(df.get("starter_rating_away"), errors="coerce").rsub(125).div(25))
+        df["pitcher_whip_home"] = df["pitcher_whip_home"].fillna((df["pitcher_era_home"] / 4.0).clip(lower=0.9, upper=1.8))
+        df["pitcher_whip_away"] = df["pitcher_whip_away"].fillna((df["pitcher_era_away"] / 4.0).clip(lower=0.9, upper=1.8))
+        df["pitcher_k_rate_home"] = df["pitcher_k_rate_home"].fillna((0.30 - (df["pitcher_era_home"] - 3.0) * 0.025).clip(lower=0.12, upper=0.35))
+        df["pitcher_k_rate_away"] = df["pitcher_k_rate_away"].fillna((0.30 - (df["pitcher_era_away"] - 3.0) * 0.025).clip(lower=0.12, upper=0.35))
         df["pitcher_diff"] = df["pitcher_era_away"] - df["pitcher_era_home"]
-        print("[PITCHER DEBUG]")
-        print(df[["home_team", "away_team", "pitcher_era_home", "pitcher_era_away", "pitcher_diff"]].head())
+        df["pitcher_whip_diff"] = df["pitcher_whip_away"] - df["pitcher_whip_home"]
+        df["pitcher_k_rate_diff"] = df["pitcher_k_rate_home"] - df["pitcher_k_rate_away"]
+        print("[PITCHER DEBUG MLB]")
+        print(
+            df[
+                [
+                    "home_team",
+                    "away_team",
+                    "pitcher_name_home",
+                    "pitcher_name_away",
+                    "pitcher_era_home",
+                    "pitcher_era_away",
+                    "pitcher_diff",
+                ]
+            ].head()
+        )
         df = enrich_mlb_live_features(df)
         df["starter_rating_home"] = pd.to_numeric(df["starter_rating_home"], errors="coerce").replace(0, 50).fillna(50)
         df["starter_rating_away"] = pd.to_numeric(df["starter_rating_away"], errors="coerce").replace(0, 50).fillna(50)

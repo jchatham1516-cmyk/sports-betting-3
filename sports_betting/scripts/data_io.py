@@ -263,7 +263,10 @@ def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFra
     out["goalie_save_home"] = _coalesce_numeric(out, ["goalie_save_home", "goalie_save_strength_home"])
     out["goalie_save_away"] = _coalesce_numeric(out, ["goalie_save_away", "goalie_save_strength_away"])
     out["goalie_diff"] = _coalesce_numeric(out, ["goalie_diff", "goalie_strength_diff"])
-    out["adjusted_edge"] = out["edge"] + (out["pitcher_diff"] * 0.03) + (out["goalie_diff"] * 0.05)
+    sport_series = out.get("sport", pd.Series("", index=out.index)).astype(str).str.lower()
+    pitcher_weight = pd.Series(0.03, index=out.index, dtype="float64")
+    pitcher_weight.loc[sport_series.eq("mlb")] = 0.015
+    out["adjusted_edge"] = out["edge"] + (out["pitcher_diff"] * pitcher_weight) + (out["goalie_diff"] * 0.05)
     out["expected_value"] = _coalesce_numeric(out, ["expected_value"])
     out["line_movement"] = _coalesce_numeric(out, ["line_movement"])
     out["clv_placeholder"] = _coalesce_numeric(out, ["clv_placeholder"])
