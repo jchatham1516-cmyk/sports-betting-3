@@ -28,12 +28,27 @@ def _series_from_get(df: pd.DataFrame, column: str, default: object = 0.0) -> pd
     return series if default is None else series.fillna(default)
 
 
+def normalize_team(team: object) -> str:
+    return str(team).lower().strip()
+
+
 def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     pitchers_dict = fetch_mlb_probable_pitchers()
+    pitchers_dict = {normalize_team(k): v for k, v in pitchers_dict.items()}
 
-    out["pitcher_home"] = out["home_team"].map(pitchers_dict)
-    out["pitcher_away"] = out["away_team"].map(pitchers_dict)
+    out["home_team_norm"] = out["home_team"].apply(normalize_team)
+    out["away_team_norm"] = out["away_team"].apply(normalize_team)
+
+    print("🚨 PITCHERS SCRAPED:", pitchers_dict)
+    print("🚨 SAMPLE HOME TEAMS:", out["home_team"].unique()[:5])
+    print("🚨 SAMPLE PITCHER KEYS:", list(pitchers_dict.keys())[:5])
+
+    out["pitcher_home"] = out["home_team_norm"].map(pitchers_dict)
+    out["pitcher_away"] = out["away_team_norm"].map(pitchers_dict)
+
+    print("[PITCHER MATCH CHECK]")
+    print(out[["home_team", "pitcher_home"]].head(10))
 
     out["pitcher_era_home"] = out["pitcher_home"].map(PITCHER_ERA)
     out["pitcher_era_away"] = out["pitcher_away"].map(PITCHER_ERA)
@@ -42,6 +57,8 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     out["pitcher_era_away"] = out["pitcher_era_away"].fillna(4.20)
 
     out["pitcher_diff"] = out["pitcher_era_away"] - out["pitcher_era_home"]
+    print("[PITCHER DIFF SUMMARY]")
+    print(out["pitcher_diff"].describe())
     return out
 
 
