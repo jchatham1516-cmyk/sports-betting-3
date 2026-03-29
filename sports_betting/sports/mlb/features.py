@@ -57,7 +57,10 @@ def enrich_mlb_live_features(df: pd.DataFrame) -> pd.DataFrame:
         out["recent_form_away"] = pd.to_numeric(out.get("pitcher_last3_starts_away"), errors="coerce")
 
     for col in MLB_SOURCE_COLUMNS:
-        out[col] = pd.to_numeric(out.get(col, 0.0), errors="coerce").fillna(0.0)
+        out[col] = pd.to_numeric(
+            out.get(col, pd.Series(index=out.index, dtype=float)),
+            errors="coerce",
+        ).fillna(0.0)
 
     print(
         "[MLB SOURCE DEBUG]",
