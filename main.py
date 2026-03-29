@@ -1143,6 +1143,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 print("🧪 NHL COMPLETE — READY FOR NEXT SPORT")
                 if idx + 1 < len(sports_to_run):
                     print(f"➡️ NEXT SPORT: {sports_to_run[idx + 1]}")
+                continue
             elif sport_clean == "mlb":
                 print("🚨 RUNNING SPORT: mlb 🚨")
                 print("🚨 MLB PIPELINE TRIGGERED 🚨")
