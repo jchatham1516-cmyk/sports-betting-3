@@ -7,6 +7,7 @@ import logging
 import numpy as np
 import pandas as pd
 
+from sports_betting.data_collection.espn_mlb_pitchers import fetch_mlb_probable_pitchers_espn
 from sports_betting.sports.common.odds import american_to_implied_probability, expected_value, remove_vig_two_way
 
 from .features import build_mlb_features, enrich_mlb_live_features
@@ -14,6 +15,56 @@ from .model import MLBModelBundle, predict_mlb_model, save_mlb_model_bundle, tra
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _normalize_team_name(value: object) -> str:
+    cleaned = ''.join(ch.lower() if (str(ch).isalnum() or ch.isspace()) else ' ' for ch in str(value or '').strip())
+    return ' '.join(cleaned.split())
+
+
+def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "home_team_norm" not in out.columns:
+        out["home_team_norm"] = out["home_team"].map(_normalize_team_name)
+    if "away_team_norm" not in out.columns:
+        out["away_team_norm"] = out["away_team"].map(_normalize_team_name)
+
+    pitcher_df = fetch_mlb_probable_pitchers_espn()
+
+    print("\n[MLB] Pitcher DF Loaded:")
+    print(pitcher_df.head())
+    print("Rows:", len(pitcher_df))
+
+    if pitcher_df is None or pitcher_df.empty:
+        print("WARNING: Pitcher data is EMPTY")
+
+    try:
+        merged = out.merge(
+            pitcher_df,
+            on=["home_team_norm", "away_team_norm"],
+            how="left",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[MLB MERGE WARNING] Pitcher merge failed: {exc}")
+        merged = out.copy()
+        merged["home_pitcher"] = None
+        merged["away_pitcher"] = None
+
+    if "home_pitcher" not in merged.columns:
+        merged["home_pitcher"] = None
+    if "away_pitcher" not in merged.columns:
+        merged["away_pitcher"] = None
+
+    print("\n[MLB MERGE CHECK]")
+    merge_cols = [col for col in ["home_team", "away_team", "home_pitcher", "away_pitcher"] if col in merged.columns]
+    print(merged[merge_cols].head(10))
+
+    merged["pitcher_era_home"] = merged["home_pitcher"].apply(lambda x: 4.2 if pd.isna(x) else 3.5)
+    merged["pitcher_era_away"] = merged["away_pitcher"].apply(lambda x: 4.2 if pd.isna(x) else 3.5)
+    merged["pitcher_diff"] = merged["pitcher_era_home"] - merged["pitcher_era_away"]
+    return merged
+
+
 def _ensure_daily_mlb_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["game_id"] = out.get("game_id", out.get("event_id", "")).astype(str)
@@ -55,6 +106,7 @@ def run_mlb_pipeline(
         LOGGER.info("[MLB] Runtime model training completed from historical CSV.")
 
     frame = _ensure_daily_mlb_columns(daily_df)
+    frame = _attach_pitcher_data(frame)
     frame = predict_mlb_model(model_bundle, frame)
     frame["home_prob"] = frame["predicted_home_win_prob"].clip(0.01, 0.99)
     frame["away_prob"] = frame["predicted_away_win_prob"].clip(0.01, 0.99)
