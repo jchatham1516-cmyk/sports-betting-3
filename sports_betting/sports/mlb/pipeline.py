@@ -60,12 +60,11 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
             continue
         if era_value <= 0 or era_value > 15:
             continue
-        clean_era_map[pitcher] = era_value
+        clean_era_map[str(pitcher).lower().strip()] = era_value
     era_map = clean_era_map
-    print("🚨 ERA MAP:", era_map)
 
-    out["pitcher_era_home"] = out["pitcher_home"].map(era_map)
-    out["pitcher_era_away"] = out["pitcher_away"].map(era_map)
+    out["pitcher_era_home"] = out["pitcher_home"].str.lower().map(era_map)
+    out["pitcher_era_away"] = out["pitcher_away"].str.lower().map(era_map)
 
     out["pitcher_era_home"] = pd.to_numeric(out["pitcher_era_home"], errors="coerce")
     out["pitcher_era_away"] = pd.to_numeric(out["pitcher_era_away"], errors="coerce")
@@ -80,10 +79,8 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     out["pitcher_era_away"] = out["pitcher_era_away"].clip(lower=1.5, upper=8.0)
 
     out["pitcher_diff"] = out["pitcher_era_away"] - out["pitcher_era_home"]
-    print("\n[FINAL ERA CHECK]")
+    print("\n[ERA MAP SIZE]:", len(era_map))
     print(out[["pitcher_home", "pitcher_era_home"]].head(10))
-    print(out["pitcher_era_home"].describe())
-    print("[PITCHER DIFF SUMMARY]")
     print(out["pitcher_diff"].describe())
     return out
 
