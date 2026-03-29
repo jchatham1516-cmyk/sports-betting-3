@@ -581,6 +581,10 @@ def choose_model(sport: str):
     return {"nba": NBAModel, "nfl": NFLModel, "nhl": NHLModel, "mlb": MLBModel, "soccer": NFLModel}[sport]()
 
 
+def run_mlb(historical: pd.DataFrame, daily: pd.DataFrame) -> list[dict]:
+    return run_mlb_pipeline(historical_df=historical, daily_df=daily)
+
+
 def _american_to_decimal(odds: int) -> float:
     """Convert American odds to decimal odds."""
     if odds >= 100:
@@ -1123,212 +1127,225 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     print(f"SPORTS LENGTH: {len(sports_to_run)}")
 
     for sport in sports_to_run:
-        print(f"🔥 LOOP CHECK: entering sport = {sport}")
-        sport_clean = str(sport).strip().lower()
+        print(f"🔥 LOOP START sport={sport}")
+        try:
+            sport_clean = str(sport).strip().lower()
 
-        print(f"LOOP SPORT RAW: {sport}")
-        print(f"LOOP SPORT CLEAN: {sport_clean}")
+            print(f"LOOP SPORT RAW: {sport}")
+            print(f"LOOP SPORT CLEAN: {sport_clean}")
 
-        if sport_clean == "nba":
-            print("🚨 RUNNING SPORT: nba 🚨")
-        elif sport_clean == "nfl":
-            print("🚨 RUNNING SPORT: nfl 🚨")
-        elif sport_clean == "nhl":
-            print("🚨 RUNNING SPORT: nhl 🚨")
-        elif sport_clean == "mlb":
-            print("🚨 RUNNING SPORT: mlb 🚨")
-            print("🚨 MLB PIPELINE STARTING 🚨")
-            logger.info("Running %s pipeline", sport_clean)
-            historical, daily = load_historical_and_daily(sport_clean)
-            print("[MLB DEBUG] Checking odds pull...")
-            print(f"[MLB DEBUG] games pulled: {len(daily)}")
-            sport_candidates = run_mlb_pipeline(historical_df=historical, daily_df=daily)
-            prebuilt_candidates.extend(sport_candidates)
-            sport_run_summaries.append(
-                {
-                    "sport": sport_clean,
-                    "games_processed": len(daily),
-                    "candidates_generated": len(sport_candidates),
-                }
-            )
-            print("✅ MLB PIPELINE FINISHED")
-            continue
-        else:
-            print(f"⚠️ UNKNOWN SPORT: {sport_clean}")
-            continue
-
-        logger.info("Running %s pipeline", sport_clean)
-        model = choose_model(sport_clean)
-        model.runtime_model = None
-        historical, daily = load_historical_and_daily(sport_clean)
-        historical = ensure_required_features(historical)
-        daily = ensure_required_features(daily)
-        if sport_clean == "nba":
-            historical = ensure_required_nba_features(historical)
-        daily = _ensure_runtime_prediction_columns(daily)
-        if sport_clean in {"nba", "nhl"}:
-            try:
-                injuries_df = fetch_injuries(sport_clean)
-                daily = compute_injury_impact(daily, injuries_df)
-                print(f"[INJURY DEBUG][{sport_clean.upper()}]")
-                print(injuries_df.head())
-                print(
-                    daily[
-                        [
-                            "home_team",
-                            "away_team",
-                            "injury_impact_home",
-                            "injury_impact_away",
-                            "injury_impact_diff",
-                        ]
-                    ].head()
+            if sport_clean == "nba":
+                print("🚨 RUNNING SPORT: nba 🚨")
+            elif sport_clean == "nfl":
+                print("🚨 RUNNING SPORT: nfl 🚨")
+            elif sport_clean == "nhl":
+                print("🚨 RUNNING SPORT: nhl 🚨")
+            elif sport_clean == "mlb":
+                print("🚨 RUNNING SPORT: mlb 🚨")
+                print("🚨 MLB PIPELINE TRIGGERED 🚨")
+                print("🚨 MLB PIPELINE STARTING 🚨")
+                logger.info("Running %s pipeline", sport_clean)
+                historical, daily = load_historical_and_daily(sport_clean)
+                print("[MLB DEBUG] Checking odds pull...")
+                print(f"[MLB DEBUG] games pulled: {len(daily)}")
+                sport_candidates = run_mlb(historical, daily)
+                prebuilt_candidates.extend(sport_candidates)
+                sport_run_summaries.append(
+                    {
+                        "sport": sport_clean,
+                        "games_processed": len(daily),
+                        "candidates_generated": len(sport_candidates),
+                    }
                 )
-            except Exception:
-                print(f"Injury data failed for {sport_clean}, using zeros")
-                daily["injury_impact_home"] = 0
-                daily["injury_impact_away"] = 0
-                daily["injury_impact_diff"] = 0
-        daily = enrich_daily_features_by_sport(daily, sport_clean)
-        validate_feature_signal(daily, sport_clean)
-        print("[DEBUG] Daily columns BEFORE prediction:", list(daily.columns))
-        runtime_home_win_model = None
-        isotonic_model = None
-        total_games_processed += len(daily)
-        if sport_clean == "soccer":
-            if historical.empty or len(historical) < 30:
-                logger.error(
-                    "[SOCCER] Historical dataset/model artifact requirement not met. Need at least 30 historical rows for training before soccer can run."
-                )
+                print("✅ MLB PIPELINE FINISHED")
+                print(f"✅ LOOP END sport={sport}")
                 continue
-            sport_candidates = run_soccer_pipeline(historical_df=historical, daily_df=daily)
-            prebuilt_candidates.extend(sport_candidates)
+            else:
+                print(f"⚠️ UNKNOWN SPORT: {sport_clean}")
+                print(f"✅ LOOP END sport={sport}")
+                continue
+
+            logger.info("Running %s pipeline", sport_clean)
+            model = choose_model(sport_clean)
+            model.runtime_model = None
+            historical, daily = load_historical_and_daily(sport_clean)
+            historical = ensure_required_features(historical)
+            daily = ensure_required_features(daily)
+            if sport_clean == "nba":
+                historical = ensure_required_nba_features(historical)
+            daily = _ensure_runtime_prediction_columns(daily)
+            if sport_clean in {"nba", "nhl"}:
+                try:
+                    injuries_df = fetch_injuries(sport_clean)
+                    daily = compute_injury_impact(daily, injuries_df)
+                    print(f"[INJURY DEBUG][{sport_clean.upper()}]")
+                    print(injuries_df.head())
+                    print(
+                        daily[
+                            [
+                                "home_team",
+                                "away_team",
+                                "injury_impact_home",
+                                "injury_impact_away",
+                                "injury_impact_diff",
+                            ]
+                        ].head()
+                    )
+                except Exception:
+                    print(f"Injury data failed for {sport_clean}, using zeros")
+                    daily["injury_impact_home"] = 0
+                    daily["injury_impact_away"] = 0
+                    daily["injury_impact_diff"] = 0
+            daily = enrich_daily_features_by_sport(daily, sport_clean)
+            validate_feature_signal(daily, sport_clean)
+            print("[DEBUG] Daily columns BEFORE prediction:", list(daily.columns))
+            runtime_home_win_model = None
+            isotonic_model = None
+            total_games_processed += len(daily)
+            if sport_clean == "soccer":
+                if historical.empty or len(historical) < 30:
+                    logger.error(
+                        "[SOCCER] Historical dataset/model artifact requirement not met. Need at least 30 historical rows for training before soccer can run."
+                    )
+                    print(f"✅ LOOP END sport={sport}")
+                    continue
+                sport_candidates = run_soccer_pipeline(historical_df=historical, daily_df=daily)
+                prebuilt_candidates.extend(sport_candidates)
+                sport_run_summaries.append(
+                    {
+                        "sport": sport_clean,
+                        "games_processed": len(daily),
+                        "candidates_generated": len(sport_candidates),
+                    }
+                )
+                print(f"✅ LOOP END sport={sport}")
+                continue
+            csv_path = historical_file_path(sport_clean)
+            print(f"[{sport_clean.upper()}] Looking for historical CSV at: {csv_path}")
+            print(f"[{sport_clean.upper()}] Exists: {csv_path.exists()}")
+
+            artifact_path = model_artifact_path(sport_clean)
+            trained_in_run = False
+            if csv_path.exists():
+                try:
+                    historical_df = pd.read_csv(csv_path)
+                    if "home_moneyline" not in historical_df.columns and "closing_moneyline_home" in historical_df.columns:
+                        historical_df["home_moneyline"] = historical_df["closing_moneyline_home"]
+                    if "spread" not in historical_df.columns:
+                        if "spread_line" in historical_df.columns:
+                            historical_df["spread"] = historical_df["spread_line"]
+                        elif "closing_spread_home" in historical_df.columns:
+                            historical_df["spread"] = historical_df["closing_spread_home"]
+                    print(f"[{sport_clean.upper()}] Historical rows loaded: {len(historical_df)}")
+                    if len(historical_df) < 20:
+                        print(f"[{sport_clean.upper()}] WARNING: Very small dataset")
+                    try:
+                        if sport_clean == "nhl":
+                            runtime_home_win_model = train_nhl_runtime_model(historical_df)
+                        else:
+                            runtime_home_win_model = train_runtime_model(historical_df)
+                        model.runtime_model = runtime_home_win_model
+                        trained_in_run = runtime_home_win_model is not None
+                        if runtime_home_win_model is not None:
+                            isotonic_model = fit_isotonic_model(historical_df, runtime_home_win_model)
+                    except Exception:
+                        runtime_home_win_model = None
+                        model.runtime_model = None
+                        trained_in_run = False
+                    logger.info("[%s] Runtime model training completed from historical CSV.", sport_clean.upper())
+                except Exception:
+                    logger.exception("[%s] Runtime training failed.", sport_clean.upper())
+                    print(f"[{sport_clean.upper()}] Training failed → using fallback model")
+            else:
+                print(f"[{sport_clean.upper()}] Historical CSV missing at {csv_path}")
+
+            if not trained_in_run:
+                if sport_clean == "nhl":
+                    raise ValueError("[NHL] Missing historical data - cannot train model")
+                if not trained_in_run and artifact_path.exists():
+                    model.load_artifact(artifact_path)
+                    logger.warning(
+                        "[%s] Falling back to model artifact because runtime training failed or historical CSV is missing: %s",
+                        sport_clean.upper(),
+                        artifact_path,
+                    )
+                elif not trained_in_run:
+                    raise RuntimeError(
+                        f"[{sport_clean.upper()}] Runtime training unavailable and no model artifact present at {artifact_path}."
+                    )
+
+            if hasattr(model, "runtime_model") and model.runtime_model is not None:
+                print(f"[{sport_clean.upper()}] Using runtime model for predictions")
+                if "home_moneyline" not in daily.columns:
+                    if "home_odds" in daily.columns:
+                        daily["home_moneyline"] = daily["home_odds"]
+
+                if "spread" not in daily.columns:
+                    if "spread_line" in daily.columns:
+                        daily["spread"] = daily["spread_line"]
+                preds = _build_runtime_moneyline_predictions(daily, model.runtime_model, sport_clean)
+            else:
+                if sport_clean == "nhl":
+                    raise RuntimeError("[NHL] Runtime model unavailable; baseline fallback is disabled.")
+                print(f"[{sport_clean.upper()}] Using baseline model for predictions")
+                try:
+                    preds = model.predict_daily(daily)
+                except Exception as exc:
+                    logger.warning("[%s] Baseline model prediction failed: %s", sport_clean.upper(), exc)
+                    preds = []
+            preds = _apply_runtime_home_win_probabilities(preds, daily, runtime_home_win_model)
+            if isotonic_model is not None and preds:
+                for pred in preds:
+                    calibrated_probability = float(
+                        isotonic_model.transform([float(pred.model_probability)])[0]
+                    )
+                    pred.model_probability = float(np.clip(calibrated_probability, 0.05, 0.65))
+                    pred.edge = np.nan
+            logger.info("%s games processed for %s (%s predictions generated)", len(daily), sport_clean, len(preds))
+            if sport_clean == "nhl":
+                non_fallback = [p for p in preds if float(getattr(p, "model_probability", 0.5)) != 0.5]
+                if not non_fallback:
+                    raise AssertionError("[NHL] Model probabilities are fallback defaults (0.50)")
+
+            predictions_by_game_id: dict[str, list[dict]] = defaultdict(list)
+            for pred in preds:
+                all_predictions.append(asdict(pred))
+                game_row = daily[daily["game_id"] == pred.game_id].iloc[0]
+                predictions_by_game_id[pred.game_id].append(asdict(pred))
+                game_rows_by_id[pred.game_id] = {
+                    "home_team": game_row["home_team"],
+                    "away_team": game_row["away_team"],
+                    "home_odds": game_row["home_odds"],
+                    "away_odds": game_row["away_odds"],
+                    "home_spread_odds": game_row["home_spread_odds"],
+                    "away_spread_odds": game_row["away_spread_odds"],
+                    "over_odds": game_row["over_odds"],
+                    "under_odds": game_row["under_odds"],
+                    "total_line": game_row.get("total_line", 0.0),
+                    "game": pred.metadata.get("game", pred.game_id),
+                    "sport": sport_clean,
+                    "sportsbook_event_home_team": game_row.get("sportsbook_event_home_team", game_row.get("home_team", "")),
+                    "sportsbook_event_away_team": game_row.get("sportsbook_event_away_team", game_row.get("away_team", "")),
+                    "sportsbook_home_outcome_name": game_row.get("sportsbook_home_outcome_name", game_row.get("home_team", "")),
+                    "sportsbook_away_outcome_name": game_row.get("sportsbook_away_outcome_name", game_row.get("away_team", "")),
+                    "injury_impact_home": float(game_row.get("injury_impact_home", 0.0)),
+                    "injury_impact_away": float(game_row.get("injury_impact_away", 0.0)),
+                    "injury_impact_diff": float(game_row.get("injury_impact_diff", 0.0)),
+                }
             sport_run_summaries.append(
                 {
                     "sport": sport_clean,
                     "games_processed": len(daily),
-                    "candidates_generated": len(sport_candidates),
+                    "candidates_generated": len(preds),
                 }
             )
+            if sport_clean == "nhl":
+                print("🧪 CHECKPOINT AFTER NHL")
+        except Exception as e:
+            print(f"🚨 ERROR in sport {sport}: {e}")
             continue
-        csv_path = historical_file_path(sport_clean)
-        print(f"[{sport_clean.upper()}] Looking for historical CSV at: {csv_path}")
-        print(f"[{sport_clean.upper()}] Exists: {csv_path.exists()}")
 
-        artifact_path = model_artifact_path(sport_clean)
-        trained_in_run = False
-        if csv_path.exists():
-            try:
-                historical_df = pd.read_csv(csv_path)
-                if "home_moneyline" not in historical_df.columns and "closing_moneyline_home" in historical_df.columns:
-                    historical_df["home_moneyline"] = historical_df["closing_moneyline_home"]
-                if "spread" not in historical_df.columns:
-                    if "spread_line" in historical_df.columns:
-                        historical_df["spread"] = historical_df["spread_line"]
-                    elif "closing_spread_home" in historical_df.columns:
-                        historical_df["spread"] = historical_df["closing_spread_home"]
-                print(f"[{sport_clean.upper()}] Historical rows loaded: {len(historical_df)}")
-                if len(historical_df) < 20:
-                    print(f"[{sport_clean.upper()}] WARNING: Very small dataset")
-                try:
-                    if sport_clean == "nhl":
-                        runtime_home_win_model = train_nhl_runtime_model(historical_df)
-                    else:
-                        runtime_home_win_model = train_runtime_model(historical_df)
-                    model.runtime_model = runtime_home_win_model
-                    trained_in_run = runtime_home_win_model is not None
-                    if runtime_home_win_model is not None:
-                        isotonic_model = fit_isotonic_model(historical_df, runtime_home_win_model)
-                except Exception:
-                    runtime_home_win_model = None
-                    model.runtime_model = None
-                    trained_in_run = False
-                logger.info("[%s] Runtime model training completed from historical CSV.", sport_clean.upper())
-            except Exception:
-                logger.exception("[%s] Runtime training failed.", sport_clean.upper())
-                print(f"[{sport_clean.upper()}] Training failed → using fallback model")
-        else:
-            print(f"[{sport_clean.upper()}] Historical CSV missing at {csv_path}")
-
-        if not trained_in_run:
-            if sport_clean == "nhl":
-                raise ValueError("[NHL] Missing historical data - cannot train model")
-            if not trained_in_run and artifact_path.exists():
-                model.load_artifact(artifact_path)
-                logger.warning(
-                    "[%s] Falling back to model artifact because runtime training failed or historical CSV is missing: %s",
-                    sport_clean.upper(),
-                    artifact_path,
-                )
-            elif not trained_in_run:
-                raise RuntimeError(
-                    f"[{sport_clean.upper()}] Runtime training unavailable and no model artifact present at {artifact_path}."
-                )
-
-        if hasattr(model, "runtime_model") and model.runtime_model is not None:
-            print(f"[{sport_clean.upper()}] Using runtime model for predictions")
-            if "home_moneyline" not in daily.columns:
-                if "home_odds" in daily.columns:
-                    daily["home_moneyline"] = daily["home_odds"]
-
-            if "spread" not in daily.columns:
-                if "spread_line" in daily.columns:
-                    daily["spread"] = daily["spread_line"]
-            preds = _build_runtime_moneyline_predictions(daily, model.runtime_model, sport_clean)
-        else:
-            if sport_clean == "nhl":
-                raise RuntimeError("[NHL] Runtime model unavailable; baseline fallback is disabled.")
-            print(f"[{sport_clean.upper()}] Using baseline model for predictions")
-            try:
-                preds = model.predict_daily(daily)
-            except Exception as exc:
-                logger.warning("[%s] Baseline model prediction failed: %s", sport_clean.upper(), exc)
-                preds = []
-        preds = _apply_runtime_home_win_probabilities(preds, daily, runtime_home_win_model)
-        if isotonic_model is not None and preds:
-            for pred in preds:
-                calibrated_probability = float(
-                    isotonic_model.transform([float(pred.model_probability)])[0]
-                )
-                pred.model_probability = float(np.clip(calibrated_probability, 0.05, 0.65))
-                pred.edge = np.nan
-        logger.info("%s games processed for %s (%s predictions generated)", len(daily), sport_clean, len(preds))
-        if sport_clean == "nhl":
-            non_fallback = [p for p in preds if float(getattr(p, "model_probability", 0.5)) != 0.5]
-            if not non_fallback:
-                raise AssertionError("[NHL] Model probabilities are fallback defaults (0.50)")
-
-        predictions_by_game_id: dict[str, list[dict]] = defaultdict(list)
-        for pred in preds:
-            all_predictions.append(asdict(pred))
-            game_row = daily[daily["game_id"] == pred.game_id].iloc[0]
-            predictions_by_game_id[pred.game_id].append(asdict(pred))
-            game_rows_by_id[pred.game_id] = {
-                "home_team": game_row["home_team"],
-                "away_team": game_row["away_team"],
-                "home_odds": game_row["home_odds"],
-                "away_odds": game_row["away_odds"],
-                "home_spread_odds": game_row["home_spread_odds"],
-                "away_spread_odds": game_row["away_spread_odds"],
-                "over_odds": game_row["over_odds"],
-                "under_odds": game_row["under_odds"],
-                "total_line": game_row.get("total_line", 0.0),
-                "game": pred.metadata.get("game", pred.game_id),
-                "sport": sport_clean,
-                "sportsbook_event_home_team": game_row.get("sportsbook_event_home_team", game_row.get("home_team", "")),
-                "sportsbook_event_away_team": game_row.get("sportsbook_event_away_team", game_row.get("away_team", "")),
-                "sportsbook_home_outcome_name": game_row.get("sportsbook_home_outcome_name", game_row.get("home_team", "")),
-                "sportsbook_away_outcome_name": game_row.get("sportsbook_away_outcome_name", game_row.get("away_team", "")),
-                "injury_impact_home": float(game_row.get("injury_impact_home", 0.0)),
-                "injury_impact_away": float(game_row.get("injury_impact_away", 0.0)),
-                "injury_impact_diff": float(game_row.get("injury_impact_diff", 0.0)),
-            }
-        sport_run_summaries.append(
-            {
-                "sport": sport_clean,
-                "games_processed": len(daily),
-                "candidates_generated": len(preds),
-            }
-        )
+        print(f"✅ LOOP END sport={sport}")
 
     if "mlb" in sports_to_run:
         print("⚠️ MLB WAS EXPECTED — VERIFY IT RAN")
