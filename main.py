@@ -1140,6 +1140,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 print("🚨 RUNNING SPORT: nfl 🚨")
             elif sport_clean == "nhl":
                 print("🚨 RUNNING SPORT: nhl 🚨")
+                print("🧪 NHL COMPLETE — CONTINUING LOOP")
             elif sport_clean == "mlb":
                 print("🚨 RUNNING SPORT: mlb 🚨")
                 print("🚨 MLB PIPELINE TRIGGERED 🚨")
@@ -1339,8 +1340,6 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                     "candidates_generated": len(preds),
                 }
             )
-            if sport_clean == "nhl":
-                print("🧪 CHECKPOINT AFTER NHL")
         except Exception as e:
             print(f"🚨 ERROR in sport {sport}: {e}")
             continue
