@@ -111,6 +111,30 @@ def run_mlb_pipeline(
 
     frame = _ensure_daily_mlb_columns(daily_df)
     frame = _attach_pitcher_data(frame)
+
+    for col in [
+        "starter_rating_home",
+        "starter_rating_away",
+        "bullpen_rating_home",
+        "bullpen_rating_away",
+        "hitting_rating_home",
+        "hitting_rating_away",
+    ]:
+        if col not in frame.columns:
+            frame[col] = 0
+
+    for col in [
+        "pitcher_era_home",
+        "pitcher_era_away",
+    ]:
+        if col not in frame.columns:
+            frame[col] = 4.50
+
+    frame["pitcher_diff"] = frame["pitcher_era_away"] - frame["pitcher_era_home"]
+
+    print("[MLB DEBUG] pitcher_diff summary:")
+    print(frame["pitcher_diff"].describe())
+
     frame = predict_mlb_model(model_bundle, frame)
     frame["home_prob"] = frame["predicted_home_win_prob"].clip(0.01, 0.99)
     frame["away_prob"] = frame["predicted_away_win_prob"].clip(0.01, 0.99)
