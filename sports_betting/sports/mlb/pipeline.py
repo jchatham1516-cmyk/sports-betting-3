@@ -7,7 +7,8 @@ import logging
 import numpy as np
 import pandas as pd
 
-from sports_betting.data_collection.mlb_pitchers import PITCHER_ERA, get_probable_pitchers
+from sports_betting.data_collection.mlb_pitchers import get_probable_pitchers
+from sports_betting.data_collection.pitcher_stats import build_pitcher_era_map
 from sports_betting.sports.common.odds import american_to_implied_probability, expected_value, remove_vig_two_way
 
 from .features import build_mlb_features, enrich_mlb_live_features
@@ -50,11 +51,15 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     print("[PITCHER MATCH CHECK]")
     print(out[["home_team", "pitcher_home"]].head(10))
 
-    out["pitcher_era_home"] = out["pitcher_home"].map(PITCHER_ERA)
-    out["pitcher_era_away"] = out["pitcher_away"].map(PITCHER_ERA)
+    era_map = build_pitcher_era_map(pitchers_dict)
+    print("🚨 ERA MAP:", era_map)
+
+    out["pitcher_era_home"] = out["pitcher_home"].map(era_map)
+    out["pitcher_era_away"] = out["pitcher_away"].map(era_map)
 
     out["pitcher_era_home"] = out["pitcher_era_home"].fillna(4.20)
     out["pitcher_era_away"] = out["pitcher_era_away"].fillna(4.20)
+    print(out[["pitcher_home", "pitcher_era_home"]].head(10))
 
     out["pitcher_diff"] = out["pitcher_era_away"] - out["pitcher_era_home"]
     print("[PITCHER DIFF SUMMARY]")
