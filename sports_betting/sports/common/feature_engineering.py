@@ -380,8 +380,13 @@ def add_market_context_features(games_df: pd.DataFrame) -> pd.DataFrame:
     out["edge"] = (out["adjusted_prob"] - out["market_prob"]) + injury_adjustment
     pitcher_diff = _series("pitcher_diff")
     goalie_diff = _series("goalie_diff")
-    out["adjusted_edge"] = out["edge"] + (pitcher_diff * 0.03)
+    sport_series = out.get("sport", pd.Series("", index=out.index)).astype(str).str.lower()
+    mlb_mask = sport_series.eq("mlb")
+    pitcher_weight = pd.Series(0.03, index=out.index, dtype="float64")
+    pitcher_weight.loc[mlb_mask] = 0.015
+    out["adjusted_edge"] = out["edge"] + (pitcher_diff * pitcher_weight)
     out["adjusted_edge"] += goalie_diff * 0.05
+    out["adjusted_edge"] = out["adjusted_edge"].clip(-0.25, 0.25)
     out["expected_value"] = _series("expected_value") + injury_adjustment
     out["open_line"] = _series("open_line") if "open_line" in out.columns else _series("spread_line")
     out["current_line"] = _series("current_line") if "current_line" in out.columns else _series("spread_line")
