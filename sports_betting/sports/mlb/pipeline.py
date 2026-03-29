@@ -121,16 +121,28 @@ def run_mlb_pipeline(
         "hitting_rating_away",
     ]:
         if col not in frame.columns:
-            frame[col] = 0
+            frame[col] = pd.Series(0, index=frame.index)
 
     for col in [
         "pitcher_era_home",
         "pitcher_era_away",
     ]:
         if col not in frame.columns:
-            frame[col] = 4.50
+            frame[col] = pd.Series(4.50, index=frame.index)
 
     frame["pitcher_diff"] = frame["pitcher_era_away"] - frame["pitcher_era_home"]
+    frame = frame.fillna(0)
+
+    print("[MLB DEBUG] columns:")
+    print(
+        frame[
+            [
+                "pitcher_era_home",
+                "pitcher_era_away",
+                "pitcher_diff",
+            ]
+        ].head()
+    )
 
     print("[MLB DEBUG] pitcher_diff summary:")
     print(frame["pitcher_diff"].describe())
