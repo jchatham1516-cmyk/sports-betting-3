@@ -1639,18 +1639,18 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         df["model_probability"] = (
             df["model_probability"] + df["context_edge_adjustment"]
         ).clip(0.01, 0.99)
-        MAX_INJURY_IMPACT = 2.0
-        df["injury_impact_diff"] = pd.to_numeric(df["injury_impact_diff"], errors="coerce").fillna(0.0)
-        df["injury_impact_diff"] = df["injury_impact_diff"].clip(
-            -MAX_INJURY_IMPACT,
-            MAX_INJURY_IMPACT,
-        )
+        df["injury_impact_diff"] = pd.to_numeric(df["injury_impact_diff"], errors="coerce")
+        df["injury_impact_diff"] = df["injury_impact_diff"].fillna(0)
+
+        MAX_INJURY_IMPACT = 3.0
+        df["injury_impact_diff"] = df["injury_impact_diff"].clip(-3.0, 3.0)
+
+        INJURY_WEIGHT = 0.02
 
         df["scaled_injury"] = scale_injury_impact(df["injury_impact_diff"], weight=0.01, cap=0.05)
         df["model_probability"] = (df["model_probability"] + df["scaled_injury"]).clip(0.01, 0.99)
-        # Edge must remain the direct delta between model and market probabilities.
         df["edge"] = df["model_probability"] - df["market_probability"]
-        df["adjusted_edge"] = df["edge"] + (
+        df["edge"] = df["edge"] + (
             df["injury_impact_diff"] * INJURY_WEIGHT
         )
         df["decimal_odds"] = df["odds"].apply(_american_to_decimal)
@@ -1667,8 +1667,6 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             + 0.60 * df["form_edge_adjustment"]
             + 0.45 * df["matchup_edge_adjustment"]
         )
-        # Keep edge definition exact after all downstream calculations.
-        df["edge"] = df["model_probability"] - df["market_probability"]
 
         print("[NaN DEBUG]")
         print(
@@ -1756,15 +1754,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         df["model_probability"] = pd.to_numeric(df["model_probability"], errors="coerce").fillna(0.0)
         df["market_probability"] = pd.to_numeric(df["market_probability"], errors="coerce").fillna(0.0)
 
-        MIN_EDGE = 0.005
-        MIN_EV = 0.002
         MAX_BETS = 5
         original_df = df.copy()
 
         print("EDGE SUMMARY:")
         print(df["edge"].describe())
-        print("EDGE RANGE:", df["edge"].min(), df["edge"].max())
-        print("ADJUSTED EDGE RANGE:", df["adjusted_edge"].min(), df["adjusted_edge"].max())
 
         print("EV SUMMARY:")
         print(df["expected_value"].describe())
@@ -1772,19 +1766,21 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         print("STEP 14: before final edge/ev filter", len(df))
         filtered_df = df[
-            (df["adjusted_edge"] > MIN_EDGE)
-            & (df["expected_value"] > MIN_EV)
+            (df["edge"] > 0.005) &
+            (df["expected_value"] > 0)
         ].copy()
 
         if filtered_df.empty:
-            print("⚠️ Fallback triggered — selecting top EV bets")
+            print("⚠️ No bets passed — forcing top EV plays")
             filtered_df = df.sort_values(
                 by="expected_value", ascending=False
             ).head(3)
 
         filtered_df = filtered_df.sort_values(
             by="expected_value", ascending=False
-        ).head(5)
+        ).head(MAX_BETS)
+        print("EDGE RANGE:", df["edge"].min(), df["edge"].max())
+        print("INJURY RANGE:", df["injury_impact_diff"].min(), df["injury_impact_diff"].max())
         print("FINAL BET COUNT:", len(filtered_df))
 
         final_bets = filtered_df.copy()
