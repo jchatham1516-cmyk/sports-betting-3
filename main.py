@@ -942,6 +942,28 @@ def _build_runtime_moneyline_predictions(
     if "model_prob" not in runtime_df.columns:
         runtime_df["model_prob"] = runtime_df["predicted_home_win_prob"]
 
+    totals_prob_map: dict[str, dict[str, float]] = {}
+    if totals_model is not None:
+        feature_columns = getattr(totals_model, "feature_columns", TOTALS_FEATURE_COLUMNS)
+        for game_id in runtime_df["game_id"].astype(str).unique():
+            game_frame = runtime_df.loc[runtime_df["game_id"].astype(str) == game_id].head(1).copy()
+            if game_frame.empty:
+                continue
+            if {"pitcher_era_home", "pitcher_era_away"}.issubset(game_frame.columns):
+                game_frame["pitching_total_impact"] = (
+                    pd.to_numeric(game_frame["pitcher_era_home"], errors="coerce").fillna(0.0)
+                    + pd.to_numeric(game_frame["pitcher_era_away"], errors="coerce").fillna(0.0)
+                )
+            for col in feature_columns:
+                if col not in game_frame.columns:
+                    game_frame[col] = 0.0
+            x_game = game_frame[feature_columns].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+            probs = totals_model.predict_proba(x_game)[0]
+            totals_prob_map[game_id] = {
+                "over": float(np.clip(probs[1], 0.01, 0.99)),
+                "under": float(np.clip(probs[0], 0.01, 0.99)),
+            }
+
     preds: list[Prediction] = []
     for _, row in runtime_df.iterrows():
         game_id = str(row.get("game_id"))
@@ -994,20 +1016,13 @@ def _build_runtime_moneyline_predictions(
         over_prob = None
         under_prob = None
         if totals_model is not None:
-            game_frame = pd.DataFrame([row])
-            if {"pitcher_era_home", "pitcher_era_away"}.issubset(game_frame.columns):
-                game_frame["pitching_total_impact"] = (
-                    pd.to_numeric(game_frame["pitcher_era_home"], errors="coerce").fillna(0.0)
-                    + pd.to_numeric(game_frame["pitcher_era_away"], errors="coerce").fillna(0.0)
-                )
-            feature_columns = getattr(totals_model, "feature_columns", TOTALS_FEATURE_COLUMNS)
-            for col in feature_columns:
-                if col not in game_frame.columns:
-                    game_frame[col] = 0.0
-            x_game = game_frame[feature_columns].apply(pd.to_numeric, errors="coerce").fillna(0.0)
-            probs = totals_model.predict_proba(x_game)[0]
-            under_prob = float(np.clip(probs[0], 0.01, 0.99))
-            over_prob = float(np.clip(probs[1], 0.01, 0.99))
+            game_probs = totals_prob_map.get(game_id)
+            if game_probs is None:
+                over_prob = over_market_prob
+                under_prob = under_market_prob
+            else:
+                over_prob = float(game_probs["over"])
+                under_prob = float(game_probs["under"])
         else:
             inferred_over_prob = infer_totals_probability_from_features(pd.DataFrame([row])).iloc[0]
             if "over_odds" in row and not pd.isna(row.get("over_odds")):
@@ -1263,6 +1278,27 @@ def _align_moneyline_model_probability(df: pd.DataFrame) -> pd.DataFrame:
         out.loc[non_moneyline_mask, "model_probability"] = pd.to_numeric(
             out.loc[non_moneyline_mask, "model_probability"], errors="coerce"
         ).fillna(pd.to_numeric(out.loc[non_moneyline_mask, "model_prob"], errors="coerce"))
+    return out
+
+
+def _lock_totals_probabilities(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or not {"market", "game_id", "model_probability"}.issubset(df.columns):
+        return df
+
+    out = df.copy()
+    totals_mask = out["market"].isin(["total", "totals"])
+    if not totals_mask.any():
+        return out
+
+    totals_rows = out.loc[totals_mask].copy()
+    totals_rows["model_probability"] = pd.to_numeric(totals_rows["model_probability"], errors="coerce")
+    totals_rows["model_probability"] = totals_rows.groupby("game_id")["model_probability"].transform(
+        lambda x: x / x.sum() if x.sum() else x
+    )
+    out.loc[totals_mask, "model_probability"] = totals_rows["model_probability"].values
+
+    print("[TOTALS FINAL CHECK]")
+    print(out.loc[totals_mask].groupby("game_id")["model_probability"].sum())
     return out
 
 
@@ -1847,6 +1883,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 is_home_moneyline = selection_norm == home_norm
                 return adj_home_prob if is_home_moneyline else (1.0 - adj_home_prob)
 
+            if market in {"total", "totals"}:
+                return float(row.get("model_probability", row.get("model_prob", 0.5)))
+
             if market == "spread":
                 if selection_norm.startswith(home_norm):
                     base_prob = base_prob - home_penalty + away_penalty
@@ -1860,20 +1899,22 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         # Injury-adjusted probability is the final probability used in edge and EV.
         df["model_probability"] = df["model_prob"]
-        df["model_probability"] = df["model_probability"].clip(0.05, 0.65)
+        non_totals_mask = ~df["market"].isin(["total", "totals"])
+        df.loc[non_totals_mask, "model_probability"] = df.loc[non_totals_mask, "model_probability"].clip(0.05, 0.65)
+        df = _lock_totals_probabilities(df)
 
         # Regress toward market to reduce overconfidence.
-        df["model_probability"] = (
-            0.7 * df["model_probability"] +
-            0.3 * df["market_probability"]
+        df.loc[non_totals_mask, "model_probability"] = (
+            0.7 * df.loc[non_totals_mask, "model_probability"] +
+            0.3 * df.loc[non_totals_mask, "market_probability"]
         )
 
         # Recompute edge + EV once after all probability adjustments.
         df["model_probability"] = df["model_probability"].fillna(0.5)
         df["market_probability"] = df["market_probability"].fillna(0.5)
         df = add_contextual_adjustments(df)
-        df["model_probability"] = (
-            df["model_probability"] + df["context_edge_adjustment"]
+        df.loc[non_totals_mask, "model_probability"] = (
+            df.loc[non_totals_mask, "model_probability"] + df.loc[non_totals_mask, "context_edge_adjustment"]
         ).clip(0.01, 0.99)
         df["injury_impact_diff"] = pd.to_numeric(df["injury_impact_diff"], errors="coerce")
         df["injury_impact_diff"] = df["injury_impact_diff"].fillna(0)
@@ -1884,7 +1925,10 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         INJURY_WEIGHT = 0.02
 
         df["scaled_injury"] = scale_injury_impact(df["injury_impact_diff"], weight=0.01, cap=0.05)
-        df["model_probability"] = (df["model_probability"] + df["scaled_injury"]).clip(0.01, 0.99)
+        df.loc[non_totals_mask, "model_probability"] = (
+            df.loc[non_totals_mask, "model_probability"] + df.loc[non_totals_mask, "scaled_injury"]
+        ).clip(0.01, 0.99)
+        df = _lock_totals_probabilities(df)
         df["edge"] = df["model_probability"] - df["market_probability"]
         df["edge"] = df["edge"] + (
             df["injury_impact_diff"] * INJURY_WEIGHT
