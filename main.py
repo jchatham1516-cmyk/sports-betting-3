@@ -1253,6 +1253,8 @@ def _align_moneyline_model_probability(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     out = df.copy()
+    totals_mask = out["market"].isin(["total", "totals"])
+    out.loc[totals_mask, "model_probability"] = out.loc[totals_mask, "model_probability"]
     moneyline_mask = out["market"] == "moneyline"
     if moneyline_mask.any():
         normalized_home = out.loc[moneyline_mask, "home_team"].astype(str).map(_normalize_team_key)
@@ -1275,9 +1277,18 @@ def _align_moneyline_model_probability(df: pd.DataFrame) -> pd.DataFrame:
         )
     non_moneyline_mask = ~moneyline_mask
     if non_moneyline_mask.any():
-        out.loc[non_moneyline_mask, "model_probability"] = pd.to_numeric(
-            out.loc[non_moneyline_mask, "model_probability"], errors="coerce"
-        ).fillna(pd.to_numeric(out.loc[non_moneyline_mask, "model_prob"], errors="coerce"))
+        def _keep_totals_probability(row: pd.Series) -> float:
+            if row["market"] in {"total", "totals"}:
+                return float(row["model_probability"])
+            model_probability = pd.to_numeric(row["model_probability"], errors="coerce")
+            if pd.isna(model_probability):
+                model_probability = pd.to_numeric(row["model_prob"], errors="coerce")
+            return float(model_probability) if not pd.isna(model_probability) else np.nan
+
+        out.loc[non_moneyline_mask, "model_probability"] = out.loc[non_moneyline_mask].apply(
+            _keep_totals_probability,
+            axis=1,
+        )
     return out
 
 
@@ -1762,6 +1773,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         if {"selection", "home_team", "away_team", "home_odds", "away_odds", "model_prob", "market"}.issubset(df.columns):
             df = _align_moneyline_model_probability(df)
+            print("[TOTALS AFTER ALIGN FIX]")
+            print(
+                df[df["market"].isin(["total", "totals"])]
+                .groupby("game_id")["model_probability"]
+                .sum()
+            )
             required_columns = ["favorite_team", "model_prob_home"]
             missing_debug_columns = [col for col in required_columns if col not in df.columns]
             if missing_debug_columns:
@@ -1899,6 +1916,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         # Injury-adjusted probability is the final probability used in edge and EV.
         df["model_probability"] = df["model_prob"]
+        totals_mask = df["market"].isin(["total", "totals"])
+        df.loc[totals_mask, "model_probability"] = (
+            df.loc[totals_mask]
+            .groupby("game_id")["model_probability"]
+            .transform(lambda x: x / x.sum())
+        )
         non_totals_mask = ~df["market"].isin(["total", "totals"])
         df.loc[non_totals_mask, "model_probability"] = df.loc[non_totals_mask, "model_probability"].clip(0.05, 0.65)
         df = _lock_totals_probabilities(df)
