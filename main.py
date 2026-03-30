@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 
 from sports_betting.backtesting.engine import summarize_backtest
 from sports_betting.config.settings import load_config
@@ -111,6 +112,33 @@ REQUIRED_NBA_FEATURES = [
     "free_throw_rate_diff",
     "rebound_rate_diff",
     "turnover_rate_diff",
+]
+TOTALS_FEATURE_COLUMNS = [
+    "offensive_rating_home",
+    "offensive_rating_away",
+    "defensive_rating_home",
+    "defensive_rating_away",
+    "pace_home",
+    "pace_away",
+    "pace_diff",
+    "true_shooting_home",
+    "true_shooting_away",
+    "effective_fg_home",
+    "effective_fg_away",
+    "turnover_rate_home",
+    "turnover_rate_away",
+    "rebound_rate_home",
+    "rebound_rate_away",
+    "free_throw_rate_home",
+    "free_throw_rate_away",
+    "injury_impact_home",
+    "injury_impact_away",
+]
+TOTALS_OPTIONAL_FEATURES = [
+    "pitching_total_impact",
+    "goalie_save_home",
+    "goalie_save_away",
+    "goalie_diff",
 ]
 
 
@@ -809,9 +837,98 @@ def _train_nhl_fallback_runtime_model(daily_df: pd.DataFrame):
     return model
 
 
+def train_runtime_totals_model(historical_df: pd.DataFrame):
+    if historical_df is None or historical_df.empty:
+        return None
+
+    frame = historical_df.copy()
+    required_target_columns = {"home_score", "away_score", "total_line"}
+    if "over_hit" not in frame.columns:
+        if not required_target_columns.issubset(frame.columns):
+            return None
+        frame["total_points"] = (
+            pd.to_numeric(frame["home_score"], errors="coerce").fillna(0.0)
+            + pd.to_numeric(frame["away_score"], errors="coerce").fillna(0.0)
+        )
+        frame["over_hit"] = (
+            frame["total_points"] > pd.to_numeric(frame["total_line"], errors="coerce").fillna(0.0)
+        ).astype(int)
+
+    if {"pitcher_era_home", "pitcher_era_away"}.issubset(frame.columns):
+        frame["pitching_total_impact"] = (
+            pd.to_numeric(frame["pitcher_era_home"], errors="coerce").fillna(0.0)
+            + pd.to_numeric(frame["pitcher_era_away"], errors="coerce").fillna(0.0)
+        )
+
+    feature_columns = [col for col in TOTALS_FEATURE_COLUMNS if col in frame.columns]
+    for optional_col in TOTALS_OPTIONAL_FEATURES:
+        if optional_col in frame.columns and optional_col not in feature_columns:
+            feature_columns.append(optional_col)
+    if len(feature_columns) < 3:
+        return None
+
+    x_totals = frame[feature_columns].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    y_totals = pd.to_numeric(frame["over_hit"], errors="coerce").fillna(0).astype(int)
+    if len(y_totals) < 50 or y_totals.nunique() < 2:
+        return None
+
+    totals_model = RandomForestClassifier(
+        n_estimators=200,
+        max_depth=6,
+        random_state=42,
+    )
+    totals_model.fit(x_totals, y_totals)
+    totals_model.feature_columns = feature_columns
+    return totals_model
+
+
+def predict_runtime_totals(totals_model, games_df: pd.DataFrame) -> pd.Series:
+    if totals_model is None or games_df is None or games_df.empty:
+        return pd.Series(dtype=float)
+    frame = games_df.copy()
+    if {"pitcher_era_home", "pitcher_era_away"}.issubset(frame.columns):
+        frame["pitching_total_impact"] = (
+            pd.to_numeric(frame["pitcher_era_home"], errors="coerce").fillna(0.0)
+            + pd.to_numeric(frame["pitcher_era_away"], errors="coerce").fillna(0.0)
+        )
+    feature_columns = getattr(totals_model, "feature_columns", TOTALS_FEATURE_COLUMNS)
+    for col in feature_columns:
+        if col not in frame.columns:
+            frame[col] = 0.0
+    x_game = frame[feature_columns].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    over_prob = totals_model.predict_proba(x_game)[:, 1]
+    return pd.Series(np.clip(over_prob, 0.01, 0.99), index=frame.index)
+
+
+def infer_totals_probability_from_features(games_df: pd.DataFrame) -> pd.Series:
+    frame = games_df.copy()
+    for col in TOTALS_FEATURE_COLUMNS:
+        if col not in frame.columns:
+            frame[col] = 0.0
+    offense_signal = (
+        pd.to_numeric(frame["offensive_rating_home"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(frame["offensive_rating_away"], errors="coerce").fillna(0.0)
+    )
+    defense_signal = (
+        pd.to_numeric(frame["defensive_rating_home"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(frame["defensive_rating_away"], errors="coerce").fillna(0.0)
+    )
+    pace_signal = (
+        pd.to_numeric(frame["pace_home"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(frame["pace_away"], errors="coerce").fillna(0.0)
+    ) / 2.0
+    injury_drag = (
+        pd.to_numeric(frame["injury_impact_home"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(frame["injury_impact_away"], errors="coerce").fillna(0.0)
+    )
+    raw = (offense_signal - defense_signal) * 0.03 + (pace_signal - 100.0) * 0.02 - injury_drag * 0.015
+    return pd.Series(1.0 / (1.0 + np.exp(-raw)), index=frame.index).clip(0.01, 0.99)
+
+
 def _build_runtime_moneyline_predictions(
     daily_df: pd.DataFrame,
     runtime_model,
+    totals_model,
     sport_name: str,
 ) -> list[Prediction]:
     if daily_df.empty or runtime_model is None:
@@ -819,6 +936,14 @@ def _build_runtime_moneyline_predictions(
 
     runtime_df = daily_df.copy()
     runtime_df["predicted_home_win_prob"] = predict_runtime(runtime_model, runtime_df)
+    runtime_df["predicted_over_prob"] = predict_runtime_totals(totals_model, runtime_df).reindex(runtime_df.index)
+    if "over_odds" in runtime_df.columns:
+        runtime_df["predicted_over_prob"] = runtime_df["predicted_over_prob"].fillna(
+            pd.to_numeric(runtime_df["over_odds"], errors="coerce").apply(american_to_implied_prob)
+        )
+    runtime_df["predicted_over_prob"] = runtime_df["predicted_over_prob"].fillna(
+        infer_totals_probability_from_features(runtime_df)
+    )
     def _calibrate_prob(p):
         return min(max(p, 0.05), 0.95)
     runtime_df["predicted_home_win_prob"] = runtime_df["predicted_home_win_prob"].apply(_calibrate_prob)
@@ -868,6 +993,46 @@ def _build_runtime_moneyline_predictions(
                     flags=[],
                     market_prob=away_market_prob,
                     metadata={"game": game_txt, "predicted_home_win_prob": home_prob, "model_prob": away_prob},
+                ),
+            ]
+        )
+
+        over_market_prob = american_to_implied_prob(int(row["over_odds"]))
+        under_market_prob = american_to_implied_prob(int(row["under_odds"]))
+        over_prob = float(np.clip(row.get("predicted_over_prob", over_market_prob), 0.01, 0.99))
+        under_prob = float(np.clip(1.0 - over_prob, 0.01, 0.99))
+        total_line = float(row.get("total_line", 0.0))
+        preds.extend(
+            [
+                Prediction(
+                    game_id=game_id,
+                    sport=sport_name,
+                    market="total",
+                    side=f"Over {total_line:.1f}",
+                    model_probability=over_prob,
+                    market_implied_probability=over_market_prob,
+                    edge=np.nan,
+                    expected_value=np.nan,
+                    confidence=over_prob,
+                    reason_summary="Runtime totals model prediction",
+                    flags=[],
+                    market_prob=over_market_prob,
+                    metadata={"game": game_txt, "predicted_over_prob": over_prob},
+                ),
+                Prediction(
+                    game_id=game_id,
+                    sport=sport_name,
+                    market="total",
+                    side=f"Under {total_line:.1f}",
+                    model_probability=under_prob,
+                    market_implied_probability=under_market_prob,
+                    edge=np.nan,
+                    expected_value=np.nan,
+                    confidence=under_prob,
+                    reason_summary="Runtime totals model prediction",
+                    flags=[],
+                    market_prob=under_market_prob,
+                    metadata={"game": game_txt, "predicted_over_prob": over_prob},
                 ),
             ]
         )
@@ -977,11 +1142,11 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
         if decimal_odds <= 1:
             continue
 
+        market_probability = american_to_prob(american_odds)
         pred_row = prediction_map.get((market, selection), {})
-        model_probability = float(np.clip(float(pred_row.get("model_probability", 0.5)), 0.01, 0.99))
+        model_probability = float(np.clip(float(pred_row.get("model_probability", market_probability)), 0.01, 0.99))
         if market == "moneyline" and home_model_prob is not None:
             model_probability = home_model_prob if selection == "moneyline_home" else 1.0 - home_model_prob
-        market_probability = american_to_prob(american_odds)
         edge = np.nan
         expected_value = np.nan
         metadata = pred_row.get("metadata", {})
@@ -1192,6 +1357,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             logger.info("Running %s pipeline", sport_clean)
             model = choose_model(sport_clean)
             model.runtime_model = None
+            runtime_totals_model = None
             historical, daily = load_historical_and_daily(sport_clean)
             historical = ensure_required_features(historical)
             daily = ensure_required_features(daily)
@@ -1268,6 +1434,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                             runtime_home_win_model = train_nhl_runtime_model(historical_df)
                         else:
                             runtime_home_win_model = train_runtime_model(historical_df)
+                        runtime_totals_model = train_runtime_totals_model(historical_df)
                         model.runtime_model = runtime_home_win_model
                         trained_in_run = runtime_home_win_model is not None
                         if runtime_home_win_model is not None:
@@ -1307,7 +1474,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 if "spread" not in daily.columns:
                     if "spread_line" in daily.columns:
                         daily["spread"] = daily["spread_line"]
-                preds = _build_runtime_moneyline_predictions(daily, model.runtime_model, sport_clean)
+                preds = _build_runtime_moneyline_predictions(daily, model.runtime_model, runtime_totals_model, sport_clean)
             else:
                 if sport_clean == "nhl":
                     raise RuntimeError("[NHL] Runtime model unavailable; baseline fallback is disabled.")
@@ -1441,6 +1608,9 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         bets.extend(prebuilt_candidates)
 
     bets_df = pd.DataFrame(bets)
+    if not bets_df.empty and {"market", "selection", "model_probability"}.issubset(bets_df.columns):
+        print("[TOTALS DEBUG]")
+        print(bets_df[bets_df["market"] == "totals"][["selection", "model_probability"]].head())
     print("Columns before bet selection:", bets_df.columns.tolist())
     df_model = bets_df.reindex(columns=["home_team", "away_team"]).copy()
     df_odds = pd.DataFrame(game_rows_by_id.values()).reindex(
