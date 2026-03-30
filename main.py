@@ -936,14 +936,6 @@ def _build_runtime_moneyline_predictions(
 
     runtime_df = daily_df.copy()
     runtime_df["predicted_home_win_prob"] = predict_runtime(runtime_model, runtime_df)
-    runtime_df["predicted_over_prob"] = predict_runtime_totals(totals_model, runtime_df).reindex(runtime_df.index)
-    if "over_odds" in runtime_df.columns:
-        runtime_df["predicted_over_prob"] = runtime_df["predicted_over_prob"].fillna(
-            pd.to_numeric(runtime_df["over_odds"], errors="coerce").apply(american_to_implied_prob)
-        )
-    runtime_df["predicted_over_prob"] = runtime_df["predicted_over_prob"].fillna(
-        infer_totals_probability_from_features(runtime_df)
-    )
     def _calibrate_prob(p):
         return min(max(p, 0.05), 0.95)
     runtime_df["predicted_home_win_prob"] = runtime_df["predicted_home_win_prob"].apply(_calibrate_prob)
@@ -999,8 +991,29 @@ def _build_runtime_moneyline_predictions(
 
         over_market_prob = american_to_implied_prob(int(row["over_odds"]))
         under_market_prob = american_to_implied_prob(int(row["under_odds"]))
-        over_prob = float(np.clip(row.get("predicted_over_prob", over_market_prob), 0.01, 0.99))
-        under_prob = float(np.clip(1.0 - over_prob, 0.01, 0.99))
+        over_prob = None
+        under_prob = None
+        if totals_model is not None:
+            game_frame = pd.DataFrame([row])
+            if {"pitcher_era_home", "pitcher_era_away"}.issubset(game_frame.columns):
+                game_frame["pitching_total_impact"] = (
+                    pd.to_numeric(game_frame["pitcher_era_home"], errors="coerce").fillna(0.0)
+                    + pd.to_numeric(game_frame["pitcher_era_away"], errors="coerce").fillna(0.0)
+                )
+            feature_columns = getattr(totals_model, "feature_columns", TOTALS_FEATURE_COLUMNS)
+            for col in feature_columns:
+                if col not in game_frame.columns:
+                    game_frame[col] = 0.0
+            x_game = game_frame[feature_columns].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+            probs = totals_model.predict_proba(x_game)[0]
+            under_prob = float(np.clip(probs[0], 0.01, 0.99))
+            over_prob = float(np.clip(probs[1], 0.01, 0.99))
+        else:
+            inferred_over_prob = infer_totals_probability_from_features(pd.DataFrame([row])).iloc[0]
+            if "over_odds" in row and not pd.isna(row.get("over_odds")):
+                inferred_over_prob = over_market_prob
+            over_prob = float(np.clip(inferred_over_prob, 0.01, 0.99))
+            under_prob = float(np.clip(1.0 - over_prob, 0.01, 0.99))
         total_line = float(row.get("total_line", 0.0))
         preds.extend(
             [
@@ -1609,8 +1622,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
     bets_df = pd.DataFrame(bets)
     if not bets_df.empty and {"market", "selection", "model_probability"}.issubset(bets_df.columns):
-        print("[TOTALS DEBUG]")
-        print(bets_df[bets_df["market"] == "totals"][["selection", "model_probability"]].head())
+        print("[TOTALS DEBUG CHECK]")
+        print(bets_df[bets_df["market"] == "totals"][["selection", "model_probability"]].head(10))
     print("Columns before bet selection:", bets_df.columns.tolist())
     df_model = bets_df.reindex(columns=["home_team", "away_team"]).copy()
     df_odds = pd.DataFrame(game_rows_by_id.values()).reindex(
