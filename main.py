@@ -1773,12 +1773,36 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         if {"selection", "home_team", "away_team", "home_odds", "away_odds", "model_prob", "market"}.issubset(df.columns):
             df = _align_moneyline_model_probability(df)
+            totals_mask = df["market"] == "totals"
+
+            # determine grouping key dynamically
+            group_cols = None
+
+            if "game_id" in df.columns:
+                group_cols = ["game_id"]
+            elif {"home_team", "away_team"}.issubset(df.columns):
+                group_cols = ["home_team", "away_team"]
+            elif "game" in df.columns:
+                group_cols = ["game"]
+            else:
+                print("⚠️ No grouping key found for totals normalization")
+                group_cols = None
+
+            # apply normalization safely
+            if group_cols:
+                df.loc[totals_mask, "model_probability"] = (
+                    df.loc[totals_mask]
+                    .groupby(group_cols)["model_probability"]
+                    .transform(lambda x: x / x.sum())
+                )
+
             print("[TOTALS AFTER ALIGN FIX]")
-            print(
-                df[df["market"].isin(["total", "totals"])]
-                .groupby("game_id")["model_probability"]
-                .sum()
-            )
+            if group_cols:
+                print(
+                    df[df["market"] == "totals"]
+                    .groupby(group_cols)["model_probability"]
+                    .sum()
+                )
             required_columns = ["favorite_team", "model_prob_home"]
             missing_debug_columns = [col for col in required_columns if col not in df.columns]
             if missing_debug_columns:
@@ -1916,12 +1940,36 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         # Injury-adjusted probability is the final probability used in edge and EV.
         df["model_probability"] = df["model_prob"]
-        totals_mask = df["market"].isin(["total", "totals"])
-        df.loc[totals_mask, "model_probability"] = (
-            df.loc[totals_mask]
-            .groupby("game_id")["model_probability"]
-            .transform(lambda x: x / x.sum())
-        )
+        totals_mask = df["market"] == "totals"
+
+        # determine grouping key dynamically
+        group_cols = None
+
+        if "game_id" in df.columns:
+            group_cols = ["game_id"]
+        elif {"home_team", "away_team"}.issubset(df.columns):
+            group_cols = ["home_team", "away_team"]
+        elif "game" in df.columns:
+            group_cols = ["game"]
+        else:
+            print("⚠️ No grouping key found for totals normalization")
+            group_cols = None
+
+        # apply normalization safely
+        if group_cols:
+            df.loc[totals_mask, "model_probability"] = (
+                df.loc[totals_mask]
+                .groupby(group_cols)["model_probability"]
+                .transform(lambda x: x / x.sum())
+            )
+
+        print("[TOTALS AFTER ALIGN FIX]")
+        if group_cols:
+            print(
+                df[df["market"] == "totals"]
+                .groupby(group_cols)["model_probability"]
+                .sum()
+            )
         non_totals_mask = ~df["market"].isin(["total", "totals"])
         df.loc[non_totals_mask, "model_probability"] = df.loc[non_totals_mask, "model_probability"].clip(0.05, 0.65)
         df = _lock_totals_probabilities(df)
