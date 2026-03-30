@@ -509,6 +509,26 @@ def _normalize_team_name(name: str | None) -> str:
     return shared_normalize_team_name(str(name or ""))
 
 
+def enforce_unique_market_bets(df: pd.DataFrame, min_expected_value: float = 0.02) -> pd.DataFrame:
+    """Keep only the top expected value selection per game and market."""
+    if df.empty:
+        return df.copy()
+
+    game_col = "game_id" if "game_id" in df.columns else "event_id" if "event_id" in df.columns else None
+    market_col = "market" if "market" in df.columns else "market_type" if "market_type" in df.columns else None
+    if not game_col or not market_col:
+        return df.copy()
+
+    ranked = df.sort_values("expected_value", ascending=False)
+    best_per_market = ranked.groupby([game_col, market_col], group_keys=False, sort=False).head(1).copy()
+
+    if "expected_value" in best_per_market.columns:
+        best_per_market["expected_value"] = pd.to_numeric(best_per_market["expected_value"], errors="coerce")
+        best_per_market = best_per_market[best_per_market["expected_value"] > min_expected_value].copy()
+
+    return best_per_market
+
+
 
 def _validate_game_odds_mapping(game_id: str, game_row: dict, game: str) -> tuple[bool, str | None]:
     home_team = str(game_row["home_team"])
@@ -1828,6 +1848,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             print("⚠️ Odds guard removed all bets — using fallback")
             final_bets = original_df.sort_values(by="expected_value", ascending=False).head(2).copy()
             final_bets["bet_tier"] = "Fallback"
+
+        final_bets = enforce_unique_market_bets(final_bets, min_expected_value=0.02)
 
         final_bets = final_bets.sort_values(
             by=["expected_value", "edge", confidence_col], ascending=[False, False, False]

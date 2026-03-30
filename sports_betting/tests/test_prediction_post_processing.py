@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from main import process_predictions, process_predictions_with_adjusted_injury
+from main import enforce_unique_market_bets, process_predictions, process_predictions_with_adjusted_injury
 
 
 def test_process_predictions_preserves_edge_ev_and_tracks_injury_columns():
@@ -61,3 +61,21 @@ def test_process_predictions_with_adjusted_injury_alias():
     out = process_predictions_with_adjusted_injury(predictions, injury_data)
     assert out.loc[0, "edge"] == pytest.approx(0.0)
     assert out.loc[0, "injury_impact_diff_post"] == pytest.approx(0.1)
+
+
+def test_enforce_unique_market_bets_keeps_single_best_side_per_game_market():
+    df = pd.DataFrame(
+        [
+            {"game_id": "G1", "market": "total", "selection": "Over 245.5", "expected_value": 0.07},
+            {"game_id": "G1", "market": "total", "selection": "Under 245.5", "expected_value": 0.03},
+            {"game_id": "G1", "market": "spread", "selection": "Home -4.5", "expected_value": 0.05},
+            {"game_id": "G1", "market": "spread", "selection": "Away +4.5", "expected_value": 0.04},
+            {"game_id": "G2", "market": "total", "selection": "Over 221.5", "expected_value": 0.019},
+        ]
+    )
+
+    out = enforce_unique_market_bets(df)
+
+    assert len(out) == 2
+    assert set(out["selection"]) == {"Over 245.5", "Home -4.5"}
+    assert out["expected_value"].min() > 0.02
