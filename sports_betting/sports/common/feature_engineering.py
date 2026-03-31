@@ -378,9 +378,11 @@ def add_market_context_features(games_df: pd.DataFrame) -> pd.DataFrame:
 
     out["market_prob"] = _series("market_prob")
     out["model_prob"] = _series("model_prob")
+    out["model_prob_before_injury"] = out["model_prob"]
     injury_impact_diff = _series("injury_impact_diff")
     out["model_prob"] = out["model_prob"] + (injury_impact_diff * INJURY_MODEL_PROB_WEIGHT)
     out["model_prob"] = out["model_prob"].clip(0.05, 0.95)
+    out["model_prob_after_injury"] = out["model_prob"]
     out["adjusted_prob"] = _series("adjusted_prob", default=np.nan)
     needs_adjust = out["adjusted_prob"].isna()
     if needs_adjust.any():
@@ -388,7 +390,14 @@ def add_market_context_features(games_df: pd.DataFrame) -> pd.DataFrame:
     injury_adjustment = injury_impact_diff * INJURY_EDGE_EV_SCALING_FACTOR
     out["edge"] = (out["model_prob"] - out["market_prob"]) * EDGE_SCALING_FACTOR
     pitcher_diff = _series("pitcher_diff")
-    goalie_diff = _series("goalie_diff")
+    out["goalie_save_home"] = _series("goalie_save_home", default=np.nan).fillna(0.905)
+    out["goalie_save_away"] = _series("goalie_save_away", default=np.nan).fillna(0.905)
+    if "goalie_diff" in out.columns:
+        goalie_diff = pd.to_numeric(out["goalie_diff"], errors="coerce")
+        goalie_diff = goalie_diff.where(goalie_diff.notna(), out["goalie_save_home"] - out["goalie_save_away"])
+    else:
+        goalie_diff = out["goalie_save_home"] - out["goalie_save_away"]
+    out["goalie_diff"] = goalie_diff
     sport_series = out.get("sport", pd.Series("", index=out.index)).astype(str).str.lower()
     mlb_mask = sport_series.eq("mlb")
     pitcher_weight = pd.Series(0.03, index=out.index, dtype="float64")

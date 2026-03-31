@@ -46,8 +46,17 @@ STARTER_WEIGHT = 1.5
 ROLE_PLAYER_WEIGHT = 1.0
 
 
+def clean_team_name(name: str | None) -> str:
+    return (
+        str(name or "").lower()
+        .strip()
+        .replace(".", "")
+        .replace("-", " ")
+    )
+
+
 def _normalize_team_name(name: str | None) -> str:
-    return normalize_team_name(str(name or ""))
+    return normalize_team_name(clean_team_name(str(name or "")))
 
 
 def normalize_team_name(name):
@@ -244,7 +253,7 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
             player_col = "player" if "player" in df_injuries.columns else "player_name"
             if team_col in df_injuries.columns and player_col in df_injuries.columns:
                 for _, rec in df_injuries.iterrows():
-                    team = str(rec.get(team_col, "")).strip()
+                    team = clean_team_name(str(rec.get(team_col, "")).strip())
                     player = str(rec.get(player_col, "")).strip()
                     if not team or not player:
                         continue
@@ -285,9 +294,13 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
     if "away_team" not in out.columns:
         out["away_team"] = ""
 
-    injuries["team_norm"] = injuries["team"].apply(normalize_team_name)
-    out["home_team_norm"] = out["home_team"].apply(normalize_team_name)
-    out["away_team_norm"] = out["away_team"].apply(normalize_team_name)
+    injuries["team_clean"] = injuries["team"].apply(clean_team_name)
+    out["home_team_clean"] = out["home_team"].apply(clean_team_name)
+    out["away_team_clean"] = out["away_team"].apply(clean_team_name)
+
+    injuries["team_norm"] = injuries["team_clean"].apply(normalize_team_name)
+    out["home_team_norm"] = out["home_team_clean"].apply(normalize_team_name)
+    out["away_team_norm"] = out["away_team_clean"].apply(normalize_team_name)
 
     injuries["player_weight"] = injuries.apply(
         lambda injury_row: classify_player(
@@ -317,4 +330,5 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
     print(out[["home_team", "home_team_norm"]].head())
     print("\n[INJURY MATCH COUNT]:", (out["injury_impact_diff"] != 0).sum())
 
+    out = out.drop(columns=["home_team_clean", "away_team_clean"], errors="ignore")
     return out
