@@ -687,7 +687,7 @@ def train_runtime_home_win_model(historical_df: pd.DataFrame, sport_name: str):
         return None
 
     model = train_runtime_model(historical_df)
-    if model is None:
+    if model is None or (isinstance(model, tuple) and len(model) > 0 and model[0] is None):
         print(f"[{sport_name.upper()}] Runtime home-win model skipped (insufficient signal).")
         return None
     print(f"[{sport_name.upper()}] Model trained successfully")
@@ -1508,7 +1508,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                             runtime_home_win_model = train_nhl_runtime_model(historical_df)
                         else:
                             runtime_home_win_model = train_runtime_model(historical_df)
-                        if runtime_home_win_model is None:
+                        print("🔥 MODEL TYPE:", type(runtime_home_win_model))
+                        if runtime_home_win_model is None or (
+                            isinstance(runtime_home_win_model, tuple)
+                            and len(runtime_home_win_model) > 0
+                            and runtime_home_win_model[0] is None
+                        ):
                             raise ValueError("🚨 MODEL IS NONE AFTER TRAINING")
                         print("🔥 MODEL READY:", runtime_home_win_model)
                         runtime_totals_model = train_runtime_totals_model(historical_df)
@@ -1527,7 +1532,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             else:
                 print(f"[{sport_clean.upper()}] Historical CSV missing at {csv_path}")
 
-            if runtime_home_win_model is None:
+            if runtime_home_win_model is None or (
+                isinstance(runtime_home_win_model, tuple)
+                and len(runtime_home_win_model) > 0
+                and runtime_home_win_model[0] is None
+            ):
                 if sport_clean == "nhl":
                     raise ValueError("[NHL] Missing historical data - cannot train model")
                 raise RuntimeError(
