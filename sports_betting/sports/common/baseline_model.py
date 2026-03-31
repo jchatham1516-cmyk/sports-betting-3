@@ -46,6 +46,10 @@ class DisciplinedBaselineModel(SportModel):
     sport = "generic"
     BASE_FEATURES = [
         "elo_diff",
+        "power_rating_diff",
+        "point_diff_diff",
+        "recent_form_diff",
+        "momentum_diff",
         "rest_diff",
         "travel_fatigue_diff",
         "travel_distance",
@@ -99,9 +103,10 @@ class DisciplinedBaselineModel(SportModel):
         return expanded
 
     def _ensure_features(self, frame: pd.DataFrame, features: list[str]) -> pd.DataFrame:
-        for col in features:
-            if col not in frame.columns:
-                frame[col] = 0.0
+        missing_cols = [col for col in features if col not in frame.columns]
+        if missing_cols:
+            filler_df = pd.DataFrame(0.0, index=frame.index, columns=missing_cols)
+            frame = pd.concat([frame, filler_df], axis=1)
         return frame
 
     def _calibrate(self, base, x: np.ndarray, y: pd.Series, method: str, cv) -> CalibratedClassifierCV:
@@ -112,6 +117,14 @@ class DisciplinedBaselineModel(SportModel):
     def _fit_market(self, df: pd.DataFrame, features: list[str], target_col: str, market: str) -> tuple[CalibratedClassifierCV, dict[str, float]]:
         x = self._build_features(df, self._expand_feature_set(df, features))
         y = df[target_col].astype(int)
+        protected = set(OPTIONAL_INJURY_FEATURES)
+        drop_cols = [col for col in x.columns if col not in protected and x[col].nunique(dropna=False) <= 1]
+        if drop_cols:
+            for col in drop_cols:
+                print(f"⚠️ Dropping useless feature: {col}")
+            x = x.drop(columns=drop_cols)
+        if x.empty:
+            raise ValueError(f"[{self.sport.upper()}] No informative features available for {market}")
 
         self.feature_columns[market] = list(x.columns)
         x_train = x.values

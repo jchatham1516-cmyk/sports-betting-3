@@ -184,8 +184,8 @@ def _coalesce_numeric(df: pd.DataFrame, candidates: list[str], default: float = 
 def ensure_required_columns(df: pd.DataFrame) -> pd.DataFrame:
     missing_cols = [col for col in REQUIRED_DEFAULT_COLUMNS if col not in df.columns]
     if missing_cols:
-        for col in missing_cols:
-            df[col] = 0
+        filler_df = pd.DataFrame(0, index=df.index, columns=missing_cols)
+        df = pd.concat([df, filler_df], axis=1)
         print(f"[DATA FIX] Added missing columns: {missing_cols}")
     return df
 
@@ -301,6 +301,21 @@ def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFra
     out["starting_goalie_out_flag"] = _coalesce_numeric(out, ["starting_goalie_out_flag", "starting_goalie_out_flag_away"])
     out["last5_net_rating_diff"] = _coalesce_numeric(out, ["last5_net_rating_diff"])
     out["last10_net_rating_diff"] = _coalesce_numeric(out, ["last10_net_rating_diff"])
+    out["point_diff_home"] = _coalesce_numeric(out, ["point_diff_home", "avg_point_diff_home", "score_diff_home"])
+    out["point_diff_away"] = _coalesce_numeric(out, ["point_diff_away", "avg_point_diff_away", "score_diff_away"])
+    out["point_diff_diff"] = out["point_diff_home"] - out["point_diff_away"]
+    out["last5_net_rating_home"] = _coalesce_numeric(out, ["last5_net_rating_home", "last5_home", "net_rating_home"])
+    out["last5_net_rating_away"] = _coalesce_numeric(out, ["last5_net_rating_away", "last5_away", "net_rating_away"])
+    out["last10_net_rating_home"] = _coalesce_numeric(out, ["last10_net_rating_home", "last10_home", "last5_net_rating_home"])
+    out["last10_net_rating_away"] = _coalesce_numeric(out, ["last10_net_rating_away", "last10_away", "last5_net_rating_away"])
+    out["recent_form_diff"] = out["last5_net_rating_home"] - out["last5_net_rating_away"]
+    out["momentum_diff"] = (
+        (out["last10_net_rating_home"] - out["last5_net_rating_home"])
+        - (out["last10_net_rating_away"] - out["last5_net_rating_away"])
+    )
+    out["power_rating_home"] = (_coalesce_numeric(out, ["elo_home"], default=1500.0) * 0.6) + (_coalesce_numeric(out, ["net_rating_home"], default=0.0) * 0.4)
+    out["power_rating_away"] = (_coalesce_numeric(out, ["elo_away"], default=1500.0) * 0.6) + (_coalesce_numeric(out, ["net_rating_away"], default=0.0) * 0.4)
+    out["power_rating_diff"] = out["power_rating_home"] - out["power_rating_away"]
     out["recent_goal_diff"] = _coalesce_numeric(out, ["recent_goal_diff"])
     out["recent_epa_diff"] = _coalesce_numeric(out, ["recent_epa_diff"])
     out["spread_line"] = _coalesce_numeric(out, ["spread_line", "closing_spread_home"])
@@ -324,6 +339,11 @@ def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFra
     out["home_cover"] = _coalesce_numeric(out, ["home_cover"]).round().clip(0, 1).astype(int)
     out["over_hit"] = _coalesce_numeric(out, ["over_hit"]).round().clip(0, 1).astype(int)
 
+    for col in out.columns:
+        if col in {"date", "event_date", "season", "game_id", "home_team", "away_team", "sport", "team"}:
+            continue
+        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0)
+
     out = add_elo_features(out, sport)
     LOGGER.info("[%s] Standardized historical feature columns for training.", sport.upper())
     return out
@@ -339,9 +359,9 @@ def load_historical_dataset(sport: str) -> pd.DataFrame:
     missing = [col for col in required_columns if col not in df.columns]
     if missing:
         print(f"[{sport.upper()}] ⚠️ Missing columns: {missing}")
-    for col in required_columns:
-        if col not in df.columns:
-            df[col] = 0
+    if missing:
+        filler_df = pd.DataFrame(0, index=df.index, columns=missing)
+        df = pd.concat([df, filler_df], axis=1)
     df = ensure_required_columns(df)
     return _standardize_historical_features(df, sport)
 
@@ -357,23 +377,24 @@ def load_nba_historical_dataset() -> pd.DataFrame:
     missing = [col for col in required_columns if col not in df.columns]
     if missing:
         print(f"[NBA] ⚠️ Missing columns: {missing}")
-    for col in required_columns:
-        if col not in df.columns:
-            df[col] = 0
+        filler_df = pd.DataFrame(0, index=df.index, columns=missing)
+        df = pd.concat([df, filler_df], axis=1)
     df = ensure_required_columns(df)
     missing_core = [c for c in NBA_CORE_REQUIRED_COLUMNS if c not in df.columns]
     if missing_core:
         print("[NBA] ⚠️ Historical validation warning — continuing with fallback models")
-        for col in missing_core:
-            df[col] = 0
+        filler_df = pd.DataFrame(0, index=df.index, columns=missing_core)
+        df = pd.concat([df, filler_df], axis=1)
 
     # Keep the full NBA schema stable even when optional sources are absent.
-    for col in NBA_HISTORICAL_COLUMNS:
-        if col not in df.columns:
-            df[col] = 0.0
-    for col in FEATURE_COLUMNS_BY_SPORT["nba"]:
-        if col not in df.columns:
-            df[col] = 0.0
+    nba_missing = [col for col in NBA_HISTORICAL_COLUMNS if col not in df.columns]
+    if nba_missing:
+        filler_df = pd.DataFrame(0.0, index=df.index, columns=nba_missing)
+        df = pd.concat([df, filler_df], axis=1)
+    feature_missing = [col for col in FEATURE_COLUMNS_BY_SPORT["nba"] if col not in df.columns]
+    if feature_missing:
+        filler_df = pd.DataFrame(0.0, index=df.index, columns=feature_missing)
+        df = pd.concat([df, filler_df], axis=1)
 
     standardized = _standardize_historical_features(df, "nba")
     for col in NBA_HISTORICAL_COLUMNS:

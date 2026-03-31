@@ -9,6 +9,10 @@ FEATURE_COLUMNS = [
     "is_favorite",
     "elo_diff",
     "injury_impact_diff",
+    "point_diff_diff",
+    "recent_form_diff",
+    "momentum_diff",
+    "power_rating_diff",
 ]
 
 REQUIRED_INJURY_COLUMNS = [
@@ -16,6 +20,30 @@ REQUIRED_INJURY_COLUMNS = [
     "injury_impact_away",
     "injury_impact_diff",
 ]
+
+
+def _append_missing_columns(df: pd.DataFrame, required_columns: list[str], default: float = 0.0) -> pd.DataFrame:
+    missing_cols = [col for col in required_columns if col not in df.columns]
+    if missing_cols:
+        filler_df = pd.DataFrame(default, index=df.index, columns=missing_cols)
+        df = pd.concat([df, filler_df], axis=1)
+    return df
+
+
+def _drop_constant_features(df: pd.DataFrame, protected_columns: set[str] | None = None) -> pd.DataFrame:
+    protected = protected_columns or set()
+    if len(df.index) <= 1:
+        return df
+    drop_cols: list[str] = []
+    for col in df.columns:
+        if col in protected:
+            continue
+        if df[col].nunique(dropna=False) <= 1:
+            print(f"⚠️ Dropping useless feature: {col}")
+            drop_cols.append(col)
+    if drop_cols:
+        df = df.drop(columns=drop_cols)
+    return df
 
 
 def american_to_implied_prob(odds):
@@ -26,9 +54,7 @@ def american_to_implied_prob(odds):
 
 def prepare_df(df):
     df = df.copy()
-    for col in REQUIRED_INJURY_COLUMNS:
-        if col not in df.columns:
-            df[col] = 0
+    df = _append_missing_columns(df, REQUIRED_INJURY_COLUMNS, default=0.0)
     if "home_moneyline" not in df.columns:
         if "home_odds" in df.columns:
             df["home_moneyline"] = df["home_odds"]
@@ -54,6 +80,31 @@ def prepare_df(df):
         df["injury_impact_diff"] = pd.to_numeric(df["injury_impact_home"], errors="coerce").fillna(0) - pd.to_numeric(df["injury_impact_away"], errors="coerce").fillna(0)
     else:
         df["injury_impact_diff"] = pd.to_numeric(df["injury_impact_diff"], errors="coerce").fillna(0)
+
+    df["elo_home"] = pd.to_numeric(df.get("elo_home"), errors="coerce").fillna(1500.0)
+    df["elo_away"] = pd.to_numeric(df.get("elo_away"), errors="coerce").fillna(1500.0)
+    df["net_rating_home"] = pd.to_numeric(df.get("net_rating_home"), errors="coerce").fillna(0.0)
+    df["net_rating_away"] = pd.to_numeric(df.get("net_rating_away"), errors="coerce").fillna(0.0)
+    df["point_diff_home"] = pd.to_numeric(df.get("point_diff_home"), errors="coerce").fillna(0.0)
+    df["point_diff_away"] = pd.to_numeric(df.get("point_diff_away"), errors="coerce").fillna(0.0)
+    df["last5_net_rating_home"] = pd.to_numeric(df.get("last5_net_rating_home"), errors="coerce").fillna(df["net_rating_home"])
+    df["last5_net_rating_away"] = pd.to_numeric(df.get("last5_net_rating_away"), errors="coerce").fillna(df["net_rating_away"])
+    df["last10_net_rating_home"] = pd.to_numeric(df.get("last10_net_rating_home"), errors="coerce").fillna(df["last5_net_rating_home"])
+    df["last10_net_rating_away"] = pd.to_numeric(df.get("last10_net_rating_away"), errors="coerce").fillna(df["last5_net_rating_away"])
+
+    df["point_diff_diff"] = df["point_diff_home"] - df["point_diff_away"]
+    df["recent_form_diff"] = df["last5_net_rating_home"] - df["last5_net_rating_away"]
+    df["momentum_diff"] = (
+        (df["last10_net_rating_home"] - df["last5_net_rating_home"])
+        - (df["last10_net_rating_away"] - df["last5_net_rating_away"])
+    )
+    df["power_rating_home"] = (df["elo_home"] * 0.6) + (df["net_rating_home"] * 0.4)
+    df["power_rating_away"] = (df["elo_away"] * 0.6) + (df["net_rating_away"] * 0.4)
+    df["power_rating_diff"] = df["power_rating_home"] - df["power_rating_away"]
+    df["elo_diff"] = pd.to_numeric(df.get("elo_diff"), errors="coerce").fillna(df["elo_home"] - df["elo_away"])
+
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     return df
 
 
@@ -65,17 +116,18 @@ def train_runtime_model(df):
     if len(df) < 10:
         return None
 
-    for col in FEATURE_COLUMNS:
-        if col not in df.columns:
-            df[col] = 0
+    df = _append_missing_columns(df, FEATURE_COLUMNS, default=0.0)
+    df = _drop_constant_features(df, protected_columns={"home_win"})
+    feature_columns = [col for col in FEATURE_COLUMNS if col in df.columns]
+    if not feature_columns:
+        return None
 
-    X = df[FEATURE_COLUMNS].copy().fillna(0)
+    X = df[feature_columns].copy().fillna(0)
     y = pd.to_numeric(df["home_win"], errors="coerce").fillna(0).astype(int)
 
     if y.nunique() < 2:
         return None
 
-    feature_columns = X.columns.tolist()
     scaler = StandardScaler()
     X = scaler.fit_transform(X)
 
@@ -95,9 +147,7 @@ def train_runtime_model(df):
 
 def predict(model_bundle, games_df):
     df = prepare_df(games_df)
-    for col in REQUIRED_INJURY_COLUMNS:
-        if col not in df.columns:
-            df[col] = 0
+    df = _append_missing_columns(df, REQUIRED_INJURY_COLUMNS, default=0.0)
 
     scaler = None
     model = model_bundle

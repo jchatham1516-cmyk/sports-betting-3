@@ -450,6 +450,27 @@ def add_recent_form_features(games_df: pd.DataFrame, sport: str) -> pd.DataFrame
         out["recent_goal_diff"] = 0.0
         out["recent_epa_diff"] = 0.0
 
+    def _series(col: str, default: float | None = 0.0) -> pd.Series:
+        if col in out.columns:
+            series = pd.to_numeric(out[col], errors="coerce")
+            return series if default is None else series.fillna(default)
+        fallback = np.nan if default is None else default
+        return pd.Series(fallback, index=out.index, dtype="float64")
+
+    out["point_diff_home"] = _series("point_diff_home", default=None).fillna(_series("home_score") - _series("away_score"))
+    out["point_diff_away"] = _series("point_diff_away", default=None).fillna(_series("away_score") - _series("home_score"))
+    out["point_diff_diff"] = out["point_diff_home"] - out["point_diff_away"]
+
+    out["last5_net_rating_home"] = _series("last5_net_rating_home", default=None).fillna(_series("last5_home"))
+    out["last5_net_rating_away"] = _series("last5_net_rating_away", default=None).fillna(_series("last5_away"))
+    out["last10_net_rating_home"] = _series("last10_net_rating_home", default=None).fillna(_series("last10_home")).fillna(out["last5_net_rating_home"])
+    out["last10_net_rating_away"] = _series("last10_net_rating_away", default=None).fillna(_series("last10_away")).fillna(out["last5_net_rating_away"])
+    out["recent_form_diff"] = out["last5_net_rating_home"] - out["last5_net_rating_away"]
+    out["momentum_diff"] = (
+        (out["last10_net_rating_home"] - out["last5_net_rating_home"])
+        - (out["last10_net_rating_away"] - out["last5_net_rating_away"])
+    )
+
     return out.fillna(0.0)
 
 
@@ -460,6 +481,25 @@ def enrich_with_context_features(games_df: pd.DataFrame, sport: str, data_root: 
     out = add_efficiency_features(out, sport, data_root)
     out = add_market_context_features(out)
     out = add_recent_form_features(out, sport)
+
+    def _series(col: str, default: float = 0.0) -> pd.Series:
+        if col in out.columns:
+            return pd.to_numeric(out[col], errors="coerce").fillna(default)
+        return pd.Series(default, index=out.index, dtype="float64")
+
+    out["power_rating_home"] = (
+        _series("elo_home", 1500.0) * 0.6
+        + _series("net_rating_home", 0.0) * 0.4
+    )
+    out["power_rating_away"] = (
+        _series("elo_away", 1500.0) * 0.6
+        + _series("net_rating_away", 0.0) * 0.4
+    )
+    out["power_rating_diff"] = out["power_rating_home"] - out["power_rating_away"]
     out["injury_impact"] = out.get("injury_impact_diff", 0.0)
     out["home_indicator"] = pd.to_numeric(out["home_indicator"], errors="coerce").fillna(1.0) if "home_indicator" in out.columns else 1.0
+    for col in out.columns:
+        if col in {"date", "event_date", "season", "game_id", "home_team", "away_team", "sport", "team"}:
+            continue
+        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0)
     return out.fillna(0.0)
