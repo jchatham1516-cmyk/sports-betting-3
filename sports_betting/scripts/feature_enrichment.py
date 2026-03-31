@@ -145,6 +145,16 @@ def normalize_team(name: object) -> str:
     return cleaned
 
 
+
+
+def clean_team_name(name: object) -> str:
+    return (
+        str(name or "").lower()
+        .strip()
+        .replace(".", "")
+        .replace("-", " ")
+    )
+
 def _coerce_espn_game_rows(payload: object) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     if isinstance(payload, dict):
@@ -595,12 +605,22 @@ def _merge_home_away_team_stats(df: pd.DataFrame, team_df: pd.DataFrame, mapping
         stats = stats.rename(columns={"team": "team_norm"})
     if "team_norm" not in stats.columns:
         raise RuntimeError("[DATA ERROR] Team stats must include `team` or `team_norm`")
-    stats["team_norm"] = stats["team_norm"].apply(_normalize_team)
+    stats["team_norm"] = stats["team_norm"].apply(clean_team_name).apply(_normalize_team)
+
+    if "home_team" in out.columns:
+        out["home_team"] = out["home_team"].apply(clean_team_name)
+    if "away_team" in out.columns:
+        out["away_team"] = out["away_team"].apply(clean_team_name)
 
     if "home_team_norm" not in out.columns and "home_team" in out.columns:
-        out["home_team_norm"] = out["home_team"].apply(_normalize_team)
+        out["home_team_norm"] = out["home_team"].apply(clean_team_name).apply(_normalize_team)
     if "away_team_norm" not in out.columns and "away_team" in out.columns:
-        out["away_team_norm"] = out["away_team"].apply(_normalize_team)
+        out["away_team_norm"] = out["away_team"].apply(clean_team_name).apply(_normalize_team)
+
+    if "home_team_norm" in out.columns:
+        out["home_team_norm"] = out["home_team_norm"].apply(clean_team_name).apply(_normalize_team)
+    if "away_team_norm" in out.columns:
+        out["away_team_norm"] = out["away_team_norm"].apply(clean_team_name).apply(_normalize_team)
 
     target_columns = set(mapping.values()) | {dst.replace("_home", "_away") for dst in mapping.values()}
     cols_to_drop = [col for col in out.columns if col in target_columns or col.endswith("_x") or col.endswith("_y")]
