@@ -199,150 +199,161 @@ def _american_to_prob(odds: pd.Series | float | int) -> pd.Series:
 
 def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFrame:
     out = df.copy()
+    rename_block: dict[str, pd.Series] = {}
     for team_col in ("team", "home_team", "away_team"):
         if team_col in out.columns:
-            out[team_col] = out[team_col].apply(_normalize_team_name)
-    if "home_moneyline" not in out.columns:
-        if "closing_moneyline_home" in out.columns:
-            out["home_moneyline"] = out["closing_moneyline_home"]
-        elif "home_odds" in out.columns:
-            out["home_moneyline"] = out["home_odds"]
-    if "implied_home_prob" not in out.columns and "home_moneyline" in out.columns:
-        out["implied_home_prob"] = _american_to_prob(out["home_moneyline"])
-    if "spread" not in out.columns:
-        if "closing_spread_home" in out.columns:
-            out["spread"] = out["closing_spread_home"]
-        elif "spread_line" in out.columns:
-            out["spread"] = out["spread_line"]
-    if "spread" in out.columns:
-        out["spread_abs"] = pd.to_numeric(out["spread"], errors="coerce").fillna(0.0).abs()
-    if "home_moneyline" in out.columns:
-        out["is_favorite"] = (pd.to_numeric(out["home_moneyline"], errors="coerce").fillna(0.0) < 0).astype(int)
+            rename_block[team_col] = out[team_col].apply(_normalize_team_name)
+    if rename_block:
+        out = out.assign(**rename_block)
 
-    out["elo_diff"] = _coalesce_numeric(out, ["elo_diff"])
-    out["rest_diff"] = _coalesce_numeric(out, ["rest_diff"])
-    out["travel_distance"] = _coalesce_numeric(out, ["travel_distance", "travel_fatigue_diff", "travel_diff"])
-    out["offensive_rating_diff"] = _coalesce_numeric(
-        out, ["offensive_rating_diff", "off_rating_diff", "epa_per_play_diff", "xgf_diff", "off_rating_diff"]
+    home_moneyline = (
+        _coalesce_numeric(out, ["home_moneyline", "closing_moneyline_home", "home_odds"])
+        if {"home_moneyline", "closing_moneyline_home", "home_odds"} & set(out.columns)
+        else pd.Series(0.0, index=out.index, dtype="float64")
     )
-    out["defensive_rating_diff"] = _coalesce_numeric(
-        out, ["defensive_rating_diff", "def_rating_diff", "xga_diff", "pressure_rate_diff"]
+    spread = (
+        _coalesce_numeric(out, ["spread", "closing_spread_home", "spread_line"])
+        if {"spread", "closing_spread_home", "spread_line"} & set(out.columns)
+        else pd.Series(0.0, index=out.index, dtype="float64")
     )
-    out["net_rating_diff"] = _coalesce_numeric(out, ["net_rating_diff", "success_rate_diff", "special_teams_diff"])
-    out["injury_impact"] = _coalesce_numeric(out, ["injury_impact", "injury_impact_diff", "qb_impact_diff", "goalie_strength_diff"])
-    out["pace"] = _coalesce_numeric(out, ["pace", "pace_diff", "xg_total", "weather_total_impact"])
-    out["home_indicator"] = _coalesce_numeric(out, ["home_indicator"], default=1.0).clip(0, 1)
-    out["travel_fatigue_diff"] = _coalesce_numeric(out, ["travel_fatigue_diff"])
-    out["injury_impact_home"] = _coalesce_numeric(out, ["injury_impact_home"])
-    out["injury_impact_away"] = _coalesce_numeric(out, ["injury_impact_away"])
-    out["injury_impact_diff"] = _coalesce_numeric(out, ["injury_impact_diff", "injury_impact"]) 
-    out["starter_out_count_home"] = _coalesce_numeric(out, ["starter_out_count_home"])
-    out["starter_out_count_away"] = _coalesce_numeric(out, ["starter_out_count_away"])
-    out["star_player_out_flag_home"] = _coalesce_numeric(out, ["star_player_out_flag_home"])
-    out["star_player_out_flag_away"] = _coalesce_numeric(out, ["star_player_out_flag_away"])
-    out["starting_goalie_out_flag_home"] = _coalesce_numeric(out, ["starting_goalie_out_flag_home"])
-    out["starting_goalie_out_flag_away"] = _coalesce_numeric(out, ["starting_goalie_out_flag_away"])
-    out["qb_out_flag_home"] = _coalesce_numeric(out, ["qb_out_flag_home"])
-    out["qb_out_flag_away"] = _coalesce_numeric(out, ["qb_out_flag_away"])
-    out["offensive_injury_weight_diff"] = _coalesce_numeric(out, ["offensive_injury_weight_diff"])
-    out["defensive_injury_weight_diff"] = _coalesce_numeric(out, ["defensive_injury_weight_diff"])
-    out["offensive_injury_weight_home"] = _coalesce_numeric(out, ["offensive_injury_weight_home"])
-    out["offensive_injury_weight_away"] = _coalesce_numeric(out, ["offensive_injury_weight_away"])
-    out["defensive_injury_weight_home"] = _coalesce_numeric(out, ["defensive_injury_weight_home"])
-    out["defensive_injury_weight_away"] = _coalesce_numeric(out, ["defensive_injury_weight_away"])
-    out["injury_confidence_score"] = _coalesce_numeric(out, ["injury_confidence_score"], default=0.5)
-    out["injury_data_stale_flag"] = _coalesce_numeric(out, ["injury_data_stale_flag"])
-    out["market_prob"] = _coalesce_numeric(out, ["market_prob"])
-    out["model_prob"] = _coalesce_numeric(out, ["model_prob"])
-    out["model_prob_before_injury"] = out["model_prob"]
-    out["model_prob"] = (out["model_prob"] + (out["injury_impact_diff"] * 0.03)).clip(0.05, 0.95)
-    out["model_prob_after_injury"] = out["model_prob"]
-    out["adjusted_prob"] = _coalesce_numeric(out, ["adjusted_prob"], default=np.nan)
-    missing_adjusted = out["adjusted_prob"].isna()
+
+    new_features = pd.DataFrame(
+        {
+            "home_moneyline": home_moneyline,
+            "implied_home_prob": _american_to_prob(home_moneyline),
+            "spread": spread,
+            "spread_abs": pd.to_numeric(spread, errors="coerce").fillna(0.0).abs(),
+            "is_favorite": (pd.to_numeric(home_moneyline, errors="coerce").fillna(0.0) < 0).astype(int),
+            "elo_diff": _coalesce_numeric(out, ["elo_diff"]),
+            "rest_diff": _coalesce_numeric(out, ["rest_diff"]),
+            "travel_distance": _coalesce_numeric(out, ["travel_distance", "travel_fatigue_diff", "travel_diff"]),
+            "offensive_rating_diff": _coalesce_numeric(out, ["offensive_rating_diff", "off_rating_diff", "epa_per_play_diff", "xgf_diff", "off_rating_diff"]),
+            "defensive_rating_diff": _coalesce_numeric(out, ["defensive_rating_diff", "def_rating_diff", "xga_diff", "pressure_rate_diff"]),
+            "net_rating_diff": _coalesce_numeric(out, ["net_rating_diff", "success_rate_diff", "special_teams_diff"]),
+            "injury_impact": _coalesce_numeric(out, ["injury_impact", "injury_impact_diff", "qb_impact_diff", "goalie_strength_diff"]),
+            "pace": _coalesce_numeric(out, ["pace", "pace_diff", "xg_total", "weather_total_impact"]),
+            "home_indicator": _coalesce_numeric(out, ["home_indicator"], default=1.0).clip(0, 1),
+            "travel_fatigue_diff": _coalesce_numeric(out, ["travel_fatigue_diff"]),
+            "injury_impact_home": _coalesce_numeric(out, ["injury_impact_home"]),
+            "injury_impact_away": _coalesce_numeric(out, ["injury_impact_away"]),
+            "injury_impact_diff": _coalesce_numeric(out, ["injury_impact_diff", "injury_impact"]),
+            "starter_out_count_home": _coalesce_numeric(out, ["starter_out_count_home"]),
+            "starter_out_count_away": _coalesce_numeric(out, ["starter_out_count_away"]),
+            "star_player_out_flag_home": _coalesce_numeric(out, ["star_player_out_flag_home"]),
+            "star_player_out_flag_away": _coalesce_numeric(out, ["star_player_out_flag_away"]),
+            "starting_goalie_out_flag_home": _coalesce_numeric(out, ["starting_goalie_out_flag_home"]),
+            "starting_goalie_out_flag_away": _coalesce_numeric(out, ["starting_goalie_out_flag_away"]),
+            "qb_out_flag_home": _coalesce_numeric(out, ["qb_out_flag_home"]),
+            "qb_out_flag_away": _coalesce_numeric(out, ["qb_out_flag_away"]),
+            "offensive_injury_weight_diff": _coalesce_numeric(out, ["offensive_injury_weight_diff"]),
+            "defensive_injury_weight_diff": _coalesce_numeric(out, ["defensive_injury_weight_diff"]),
+            "offensive_injury_weight_home": _coalesce_numeric(out, ["offensive_injury_weight_home"]),
+            "offensive_injury_weight_away": _coalesce_numeric(out, ["offensive_injury_weight_away"]),
+            "defensive_injury_weight_home": _coalesce_numeric(out, ["defensive_injury_weight_home"]),
+            "defensive_injury_weight_away": _coalesce_numeric(out, ["defensive_injury_weight_away"]),
+            "injury_confidence_score": _coalesce_numeric(out, ["injury_confidence_score"], default=0.5),
+            "injury_data_stale_flag": _coalesce_numeric(out, ["injury_data_stale_flag"]),
+            "market_prob": _coalesce_numeric(out, ["market_prob"]),
+            "model_prob": _coalesce_numeric(out, ["model_prob"]),
+            "adjusted_prob": _coalesce_numeric(out, ["adjusted_prob"], default=np.nan),
+            "pitcher_era_home": _coalesce_numeric(out, ["pitcher_era_home"]),
+            "pitcher_era_away": _coalesce_numeric(out, ["pitcher_era_away"]),
+            "pitcher_diff": _coalesce_numeric(out, ["pitcher_diff", "starter_rating_diff"]),
+            "goalie_save_home": _coalesce_numeric(out, ["goalie_save_home", "goalie_save_strength_home"], default=np.nan).astype(float).fillna(0.905),
+            "goalie_save_away": _coalesce_numeric(out, ["goalie_save_away", "goalie_save_strength_away"], default=np.nan).astype(float).fillna(0.905),
+            "expected_value": _coalesce_numeric(out, ["expected_value"]),
+            "line_movement": _coalesce_numeric(out, ["line_movement"]),
+            "clv_placeholder": _coalesce_numeric(out, ["clv_placeholder"]),
+            "public_favorite_bias_flag": _coalesce_numeric(out, ["public_favorite_bias_flag", "public_bias_flag"]),
+            "public_bias_flag": _coalesce_numeric(out, ["public_bias_flag", "public_favorite_bias_flag"]),
+            "favorite_inflation_flag": _coalesce_numeric(out, ["favorite_inflation_flag"]),
+            "underdog_inflation_flag": _coalesce_numeric(out, ["underdog_inflation_flag"]),
+            "rest_days_home": _coalesce_numeric(out, ["rest_days_home"]),
+            "rest_days_away": _coalesce_numeric(out, ["rest_days_away"]),
+            "back_to_back_home": _coalesce_numeric(out, ["back_to_back_home"]),
+            "back_to_back_away": _coalesce_numeric(out, ["back_to_back_away"]),
+            "three_games_in_four_home": _coalesce_numeric(out, ["three_games_in_four_home", "three_in_four_home"]),
+            "three_games_in_four_away": _coalesce_numeric(out, ["three_games_in_four_away", "three_in_four_away"]),
+            "three_games_in_four": _coalesce_numeric(out, ["three_games_in_four", "three_in_four"]),
+            "road_trip_length_home": _coalesce_numeric(out, ["road_trip_length_home"]),
+            "road_trip_length_away": _coalesce_numeric(out, ["road_trip_length_away"]),
+            "timezone_shift_home": _coalesce_numeric(out, ["timezone_shift_home"]),
+            "timezone_shift_away": _coalesce_numeric(out, ["timezone_shift_away"]),
+            "time_zone_shift": _coalesce_numeric(out, ["time_zone_shift", "timezone_shift_away"]),
+            "travel_distance_home": _coalesce_numeric(out, ["travel_distance_home"]),
+            "travel_distance_away": _coalesce_numeric(out, ["travel_distance_away"]),
+            "rest_days": _coalesce_numeric(out, ["rest_days", "rest_days_away"]),
+            "back_to_back": _coalesce_numeric(out, ["back_to_back", "back_to_back_away"]),
+            "starter_out_count": _coalesce_numeric(out, ["starter_out_count", "starter_out_count_away"]),
+            "star_player_out_flag": _coalesce_numeric(out, ["star_player_out_flag", "star_player_out_flag_away"]),
+            "qb_out_flag": _coalesce_numeric(out, ["qb_out_flag", "qb_out_flag_away"]),
+            "starting_goalie_out_flag": _coalesce_numeric(out, ["starting_goalie_out_flag", "starting_goalie_out_flag_away"]),
+            "last5_net_rating_diff": _coalesce_numeric(out, ["last5_net_rating_diff"]),
+            "last10_net_rating_diff": _coalesce_numeric(out, ["last10_net_rating_diff"]),
+            "point_diff_home": _coalesce_numeric(out, ["point_diff_home", "avg_point_diff_home", "score_diff_home"]),
+            "point_diff_away": _coalesce_numeric(out, ["point_diff_away", "avg_point_diff_away", "score_diff_away"]),
+            "last5_net_rating_home": _coalesce_numeric(out, ["last5_net_rating_home", "last5_home", "net_rating_home"]),
+            "last5_net_rating_away": _coalesce_numeric(out, ["last5_net_rating_away", "last5_away", "net_rating_away"]),
+            "last10_net_rating_home": _coalesce_numeric(out, ["last10_net_rating_home", "last10_home", "last5_net_rating_home"]),
+            "last10_net_rating_away": _coalesce_numeric(out, ["last10_net_rating_away", "last10_away", "last5_net_rating_away"]),
+            "recent_goal_diff": _coalesce_numeric(out, ["recent_goal_diff"]),
+            "recent_epa_diff": _coalesce_numeric(out, ["recent_epa_diff"]),
+            "spread_line": _coalesce_numeric(out, ["spread_line", "closing_spread_home"]),
+            "total_line": _coalesce_numeric(out, ["total_line", "closing_total"]),
+            "home_score": _coalesce_numeric(out, ["home_score"]),
+            "away_score": _coalesce_numeric(out, ["away_score"]),
+            "date": pd.to_datetime(out.get("date", out.get("event_date")), errors="coerce", utc=True),
+            "event_date": pd.to_datetime(out.get("event_date", out.get("date")), errors="coerce", utc=True),
+            "closing_moneyline_home": _coalesce_numeric(out, ["closing_moneyline_home", "home_odds"]),
+            "closing_moneyline_away": _coalesce_numeric(out, ["closing_moneyline_away", "away_odds"]),
+            "closing_spread_home": _coalesce_numeric(out, ["closing_spread_home", "spread_line"]),
+            "closing_total": _coalesce_numeric(out, ["closing_total", "total_line"]),
+            "opening_line": _coalesce_numeric(out, ["opening_line", "open_line", "spread_line"]),
+            "bet_line": _coalesce_numeric(out, ["bet_line", "spread_line"]),
+            "current_line": _coalesce_numeric(out, ["current_line", "spread_line"]),
+            "closing_line": _coalesce_numeric(out, ["closing_line", "spread_line"]),
+            "home_win": _coalesce_numeric(out, ["home_win"]).round().clip(0, 1).astype(int),
+            "home_cover": _coalesce_numeric(out, ["home_cover"]).round().clip(0, 1).astype(int),
+            "over_hit": _coalesce_numeric(out, ["over_hit"]).round().clip(0, 1).astype(int),
+        },
+        index=out.index,
+    )
+    new_features["model_prob_before_injury"] = new_features["model_prob"]
+    new_features["model_prob"] = (new_features["model_prob"] + (new_features["injury_impact_diff"] * 0.03)).clip(0.05, 0.95)
+    new_features["model_prob_after_injury"] = new_features["model_prob"]
+    missing_adjusted = new_features["adjusted_prob"].isna()
     if missing_adjusted.any():
-        out.loc[missing_adjusted, "adjusted_prob"] = out.loc[missing_adjusted, "model_prob"]
-    out["edge"] = (out["model_prob"] - out["market_prob"]) * 1.5
-    out["pitcher_era_home"] = _coalesce_numeric(out, ["pitcher_era_home"])
-    out["pitcher_era_away"] = _coalesce_numeric(out, ["pitcher_era_away"])
-    out["pitcher_diff"] = _coalesce_numeric(out, ["pitcher_diff", "starter_rating_diff"])
-    out["goalie_save_home"] = _coalesce_numeric(out, ["goalie_save_home", "goalie_save_strength_home"], default=np.nan).astype(float).fillna(0.905)
-    out["goalie_save_away"] = _coalesce_numeric(out, ["goalie_save_away", "goalie_save_strength_away"], default=np.nan).astype(float).fillna(0.905)
-    out["goalie_diff"] = out["goalie_save_home"] - out["goalie_save_away"]
+        new_features.loc[missing_adjusted, "adjusted_prob"] = new_features.loc[missing_adjusted, "model_prob"]
+    new_features["edge"] = (new_features["model_prob"] - new_features["market_prob"]) * 1.5
+    new_features["goalie_diff"] = new_features["goalie_save_home"] - new_features["goalie_save_away"]
     sport_series = out.get("sport", pd.Series("", index=out.index)).astype(str).str.lower()
     pitcher_weight = pd.Series(0.03, index=out.index, dtype="float64")
     pitcher_weight.loc[sport_series.eq("mlb")] = 0.015
-    out["adjusted_edge"] = out["edge"] + (out["pitcher_diff"] * pitcher_weight) + (out["goalie_diff"] * 0.05)
-    out["expected_value"] = _coalesce_numeric(out, ["expected_value"])
-    out["line_movement"] = _coalesce_numeric(out, ["line_movement"])
-    out["clv_placeholder"] = _coalesce_numeric(out, ["clv_placeholder"])
-    out["public_favorite_bias_flag"] = _coalesce_numeric(out, ["public_favorite_bias_flag", "public_bias_flag"])
-    out["public_bias_flag"] = _coalesce_numeric(out, ["public_bias_flag", "public_favorite_bias_flag"])
-    out["favorite_inflation_flag"] = _coalesce_numeric(out, ["favorite_inflation_flag"])
-    out["underdog_inflation_flag"] = _coalesce_numeric(out, ["underdog_inflation_flag"])
-    out["rest_days_home"] = _coalesce_numeric(out, ["rest_days_home"])
-    out["rest_days_away"] = _coalesce_numeric(out, ["rest_days_away"])
-    out["back_to_back_home"] = _coalesce_numeric(out, ["back_to_back_home"])
-    out["back_to_back_away"] = _coalesce_numeric(out, ["back_to_back_away"])
-    out["three_games_in_four_home"] = _coalesce_numeric(out, ["three_games_in_four_home", "three_in_four_home"])
-    out["three_games_in_four_away"] = _coalesce_numeric(out, ["three_games_in_four_away", "three_in_four_away"])
-    out["three_games_in_four"] = _coalesce_numeric(out, ["three_games_in_four", "three_in_four"])
-    out["road_trip_length_home"] = _coalesce_numeric(out, ["road_trip_length_home"])
-    out["road_trip_length_away"] = _coalesce_numeric(out, ["road_trip_length_away"])
-    out["timezone_shift_home"] = _coalesce_numeric(out, ["timezone_shift_home"])
-    out["timezone_shift_away"] = _coalesce_numeric(out, ["timezone_shift_away"])
-    out["time_zone_shift"] = _coalesce_numeric(out, ["time_zone_shift", "timezone_shift_away"])
-    out["travel_distance_home"] = _coalesce_numeric(out, ["travel_distance_home"])
-    out["travel_distance_away"] = _coalesce_numeric(out, ["travel_distance_away"])
-    out["rest_days"] = _coalesce_numeric(out, ["rest_days", "rest_days_away"])
-    out["back_to_back"] = _coalesce_numeric(out, ["back_to_back", "back_to_back_away"])
-    out["starter_out_count"] = _coalesce_numeric(out, ["starter_out_count", "starter_out_count_away"])
-    out["star_player_out_flag"] = _coalesce_numeric(out, ["star_player_out_flag", "star_player_out_flag_away"])
-    out["qb_out_flag"] = _coalesce_numeric(out, ["qb_out_flag", "qb_out_flag_away"])
-    out["starting_goalie_out_flag"] = _coalesce_numeric(out, ["starting_goalie_out_flag", "starting_goalie_out_flag_away"])
-    out["last5_net_rating_diff"] = _coalesce_numeric(out, ["last5_net_rating_diff"])
-    out["last10_net_rating_diff"] = _coalesce_numeric(out, ["last10_net_rating_diff"])
-    out["point_diff_home"] = _coalesce_numeric(out, ["point_diff_home", "avg_point_diff_home", "score_diff_home"])
-    out["point_diff_away"] = _coalesce_numeric(out, ["point_diff_away", "avg_point_diff_away", "score_diff_away"])
-    out["point_diff_diff"] = out["point_diff_home"] - out["point_diff_away"]
-    out["last5_net_rating_home"] = _coalesce_numeric(out, ["last5_net_rating_home", "last5_home", "net_rating_home"])
-    out["last5_net_rating_away"] = _coalesce_numeric(out, ["last5_net_rating_away", "last5_away", "net_rating_away"])
-    out["last10_net_rating_home"] = _coalesce_numeric(out, ["last10_net_rating_home", "last10_home", "last5_net_rating_home"])
-    out["last10_net_rating_away"] = _coalesce_numeric(out, ["last10_net_rating_away", "last10_away", "last5_net_rating_away"])
-    out["recent_form_diff"] = out["last5_net_rating_home"] - out["last5_net_rating_away"]
-    out["momentum_diff"] = (
-        (out["last10_net_rating_home"] - out["last5_net_rating_home"])
-        - (out["last10_net_rating_away"] - out["last5_net_rating_away"])
+    new_features["adjusted_edge"] = new_features["edge"] + (new_features["pitcher_diff"] * pitcher_weight) + (new_features["goalie_diff"] * 0.05)
+    new_features["point_diff_diff"] = new_features["point_diff_home"] - new_features["point_diff_away"]
+    new_features["recent_form_diff"] = new_features["last5_net_rating_home"] - new_features["last5_net_rating_away"]
+    new_features["momentum_diff"] = (
+        (new_features["last10_net_rating_home"] - new_features["last5_net_rating_home"])
+        - (new_features["last10_net_rating_away"] - new_features["last5_net_rating_away"])
     )
-    out["power_rating_home"] = (_coalesce_numeric(out, ["elo_home"], default=1500.0) * 0.6) + (_coalesce_numeric(out, ["net_rating_home"], default=0.0) * 0.4)
-    out["power_rating_away"] = (_coalesce_numeric(out, ["elo_away"], default=1500.0) * 0.6) + (_coalesce_numeric(out, ["net_rating_away"], default=0.0) * 0.4)
-    out["power_rating_diff"] = out["power_rating_home"] - out["power_rating_away"]
-    out["recent_goal_diff"] = _coalesce_numeric(out, ["recent_goal_diff"])
-    out["recent_epa_diff"] = _coalesce_numeric(out, ["recent_epa_diff"])
-    out["spread_line"] = _coalesce_numeric(out, ["spread_line", "closing_spread_home"])
-    out["total_line"] = _coalesce_numeric(out, ["total_line", "closing_total"])
-    out["home_score"] = _coalesce_numeric(out, ["home_score"])
-    out["away_score"] = _coalesce_numeric(out, ["away_score"])
-    out["date"] = pd.to_datetime(out.get("date", out.get("event_date")), errors="coerce", utc=True)
-    out["event_date"] = pd.to_datetime(out.get("event_date", out.get("date")), errors="coerce", utc=True)
-    out["closing_moneyline_home"] = _coalesce_numeric(out, ["closing_moneyline_home", "home_odds"])
-    out["closing_moneyline_away"] = _coalesce_numeric(out, ["closing_moneyline_away", "away_odds"])
-    out["closing_spread_home"] = _coalesce_numeric(out, ["closing_spread_home", "spread_line"])
-    out["closing_total"] = _coalesce_numeric(out, ["closing_total", "total_line"])
-    out["opening_line"] = _coalesce_numeric(out, ["opening_line", "open_line", "spread_line"])
-    out["bet_line"] = _coalesce_numeric(out, ["bet_line", "spread_line"])
-    out["current_line"] = _coalesce_numeric(out, ["current_line", "spread_line"])
-    out["closing_line"] = _coalesce_numeric(out, ["closing_line", "spread_line"])
-    out["clv_diff"] = out["closing_line"] - out["bet_line"]
+    new_features["power_rating_home"] = (_coalesce_numeric(out, ["elo_home"], default=1500.0) * 0.6) + (_coalesce_numeric(out, ["net_rating_home"], default=0.0) * 0.4)
+    new_features["power_rating_away"] = (_coalesce_numeric(out, ["elo_away"], default=1500.0) * 0.6) + (_coalesce_numeric(out, ["net_rating_away"], default=0.0) * 0.4)
+    new_features["power_rating_diff"] = new_features["power_rating_home"] - new_features["power_rating_away"]
+    new_features["clv_diff"] = new_features["closing_line"] - new_features["bet_line"]
 
-    # Labels.
-    out["home_win"] = _coalesce_numeric(out, ["home_win"]).round().clip(0, 1).astype(int)
-    out["home_cover"] = _coalesce_numeric(out, ["home_cover"]).round().clip(0, 1).astype(int)
-    out["over_hit"] = _coalesce_numeric(out, ["over_hit"]).round().clip(0, 1).astype(int)
+    columns_to_replace = [c for c in new_features.columns if c in out.columns]
+    if columns_to_replace:
+        out = out.drop(columns=columns_to_replace)
+    out = pd.concat([out, new_features], axis=1)
 
-    for col in out.columns:
-        if col in {"date", "event_date", "season", "game_id", "home_team", "away_team", "sport", "team"}:
-            continue
-        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0)
+    numeric_cols = [col for col in out.columns if col not in {"date", "event_date", "season", "game_id", "home_team", "away_team", "sport", "team"}]
+    if numeric_cols:
+        numeric_frame = pd.DataFrame(
+            {col: pd.to_numeric(out[col], errors="coerce").fillna(0) for col in numeric_cols},
+            index=out.index,
+        )
+        out = out.drop(columns=numeric_cols)
+        out = pd.concat([out, numeric_frame], axis=1)
 
     out = add_elo_features(out, sport)
     LOGGER.info("[%s] Standardized historical feature columns for training.", sport.upper())
@@ -397,10 +408,17 @@ def load_nba_historical_dataset() -> pd.DataFrame:
         df = pd.concat([df, filler_df], axis=1)
 
     standardized = _standardize_historical_features(df, "nba")
-    for col in NBA_HISTORICAL_COLUMNS:
-        if col in {"date", "season", "game_id", "home_team", "away_team"}:
-            continue
-        standardized[col] = pd.to_numeric(standardized.get(col, 0.0), errors="coerce").fillna(0.0)
+    nba_numeric_cols = [col for col in NBA_HISTORICAL_COLUMNS if col not in {"date", "season", "game_id", "home_team", "away_team"}]
+    if nba_numeric_cols:
+        standardized_numeric = pd.DataFrame(
+            {
+                col: pd.to_numeric(standardized.get(col, 0.0), errors="coerce").fillna(0.0)
+                for col in nba_numeric_cols
+            },
+            index=standardized.index,
+        )
+        standardized = standardized.drop(columns=[c for c in nba_numeric_cols if c in standardized.columns])
+        standardized = pd.concat([standardized, standardized_numeric], axis=1)
     return standardized
 
 
@@ -749,9 +767,10 @@ def load_historical_and_daily(sport: str, today_only: bool = True) -> tuple[pd.D
         missing = [col for col in required_columns if col not in historical.columns]
         if missing:
             print(f"[{sport.upper()}] ⚠️ Missing columns: {missing}")
-        for col in required_columns:
-            if col not in historical.columns:
-                historical[col] = 0
+        missing_cols = [col for col in required_columns if col not in historical.columns]
+        if missing_cols:
+            filler = pd.DataFrame(0, index=historical.index, columns=missing_cols)
+            historical = pd.concat([historical, filler], axis=1)
         historical = ensure_required_columns(historical)
         historical = _standardize_historical_features(historical, sport)
 
