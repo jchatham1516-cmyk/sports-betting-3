@@ -12,6 +12,8 @@ import pandas as pd
 from sports_betting.sports.common.injuries import load_injury_frame, normalize_status, normalize_team_name, summarize_team_injuries
 
 INJURY_EDGE_EV_SCALING_FACTOR = 2.0
+INJURY_MODEL_PROB_WEIGHT = 0.03
+EDGE_SCALING_FACTOR = 1.5
 
 SPORT_EFFICIENCY_FEATURES: dict[str, list[str]] = {
     "nba": [
@@ -271,6 +273,10 @@ def add_efficiency_features(games_df: pd.DataFrame, sport: str, data_root: Path)
     metrics = load_efficiency_metrics(sport, data_root)
     feature_set = SPORT_EFFICIENCY_FEATURES[sport]
 
+    for team_col in ("home_team", "away_team"):
+        if team_col in out.columns:
+            out[team_col] = out[team_col].apply(normalize_team_name)
+
     if metrics.empty or "team" not in metrics.columns:
         for f in feature_set:
             out[f"{f}_home"] = 0.0
@@ -281,6 +287,8 @@ def add_efficiency_features(games_df: pd.DataFrame, sport: str, data_root: Path)
     for f in feature_set:
         if f not in metrics.columns:
             metrics[f] = 0.0
+
+    metrics["team"] = metrics["team"].apply(normalize_team_name)
 
     home = metrics[["team", *feature_set]].copy().add_suffix("_home").rename(columns={"team_home": "home_team"})
     away = metrics[["team", *feature_set]].copy().add_suffix("_away").rename(columns={"team_away": "away_team"})
@@ -370,14 +378,15 @@ def add_market_context_features(games_df: pd.DataFrame) -> pd.DataFrame:
 
     out["market_prob"] = _series("market_prob")
     out["model_prob"] = _series("model_prob")
+    injury_impact_diff = _series("injury_impact_diff")
+    out["model_prob"] = out["model_prob"] + (injury_impact_diff * INJURY_MODEL_PROB_WEIGHT)
+    out["model_prob"] = out["model_prob"].clip(0.05, 0.95)
     out["adjusted_prob"] = _series("adjusted_prob", default=np.nan)
     needs_adjust = out["adjusted_prob"].isna()
     if needs_adjust.any():
-        out.loc[needs_adjust, "adjusted_prob"] = (0.75 * out.loc[needs_adjust, "market_prob"]) + (0.25 * out.loc[needs_adjust, "model_prob"])
-    out["model_prob"] = out["adjusted_prob"]
-    injury_impact_diff = _series("injury_impact_diff")
+        out.loc[needs_adjust, "adjusted_prob"] = out.loc[needs_adjust, "model_prob"]
     injury_adjustment = injury_impact_diff * INJURY_EDGE_EV_SCALING_FACTOR
-    out["edge"] = (out["adjusted_prob"] - out["market_prob"]) + injury_adjustment
+    out["edge"] = (out["model_prob"] - out["market_prob"]) * EDGE_SCALING_FACTOR
     pitcher_diff = _series("pitcher_diff")
     goalie_diff = _series("goalie_diff")
     sport_series = out.get("sport", pd.Series("", index=out.index)).astype(str).str.lower()
