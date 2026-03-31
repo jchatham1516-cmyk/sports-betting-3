@@ -875,8 +875,26 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                 ].to_string(index=False)
             )
 
-        df["pitcher_era_home"] = df["home_pitcher"].apply(lambda x: 3.50 if pd.notna(x) else 4.50)
-        df["pitcher_era_away"] = df["away_pitcher"].apply(lambda x: 3.50 if pd.notna(x) else 4.50)
+        def get_pitcher_era(name: object) -> float:
+            if name is None or (isinstance(name, float) and pd.isna(name)):
+                return 4.2
+            normalized = str(name).strip().lower()
+            if not normalized:
+                return 4.2
+
+            elite = ["scherzer", "degrom", "ohtani", "cole"]
+            good = ["webb", "gilbert", "fried", "senga"]
+
+            if any(token in normalized for token in elite):
+                return 2.9
+            if any(token in normalized for token in good):
+                return 3.5
+            return 4.2
+
+        fallback_home_era = df["home_pitcher"].apply(get_pitcher_era)
+        fallback_away_era = df["away_pitcher"].apply(get_pitcher_era)
+        df["pitcher_era_home"] = df["pitcher_era_home"].fillna(fallback_home_era)
+        df["pitcher_era_away"] = df["pitcher_era_away"].fillna(fallback_away_era)
         df["pitcher_era_home"] = df["pitcher_era_home"].fillna(pd.to_numeric(df.get("starter_rating_home"), errors="coerce").rsub(125).div(25))
         df["pitcher_era_away"] = df["pitcher_era_away"].fillna(pd.to_numeric(df.get("starter_rating_away"), errors="coerce").rsub(125).div(25))
         df["pitcher_whip_home"] = df["pitcher_whip_home"].fillna((df["pitcher_era_home"] / 4.0).clip(lower=0.9, upper=1.8))
