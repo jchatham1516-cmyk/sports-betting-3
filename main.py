@@ -732,7 +732,7 @@ def predict_runtime(model, games_df: pd.DataFrame):
     print("[NBA] Using real odds for prediction")
 
     runtime_model = model
-    scaler = None
+    scaler = getattr(model, "scaler", None)
     if isinstance(model, tuple) and len(model) >= 2:
         runtime_model, scaler = model
 
@@ -1508,9 +1508,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                             runtime_home_win_model = train_nhl_runtime_model(historical_df)
                         else:
                             runtime_home_win_model = train_runtime_model(historical_df)
+                        if runtime_home_win_model is None:
+                            raise ValueError("🚨 MODEL IS NONE AFTER TRAINING")
+                        print("🔥 MODEL READY:", runtime_home_win_model)
                         runtime_totals_model = train_runtime_totals_model(historical_df)
                         model.runtime_model = runtime_home_win_model
-                        trained_in_run = runtime_home_win_model is not None
+                        trained_in_run = True
                         if runtime_home_win_model is not None:
                             isotonic_model = fit_isotonic_model(historical_df, runtime_home_win_model)
                     except Exception:
@@ -1524,12 +1527,11 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             else:
                 print(f"[{sport_clean.upper()}] Historical CSV missing at {csv_path}")
 
-            if not trained_in_run:
+            if runtime_home_win_model is None:
                 if sport_clean == "nhl":
                     raise ValueError("[NHL] Missing historical data - cannot train model")
                 raise RuntimeError(
-                    f"[{sport_clean.upper()}] Runtime training failed or historical CSV missing at {csv_path}. "
-                    "Saved artifact fallback is disabled."
+                    "🚨 TRAINING FAILED — MODEL IS NONE"
                 )
             print("🚨 FORCING RUNTIME MODEL — ignoring saved artifact")
             model.runtime_model = runtime_home_win_model
