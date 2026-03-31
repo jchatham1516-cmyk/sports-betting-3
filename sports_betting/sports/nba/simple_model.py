@@ -124,6 +124,8 @@ def train_runtime_model(df):
 
     X = df[feature_columns].copy().fillna(0)
     y = pd.to_numeric(df["home_win"], errors="coerce").fillna(0).astype(int)
+    print("X shape:", X.shape)
+    print("y shape:", y.shape)
 
     if y.nunique() < 2:
         return None
@@ -133,6 +135,7 @@ def train_runtime_model(df):
 
     model = LogisticRegression(max_iter=1000)
     model.feature_columns = feature_columns
+    model.scaler = scaler
     # Save feature order if DataFrame
     if hasattr(X, "columns"):
         model.feature_columns = list(X.columns)
@@ -141,15 +144,17 @@ def train_runtime_model(df):
         X_train = X
 
     model.fit(X_train, y)
+    print("🔥 MODEL FIT COMPLETE")
+    print("✅ MODEL TRAINED:", type(model))
 
-    return model, scaler
+    return model
 
 
 def predict(model_bundle, games_df):
     df = prepare_df(games_df)
     df = _append_missing_columns(df, REQUIRED_INJURY_COLUMNS, default=0.0)
 
-    scaler = None
+    scaler = getattr(model_bundle, "scaler", None)
     model = model_bundle
     if isinstance(model_bundle, tuple) and len(model_bundle) >= 2:
         model, scaler = model_bundle
