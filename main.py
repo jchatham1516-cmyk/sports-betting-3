@@ -737,13 +737,18 @@ def predict_runtime(model, games_df: pd.DataFrame):
         runtime_model, scaler = model
 
     feature_columns = list(getattr(runtime_model, "feature_columns", NBA_RUNTIME_FEATURE_COLUMNS))
-    X = df.reindex(columns=feature_columns, fill_value=0.0).copy()
+    X = df.copy()
+    # Keep only training features in the same order.
+    X = X.reindex(columns=feature_columns, fill_value=0.0)
+    # Force numeric values to avoid strings reaching the scaler/model.
+    X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    X = X.select_dtypes(include=["number"])
 
-    X = X.fillna(0.0)
     if "implied_home_prob" in X.columns:
         X["implied_home_prob"] = X["implied_home_prob"].replace(0.0, 0.5)
 
-    print(f"[NBA] Prediction columns: {list(df.columns)}")
+    print(f"[NBA] Prediction columns: {list(X.columns)}")
+    print(f"[NBA] Non-numeric columns: {df.select_dtypes(exclude=['number']).columns.tolist()}")
     if scaler is not None:
         X = scaler.transform(X)
 

@@ -190,7 +190,10 @@ def predict(model_bundle, games_df):
         model, scaler = model_bundle
 
     feature_columns = list(getattr(model, "feature_columns", FEATURE_COLUMNS))
-    X = df.reindex(columns=feature_columns, fill_value=0.0).copy().fillna(0)
+    X = df.copy()
+    X = X.reindex(columns=feature_columns, fill_value=0.0)
+    X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    X = X.select_dtypes(include=["number"])
     if scaler is not None:
         X = scaler.transform(X)
 
