@@ -115,5 +115,5 @@ def test_add_market_context_features_applies_lineup_weighted_adjusted_edge():
         ]
     )
     out = add_market_context_features(frame)
-    assert out.loc[0, "edge"] == pytest.approx(0.015)
-    assert out.loc[0, "adjusted_edge"] == pytest.approx(0.015 + (0.40 * 0.03) + (0.10 * 0.05))
+    assert out.loc[0, "edge"] == pytest.approx((0.56 - 0.50) * 1.5)
+    assert out.loc[0, "adjusted_edge"] == pytest.approx(((0.56 - 0.50) * 1.5) + (0.40 * 0.03) + (0.10 * 0.05))

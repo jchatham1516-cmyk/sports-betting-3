@@ -73,12 +73,12 @@ PREDICTION_COLUMNS = [
 ]
 
 TOP_BETS_DAILY = 6
-EDGE_THRESHOLD = 0.02
+EDGE_THRESHOLD = 0.015
 EV_THRESHOLD = 0.01
 FORCE_BETS = False
 LOGGER = logging.getLogger(__name__)
 # Temporary loose-filter thresholds for early-stage model learning/data collection.
-MIN_EDGE = 0.02
+MIN_EDGE = 0.015
 MIN_EV = -0.01
 MAX_BETS_PER_DAY = 5
 MIN_MODEL_PROBABILITY = 0.05
@@ -2135,7 +2135,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
 
         print("STEP 14: before final edge/ev filter", len(df))
         sport_series = df.get("sport", "").astype(str).str.lower()
-        min_edge_threshold = np.where(sport_series == "nba", 0.01, 0.02)
+        min_edge_threshold = np.where(sport_series == "nba", 0.01, 0.015)
         min_ev_threshold = np.where(sport_series == "nba", 0.005, 0.01)
 
         filtered_df = df[

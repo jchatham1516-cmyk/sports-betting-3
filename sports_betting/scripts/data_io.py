@@ -199,6 +199,9 @@ def _american_to_prob(odds: pd.Series | float | int) -> pd.Series:
 
 def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFrame:
     out = df.copy()
+    for team_col in ("team", "home_team", "away_team"):
+        if team_col in out.columns:
+            out[team_col] = out[team_col].apply(_normalize_team_name)
     if "home_moneyline" not in out.columns:
         if "closing_moneyline_home" in out.columns:
             out["home_moneyline"] = out["closing_moneyline_home"]
@@ -251,18 +254,20 @@ def _standardize_historical_features(df: pd.DataFrame, sport: str) -> pd.DataFra
     out["injury_data_stale_flag"] = _coalesce_numeric(out, ["injury_data_stale_flag"])
     out["market_prob"] = _coalesce_numeric(out, ["market_prob"])
     out["model_prob"] = _coalesce_numeric(out, ["model_prob"])
+    out["model_prob"] = (out["model_prob"] + (out["injury_impact_diff"] * 0.03)).clip(0.05, 0.95)
     out["adjusted_prob"] = _coalesce_numeric(out, ["adjusted_prob"], default=np.nan)
     missing_adjusted = out["adjusted_prob"].isna()
     if missing_adjusted.any():
-        out.loc[missing_adjusted, "adjusted_prob"] = (0.75 * out.loc[missing_adjusted, "market_prob"]) + (0.25 * out.loc[missing_adjusted, "model_prob"])
-    out["model_prob"] = out["adjusted_prob"]
-    out["edge"] = out["adjusted_prob"] - out["market_prob"]
+        out.loc[missing_adjusted, "adjusted_prob"] = out.loc[missing_adjusted, "model_prob"]
+    out["edge"] = (out["model_prob"] - out["market_prob"]) * 1.5
     out["pitcher_era_home"] = _coalesce_numeric(out, ["pitcher_era_home"])
     out["pitcher_era_away"] = _coalesce_numeric(out, ["pitcher_era_away"])
     out["pitcher_diff"] = _coalesce_numeric(out, ["pitcher_diff", "starter_rating_diff"])
-    out["goalie_save_home"] = _coalesce_numeric(out, ["goalie_save_home", "goalie_save_strength_home"])
-    out["goalie_save_away"] = _coalesce_numeric(out, ["goalie_save_away", "goalie_save_strength_away"])
-    out["goalie_diff"] = _coalesce_numeric(out, ["goalie_diff", "goalie_strength_diff"])
+    out["goalie_save_home"] = _coalesce_numeric(out, ["goalie_save_home", "goalie_save_strength_home"]).astype(float)
+    out["goalie_save_away"] = _coalesce_numeric(out, ["goalie_save_away", "goalie_save_strength_away"]).astype(float)
+    out.loc[out["goalie_save_home"] == 0.0, "goalie_save_home"] = 0.905
+    out.loc[out["goalie_save_away"] == 0.0, "goalie_save_away"] = 0.905
+    out["goalie_diff"] = out["goalie_save_home"] - out["goalie_save_away"]
     sport_series = out.get("sport", pd.Series("", index=out.index)).astype(str).str.lower()
     pitcher_weight = pd.Series(0.03, index=out.index, dtype="float64")
     pitcher_weight.loc[sport_series.eq("mlb")] = 0.015
