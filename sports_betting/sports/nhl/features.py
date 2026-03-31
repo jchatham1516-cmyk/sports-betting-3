@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 from sports_betting.sports.common.team_names import normalize_team_name as shared_normalize_team_name
 
@@ -103,26 +104,45 @@ def enrich_nhl_live_features(df: pd.DataFrame, nhl_team_stats: pd.DataFrame | No
 
 def build_nhl_diff_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    if {"goalie_save_strength_home", "goalie_save_strength_away"}.issubset(out.columns):
+    out["recent_goal_diff"] = _num(out, "recent_goal_diff")
+    out["elo_diff"] = _num(out, "elo_diff")
+
+    goalie_has_data = {
+        "goalie_save_strength_home",
+        "goalie_save_strength_away",
+    }.issubset(out.columns) and (
+        out["goalie_save_strength_home"].notna().any() or out["goalie_save_strength_away"].notna().any()
+    )
+    special_teams_has_data = {
+        "special_teams_efficiency_home",
+        "special_teams_efficiency_away",
+    }.issubset(out.columns) and (
+        out["special_teams_efficiency_home"].notna().any() or out["special_teams_efficiency_away"].notna().any()
+    )
+    xgf_has_data = {"xgf_home", "xgf_away"}.issubset(out.columns) and (
+        out["xgf_home"].notna().any() or out["xgf_away"].notna().any()
+    )
+
+    if goalie_has_data:
         out["goalie_save_strength_home"] = pd.to_numeric(out.get("goalie_save_strength_home", 0.905), errors="coerce").fillna(0.905)
         out["goalie_save_strength_away"] = pd.to_numeric(out.get("goalie_save_strength_away", 0.905), errors="coerce").fillna(0.905)
         out["goalie_diff"] = out["goalie_save_strength_home"] - out["goalie_save_strength_away"]
     else:
-        out["goalie_diff"] = _num(out, "elo_diff") * 0.01
+        out["goalie_diff"] = np.random.normal(0, 0.02, len(out))
 
-    if {"special_teams_efficiency_home", "special_teams_efficiency_away"}.issubset(out.columns):
+    if special_teams_has_data:
         out["special_teams_diff"] = pd.to_numeric(out.get("special_teams_efficiency_home", 0), errors="coerce").fillna(
             0.0
         ) - pd.to_numeric(out.get("special_teams_efficiency_away", 0), errors="coerce").fillna(0.0)
     else:
-        out["special_teams_diff"] = _num(out, "recent_goal_diff")
+        out["special_teams_diff"] = out["recent_goal_diff"]
 
-    if {"xgf_home", "xgf_away"}.issubset(out.columns):
+    if xgf_has_data:
         out["xgf_diff"] = pd.to_numeric(out.get("xgf_home", 0), errors="coerce").fillna(0.0) - pd.to_numeric(
             out.get("xgf_away", 0), errors="coerce"
         ).fillna(0.0)
     else:
-        out["xgf_diff"] = _num(out, "elo_diff")
+        out["xgf_diff"] = out["elo_diff"]
 
     out["xga_diff"] = _num(out, "xga_home") - _num(out, "xga_away")
     out["shot_share_diff"] = _num(out, "shot_share_home") - _num(out, "shot_share_away")
