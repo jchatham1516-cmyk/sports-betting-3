@@ -736,12 +736,8 @@ def predict_runtime(model, games_df: pd.DataFrame):
     if isinstance(model, tuple) and len(model) >= 2:
         runtime_model, scaler = model
 
-    feature_columns = getattr(runtime_model, "feature_columns", NBA_RUNTIME_FEATURE_COLUMNS)
-    missing = [col for col in feature_columns if col not in df.columns]
-    if missing:
-        raise ValueError(f"Missing features at prediction time: {missing}")
-
-    X = df[feature_columns].copy()
+    feature_columns = list(getattr(runtime_model, "feature_columns", NBA_RUNTIME_FEATURE_COLUMNS))
+    X = df.reindex(columns=feature_columns, fill_value=0.0).copy()
 
     X = X.fillna(0.0)
     if "implied_home_prob" in X.columns:

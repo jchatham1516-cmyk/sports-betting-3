@@ -146,6 +146,7 @@ def train_runtime_model(df):
         return None
 
     X = df[feature_columns].copy().fillna(0)
+    feature_columns = X.columns.tolist()
     y = pd.to_numeric(df["home_win"], errors="coerce").fillna(0).astype(int)
     print("X shape:", X.shape)
     print("y shape:", y.shape)
@@ -182,12 +183,8 @@ def predict(model_bundle, games_df):
     if isinstance(model_bundle, tuple) and len(model_bundle) >= 2:
         model, scaler = model_bundle
 
-    feature_columns = getattr(model, "feature_columns", FEATURE_COLUMNS)
-    missing = [col for col in feature_columns if col not in df.columns]
-    if missing:
-        raise ValueError(f"Missing features at prediction time: {missing}")
-
-    X = df[feature_columns].copy().fillna(0)
+    feature_columns = list(getattr(model, "feature_columns", FEATURE_COLUMNS))
+    X = df.reindex(columns=feature_columns, fill_value=0.0).copy().fillna(0)
     if scaler is not None:
         X = scaler.transform(X)
 

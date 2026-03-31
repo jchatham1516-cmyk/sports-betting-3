@@ -37,6 +37,7 @@ def train_mlb_model(historical_df: pd.DataFrame) -> MLBModelBundle:
         raise ValueError(f"[MLB] Insufficient historical rows ({len(df)}) for runtime training; need at least {MIN_TRAINING_ROWS}.")
 
     X = df[MLB_REQUIRED_FEATURES].fillna(0.0)
+    feature_columns = X.columns.tolist()
     y = pd.to_numeric(df["home_win"], errors="coerce").fillna(0).astype(int)
     if y.nunique() < 2:
         raise ValueError("[MLB] Historical training target requires two classes in home_win.")
@@ -48,17 +49,13 @@ def train_mlb_model(historical_df: pd.DataFrame) -> MLBModelBundle:
         random_state=42,
     )
     model.fit(X, y)
-    return MLBModelBundle(runtime_model=model, feature_columns=list(MLB_REQUIRED_FEATURES))
+    return MLBModelBundle(runtime_model=model, feature_columns=feature_columns)
 
 
 def predict_mlb_model(bundle: MLBModelBundle, daily_df: pd.DataFrame) -> pd.DataFrame:
     df = build_mlb_features(daily_df).copy()
 
-    missing = [c for c in bundle.feature_columns if c not in df.columns]
-    if missing:
-        raise ValueError(f"[MLB] Missing features at prediction time: {missing}")
-
-    X = df[bundle.feature_columns].fillna(0.0)
+    X = df.reindex(columns=bundle.feature_columns, fill_value=0.0).fillna(0.0)
     probs = bundle.runtime_model.predict_proba(X)[:, 1]
     df["predicted_home_win_prob"] = probs
     df["predicted_away_win_prob"] = 1.0 - probs
