@@ -1527,17 +1527,13 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
             if not trained_in_run:
                 if sport_clean == "nhl":
                     raise ValueError("[NHL] Missing historical data - cannot train model")
-                if not trained_in_run and artifact_path.exists():
-                    model.load_artifact(artifact_path)
-                    logger.warning(
-                        "[%s] Falling back to model artifact because runtime training failed or historical CSV is missing: %s",
-                        sport_clean.upper(),
-                        artifact_path,
-                    )
-                elif not trained_in_run:
-                    raise RuntimeError(
-                        f"[{sport_clean.upper()}] Runtime training unavailable and no model artifact present at {artifact_path}."
-                    )
+                raise RuntimeError(
+                    f"[{sport_clean.upper()}] Runtime training failed or historical CSV missing at {csv_path}. "
+                    "Saved artifact fallback is disabled."
+                )
+            print("🚨 FORCING RUNTIME MODEL — ignoring saved artifact")
+            model.runtime_model = runtime_home_win_model
+            print("🔥 USING RUNTIME TRAINED MODEL")
 
             if hasattr(model, "runtime_model") and model.runtime_model is not None:
                 print(f"[{sport_clean.upper()}] Using runtime model for predictions")
