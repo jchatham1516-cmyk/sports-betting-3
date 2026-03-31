@@ -2116,9 +2116,13 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print("EV RANGE:", df["expected_value"].min(), df["expected_value"].max())
 
         print("STEP 14: before final edge/ev filter", len(df))
+        sport_series = df.get("sport", "").astype(str).str.lower()
+        min_edge_threshold = np.where(sport_series == "nba", 0.01, 0.02)
+        min_ev_threshold = np.where(sport_series == "nba", 0.005, 0.01)
+
         filtered_df = df[
-            (df["edge"] > 0.005) &
-            (df["expected_value"] > 0)
+            (df["edge"] > min_edge_threshold) &
+            (df["expected_value"] > min_ev_threshold)
         ].copy()
 
         if filtered_df.empty:
