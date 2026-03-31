@@ -1343,6 +1343,21 @@ def _validate_exported_bets_against_sportsbook(game_id: str, game_row: dict, bet
             )
     return True, None
 
+def _boost_nba_signal_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Amplify core NBA strength features to increase model separation."""
+    if df.empty:
+        return df
+    out = df.copy()
+    out["elo_diff"] = pd.to_numeric(out.get("elo_diff"), errors="coerce").fillna(0.0) * 1.5
+    out["net_rating_diff"] = pd.to_numeric(out.get("net_rating_diff"), errors="coerce").fillna(0.0) * 1.3
+    out["last5_net_rating_diff"] = pd.to_numeric(out.get("last5_net_rating_diff"), errors="coerce").fillna(0.0) * 1.2
+    out["power_rating_diff"] = (
+        out["elo_diff"] * 0.5
+        + out["net_rating_diff"] * 0.3
+        + out["last5_net_rating_diff"] * 0.2
+    )
+    return out
+
 def run_daily_pipeline(config_path: str | None = None, sport: str | None = None) -> None:
     cfg = load_config(config_path)
     logger = setup_logging(cfg["logging"]["level"])
@@ -1385,10 +1400,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 print("🚨 RUNNING SPORT: nfl 🚨")
             elif sport_clean == "nhl":
                 print("🚨 RUNNING SPORT: nhl 🚨")
-                print("🧪 NHL COMPLETE — READY FOR NEXT SPORT")
-                if idx + 1 < len(sports_to_run):
-                    print(f"➡️ NEXT SPORT: {sports_to_run[idx + 1]}")
-                continue
+                print("🚨 NHL PIPELINE ACTUALLY RUNNING 🚨")
             elif sport_clean == "mlb":
                 print("🚨 RUNNING SPORT: mlb 🚨")
                 print("🚨 MLB PIPELINE TRIGGERED 🚨")
@@ -1447,6 +1459,8 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                     daily["injury_impact_away"] = 0
                     daily["injury_impact_diff"] = 0
             daily = enrich_daily_features_by_sport(daily, sport_clean)
+            if sport_clean == "nba":
+                daily = _boost_nba_signal_features(daily)
             validate_feature_signal(daily, sport_clean)
             print("[DEBUG] Daily columns BEFORE prediction:", list(daily.columns))
             runtime_home_win_model = None
@@ -1999,6 +2013,10 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         df.loc[non_totals_mask, "model_probability"] = (
             df.loc[non_totals_mask, "model_probability"] + df.loc[non_totals_mask, "scaled_injury"]
         ).clip(0.01, 0.99)
+        df["model_probability"] = df["model_probability"] + (
+            df["injury_impact_diff"] * INJURY_WEIGHT
+        )
+        df["model_probability"] = df["model_probability"].clip(0.05, 0.95)
         df = _lock_totals_probabilities(df)
         df["edge"] = df["model_probability"] - df["market_probability"]
         df["edge"] = df["edge"] + (
