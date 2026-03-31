@@ -1400,7 +1400,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 print("🚨 RUNNING SPORT: nfl 🚨")
             elif sport_clean == "nhl":
                 print("🚨 RUNNING SPORT: nhl 🚨")
-                print("🚨 NHL PIPELINE ACTUALLY RUNNING 🚨")
+                print("🚨 NHL PIPELINE RUNNING 🚨")
             elif sport_clean == "mlb":
                 print("🚨 RUNNING SPORT: mlb 🚨")
                 print("🚨 MLB PIPELINE TRIGGERED 🚨")
