@@ -1516,15 +1516,16 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                         ):
                             raise ValueError("🚨 MODEL IS NONE AFTER TRAINING")
                         print("🔥 MODEL READY:", runtime_home_win_model)
+                        if sport_clean == "nba":
+                            print("✅ NBA MODEL PASSED TRAINING STAGE")
                         runtime_totals_model = train_runtime_totals_model(historical_df)
                         model.runtime_model = runtime_home_win_model
                         trained_in_run = True
                         if runtime_home_win_model is not None:
                             isotonic_model = fit_isotonic_model(historical_df, runtime_home_win_model)
-                    except Exception:
-                        runtime_home_win_model = None
-                        model.runtime_model = None
-                        trained_in_run = False
+                    except Exception as e:
+                        print(f"🚨 ERROR in sport {sport_clean}: {str(e)}")
+                        raise e
                     logger.info("[%s] Runtime model training completed from historical CSV.", sport_clean.upper())
                 except Exception:
                     logger.exception("[%s] Runtime training failed.", sport_clean.upper())
@@ -1540,7 +1541,7 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
                 if sport_clean == "nhl":
                     raise ValueError("[NHL] Missing historical data - cannot train model")
                 raise RuntimeError(
-                    "🚨 TRAINING FAILED — MODEL IS NONE"
+                    f"🚨 MODEL IS NONE after runtime training check for sport {sport_clean}"
                 )
             print("🚨 FORCING RUNTIME MODEL — ignoring saved artifact")
             model.runtime_model = runtime_home_win_model
