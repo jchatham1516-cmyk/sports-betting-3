@@ -139,13 +139,17 @@ def train_runtime_model(df):
     if len(df) < 10:
         return None
 
-    df = _append_missing_columns(df, FEATURE_COLUMNS, default=0.0)
-    df = _drop_constant_features(df, protected_columns={"home_win"})
-    feature_columns = [col for col in FEATURE_COLUMNS if col in df.columns]
-    if not feature_columns:
+    X = df.select_dtypes(include=["number"]).copy()
+    drop_cols = [
+        "home_score",
+        "away_score",
+        "home_win",
+    ]
+    X = X.drop(columns=[c for c in drop_cols if c in X.columns], errors="ignore")
+    if X.empty:
         return None
 
-    X = df[feature_columns].copy().fillna(0)
+    X = X.fillna(0)
     feature_columns = X.columns.tolist()
     y = pd.to_numeric(df["home_win"], errors="coerce").fillna(0).astype(int)
     print("X shape:", X.shape)
@@ -168,6 +172,8 @@ def train_runtime_model(df):
         X_train = X
 
     model.fit(X_train, y)
+    if hasattr(model, "coef_") and len(model.coef_) > 0:
+        print(pd.Series(model.coef_[0], index=feature_columns).sort_values(ascending=False).head(20))
     print("🔥 MODEL FIT COMPLETE")
     print("✅ MODEL TRAINED:", type(model))
 
