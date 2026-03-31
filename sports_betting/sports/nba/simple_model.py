@@ -81,16 +81,37 @@ def prepare_df(df):
     else:
         df["injury_impact_diff"] = pd.to_numeric(df["injury_impact_diff"], errors="coerce").fillna(0)
 
-    df["elo_home"] = pd.to_numeric(df.get("elo_home"), errors="coerce").fillna(1500.0)
-    df["elo_away"] = pd.to_numeric(df.get("elo_away"), errors="coerce").fillna(1500.0)
-    df["net_rating_home"] = pd.to_numeric(df.get("net_rating_home"), errors="coerce").fillna(0.0)
-    df["net_rating_away"] = pd.to_numeric(df.get("net_rating_away"), errors="coerce").fillna(0.0)
-    df["point_diff_home"] = pd.to_numeric(df.get("point_diff_home"), errors="coerce").fillna(0.0)
-    df["point_diff_away"] = pd.to_numeric(df.get("point_diff_away"), errors="coerce").fillna(0.0)
-    df["last5_net_rating_home"] = pd.to_numeric(df.get("last5_net_rating_home"), errors="coerce").fillna(df["net_rating_home"])
-    df["last5_net_rating_away"] = pd.to_numeric(df.get("last5_net_rating_away"), errors="coerce").fillna(df["net_rating_away"])
-    df["last10_net_rating_home"] = pd.to_numeric(df.get("last10_net_rating_home"), errors="coerce").fillna(df["last5_net_rating_home"])
-    df["last10_net_rating_away"] = pd.to_numeric(df.get("last10_net_rating_away"), errors="coerce").fillna(df["last5_net_rating_away"])
+    if "elo_home" not in df.columns:
+        df["elo_home"] = 1500.0
+    if "elo_away" not in df.columns:
+        df["elo_away"] = 1500.0
+    if "net_rating_home" not in df.columns:
+        df["net_rating_home"] = 0.0
+    if "net_rating_away" not in df.columns:
+        df["net_rating_away"] = 0.0
+    if "point_diff_home" not in df.columns:
+        df["point_diff_home"] = 0.0
+    if "point_diff_away" not in df.columns:
+        df["point_diff_away"] = 0.0
+    if "last5_net_rating_home" not in df.columns:
+        df["last5_net_rating_home"] = pd.NA
+    if "last5_net_rating_away" not in df.columns:
+        df["last5_net_rating_away"] = pd.NA
+    if "last10_net_rating_home" not in df.columns:
+        df["last10_net_rating_home"] = pd.NA
+    if "last10_net_rating_away" not in df.columns:
+        df["last10_net_rating_away"] = pd.NA
+
+    df["elo_home"] = pd.to_numeric(df["elo_home"], errors="coerce").fillna(1500.0)
+    df["elo_away"] = pd.to_numeric(df["elo_away"], errors="coerce").fillna(1500.0)
+    df["net_rating_home"] = pd.to_numeric(df["net_rating_home"], errors="coerce").fillna(0.0)
+    df["net_rating_away"] = pd.to_numeric(df["net_rating_away"], errors="coerce").fillna(0.0)
+    df["point_diff_home"] = pd.to_numeric(df["point_diff_home"], errors="coerce").fillna(0.0)
+    df["point_diff_away"] = pd.to_numeric(df["point_diff_away"], errors="coerce").fillna(0.0)
+    df["last5_net_rating_home"] = pd.to_numeric(df["last5_net_rating_home"], errors="coerce").fillna(df["net_rating_home"])
+    df["last5_net_rating_away"] = pd.to_numeric(df["last5_net_rating_away"], errors="coerce").fillna(df["net_rating_away"])
+    df["last10_net_rating_home"] = pd.to_numeric(df["last10_net_rating_home"], errors="coerce").fillna(df["last5_net_rating_home"])
+    df["last10_net_rating_away"] = pd.to_numeric(df["last10_net_rating_away"], errors="coerce").fillna(df["last5_net_rating_away"])
 
     df["point_diff_diff"] = df["point_diff_home"] - df["point_diff_away"]
     df["recent_form_diff"] = df["last5_net_rating_home"] - df["last5_net_rating_away"]
@@ -101,7 +122,9 @@ def prepare_df(df):
     df["power_rating_home"] = (df["elo_home"] * 0.6) + (df["net_rating_home"] * 0.4)
     df["power_rating_away"] = (df["elo_away"] * 0.6) + (df["net_rating_away"] * 0.4)
     df["power_rating_diff"] = df["power_rating_home"] - df["power_rating_away"]
-    df["elo_diff"] = pd.to_numeric(df.get("elo_diff"), errors="coerce").fillna(df["elo_home"] - df["elo_away"])
+    if "elo_diff" not in df.columns:
+        df["elo_diff"] = pd.NA
+    df["elo_diff"] = pd.to_numeric(df["elo_diff"], errors="coerce").fillna(df["elo_home"] - df["elo_away"])
 
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
