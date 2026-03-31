@@ -99,6 +99,7 @@ def _fit_binary_classifier(frame: pd.DataFrame, target: str, features: list[str]
         working[feature] = pd.to_numeric(working[feature], errors="coerce").fillna(0.0)
 
     X = working[features]
+    feature_columns = X.columns.tolist()
     y = working[target].round().clip(0, 1).astype(int)
 
     if y.nunique() < 2:
@@ -115,7 +116,7 @@ def _fit_binary_classifier(frame: pd.DataFrame, target: str, features: list[str]
     model = LogisticRegression(max_iter=1000)
     # Save feature order if DataFrame
     if hasattr(X, "columns"):
-        model.feature_columns = list(X.columns)
+        model.feature_columns = feature_columns
         X_train = X.values
     else:
         model.feature_columns = None
@@ -124,10 +125,7 @@ def _fit_binary_classifier(frame: pd.DataFrame, target: str, features: list[str]
     model.fit(X_train, y)
 
     if hasattr(model, "feature_columns") and model.feature_columns is not None:
-        missing = [col for col in model.feature_columns if col not in working.columns]
-        if missing:
-            raise ValueError(f"Missing features at prediction time: {missing}")
-        X_pred = working[model.feature_columns].values
+        X_pred = working.reindex(columns=model.feature_columns, fill_value=0.0).values
     else:
         X_pred = X.values if hasattr(X, "values") else X
 
