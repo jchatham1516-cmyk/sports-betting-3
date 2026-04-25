@@ -1366,20 +1366,32 @@ def _boost_nba_signal_features(df: pd.DataFrame) -> pd.DataFrame:
     )
     return out
 
-def run_daily_pipeline(config_path: str | None = None, sport: str | None = None) -> None:
+def run_daily_pipeline(
+    config_path: str | None = None,
+    sport: str | None = None,
+    days: int = 1,
+    debug: bool = False,
+    date: str | None = None,
+    top_n: int | None = None,
+) -> None:
     cfg = load_config(config_path)
-    logger = setup_logging(cfg["logging"]["level"])
+    logger = setup_logging("DEBUG" if debug else cfg["logging"]["level"])
+
+    if debug:
+        logger.debug("Debug mode enabled")
+    logger.info("CLI args: sport=%r days=%s date=%r top_n=%r", sport, days, date, top_n)
 
     all_predictions: list[dict] = []
     prebuilt_candidates: list[dict] = []
     game_rows_by_id: dict[str, dict] = {}
     sport_run_summaries: list[dict[str, int | str]] = []
 
-    sports_to_run = ["nba", "nfl", "nhl", "mlb"]
-    print("ORIGINAL SPORTS:", sports_to_run)
-    if "mlb" not in [str(s).strip().lower() for s in sports_to_run]:
-        print("⚠️ MLB NOT IN LIST — FORCING ADD")
-        sports_to_run.append("mlb")
+    configured_sports = [str(s).strip().lower() for s in cfg.get("sports_enabled", ["nba", "nfl", "nhl", "mlb"])]
+    if sport:
+        sports_to_run = [str(sport).strip().lower()]
+    else:
+        sports_to_run = configured_sports
+    print("CONFIGURED SPORTS:", configured_sports)
     print("FINAL SPORTS:", sports_to_run)
 
     logger.info("Sports selected for this run: %s", ", ".join(sports_to_run))
@@ -1393,6 +1405,12 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
     injury_data = run_injury_pipeline()
     print(f"SPORTS TO RUN BEFORE LOOP: {sports_to_run}")
     print(f"SPORTS LENGTH: {len(sports_to_run)}")
+    if days != 1:
+        logger.info("--days provided: scanning %s day(s) ahead (currently informational only)", days)
+    if date:
+        logger.info("--date provided: %s (currently informational only)", date)
+    if top_n is not None:
+        logger.info("--top-n provided: %s (current export cap remains unchanged)", top_n)
 
     for idx, sport in enumerate(sports_to_run):
         print(f"🔥 LOOP START sport={sport}")
@@ -2140,6 +2158,28 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         print("\n[DEBUG EDGE SUMMARY]")
         print(df["edge"].describe())
 
+        model_prob_center = pd.to_numeric(df["model_probability"], errors="coerce")
+        centered_share = float(model_prob_center.eq(0.5).mean()) if len(model_prob_center) else 0.0
+        if centered_share >= 0.6:
+            print(
+                f"⚠️ MODEL QUALITY WARNING: {centered_share:.1%} of model_probability values are exactly 0.5; model may have no signal"
+            )
+
+        if "edge" not in df.columns:
+            print("⚠️ MODEL QUALITY WARNING: edge column missing; filters may produce 0 bets")
+        else:
+            edge_abs = pd.to_numeric(df["edge"], errors="coerce").abs().fillna(0.0)
+            if (edge_abs <= 0.001).all():
+                print("⚠️ MODEL QUALITY WARNING: edge values are all near zero; filters may produce 0 bets")
+
+        mlb_rows = df[df.get("sport", "").astype(str).str.lower() == "mlb"].copy() if "sport" in df.columns else pd.DataFrame()
+        if not mlb_rows.empty and "pitcher_diff" in mlb_rows.columns:
+            pitcher_abs = pd.to_numeric(mlb_rows["pitcher_diff"], errors="coerce").abs().fillna(0.0)
+            if pitcher_abs.eq(0.0).all():
+                print("⚠️ MODEL QUALITY WARNING: MLB pitcher_diff is all 0; skipping MLB bets as low-confidence")
+                df = df[df["sport"].astype(str).str.lower() != "mlb"].copy()
+                original_df = df.copy()
+
         print("\n[DEBUG EV SUMMARY]")
         print(df["expected_value"].describe())
         print("EV RANGE:", df["expected_value"].min(), df["expected_value"].max())
@@ -2156,6 +2196,33 @@ def run_daily_pipeline(config_path: str | None = None, sport: str | None = None)
         if filtered_df.empty:
             print("⚠️ No bets after filtering — selecting top 3 by EV")
             filtered_df = original_df.sort_values(by="expected_value", ascending=False).head(3)
+
+        nba_candidates = int(next((s["candidates_generated"] for s in sport_run_summaries if str(s.get("sport", "")).lower() == "nba"), 0))
+        nba_bets_after_filter = 0
+        if "sport" in filtered_df.columns:
+            nba_bets_after_filter = int(filtered_df["sport"].astype(str).str.lower().eq("nba").sum())
+        if nba_candidates > 0 and nba_bets_after_filter == 0 and "sport" in original_df.columns:
+            print("⚠️ NBA generated predictions but 0 bets passed filters. Top 10 rejected NBA candidates by expected_value:")
+            nba_rejected = (
+                original_df[original_df["sport"].astype(str).str.lower() == "nba"]
+                .sort_values(by="expected_value", ascending=False)
+                .head(10)
+            )
+            print(
+                nba_rejected.reindex(
+                    columns=[
+                        "away_team",
+                        "home_team",
+                        "market",
+                        "selection",
+                        "odds",
+                        "model_probability",
+                        "market_probability",
+                        "edge",
+                        "expected_value",
+                    ]
+                )
+            )
 
         filtered_df = filtered_df.sort_values(
             by="expected_value", ascending=False
@@ -2328,11 +2395,22 @@ Final bets: {int(final_bets_by_sport.get(sport_name, 0))}
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the sports betting daily pipeline.")
+    parser.add_argument("--date", default=None, help="Optional run date override (YYYY-MM-DD).")
     parser.add_argument("--config", default=None, help="Optional path to a custom config file.")
-    parser.add_argument("--sport", choices=["nba", "nfl", "nhl"], default=None, help="Run only one sport.")
+    parser.add_argument("--top-n", type=int, default=None, help="Optional export cap override.")
+    parser.add_argument("--sport", default="", help="Optional sport to run: nba, nhl, mlb, nfl")
+    parser.add_argument("--days", type=int, default=1, help="Number of days ahead to scan")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    run_daily_pipeline(config_path=args.config, sport=args.sport)
+    run_daily_pipeline(
+        config_path=args.config,
+        sport=args.sport,
+        days=args.days,
+        debug=args.debug,
+        date=args.date,
+        top_n=args.top_n,
+    )
