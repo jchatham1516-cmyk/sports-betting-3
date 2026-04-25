@@ -2,6 +2,19 @@ name: Sports Betting Predictions
 
 on:
   workflow_dispatch:
+    inputs:
+      sport:
+        description: "Optional sport filter (nba, nfl, nhl, mlb)"
+        required: false
+        default: ""
+      days:
+        description: "Days ahead to scan"
+        required: false
+        default: "1"
+      debug:
+        description: "Enable debug logging"
+        required: false
+        default: "false"
   schedule:
     - cron: "0 9 * * *"
 
@@ -38,9 +51,21 @@ jobs:
         run: python sports_betting/scripts/build_nba_historical.py
 
       - name: Run main pipeline
-        run: python main.py
+        run: |
+          SPORT_ARG=""
+          if [ -n "${SPORT:-}" ]; then
+            SPORT_ARG="--sport ${SPORT}"
+          fi
+          DEBUG_ARG=""
+          if [ "${DEBUG:-false}" = "true" ]; then
+            DEBUG_ARG="--debug"
+          fi
+          python main.py ${SPORT_ARG} --days "${DAYS:-1}" ${DEBUG_ARG}
         env:
           SPORTRADAR_API_KEY: ${{ secrets.SPORTRADAR_API_KEY }}
+          SPORT: ${{ inputs.sport }}
+          DAYS: ${{ inputs.days }}
+          DEBUG: ${{ inputs.debug }}
 
       - name: Upload tracking file
         uses: actions/upload-artifact@v4
