@@ -504,13 +504,10 @@ def apply_smart_bet_filter(df):
     if len(df) == 0:
         return df
 
-    if "model_probability" not in df.columns:
-        print("🚨 model_probability missing — filling default")
-        df["model_probability"] = 0.5
-
-    if "market_probability" not in df.columns:
-        print("🚨 market_probability missing — filling default")
-        df["market_probability"] = 0.5
+    REQUIRED_COLUMNS = ["model_probability", "market_probability"]
+    for col in REQUIRED_COLUMNS:
+        if col not in df.columns:
+            raise ValueError(f"🚨 REQUIRED COLUMN MISSING: {col}")
 
     print("[COLUMN CHECK]", df.columns.tolist())
 
@@ -523,15 +520,9 @@ def apply_smart_bet_filter(df):
     if "adjusted_edge" not in df.columns:
         df["adjusted_edge"] = pd.to_numeric(df.get("edge"), errors="coerce").fillna(0.0)
 
-    model_probability_series = (
-        df["model_probability"] if "model_probability" in df.columns else pd.Series(0.5, index=df.index)
-    )
-    market_probability_series = (
-        df["market_probability"] if "market_probability" in df.columns else pd.Series(0.5, index=df.index)
-    )
-    df["model_probability"] = pd.to_numeric(model_probability_series, errors="coerce").fillna(0.5)
+    df["model_probability"] = pd.to_numeric(df["model_probability"], errors="coerce")
     df["market_probability"] = pd.to_numeric(df["market_probability"], errors="coerce")
-    df["market_probability"] = df["market_probability"].fillna(0.5)
+    df = df.dropna(subset=["model_probability", "market_probability"]).copy()
     if "odds" not in df.columns:
         print("🚨 odds column missing — defaulting to 0")
     df["odds"] = df["odds"] if "odds" in df.columns else pd.Series(0, index=df.index)
@@ -541,6 +532,7 @@ def apply_smart_bet_filter(df):
     if "profit_per_unit" not in df.columns:
         df["profit_per_unit"] = df["odds"].apply(get_payout)
     df["edge"] = df["model_probability"] - df["market_probability"]
+    df = df[df["edge"].notna()].copy()
     df["edge"] = pd.to_numeric(df["edge"], errors="coerce").clip(-0.25, 0.25)
     df["expected_value"] = (
         df["model_probability"] * pd.to_numeric(df["profit_per_unit"], errors="coerce")
