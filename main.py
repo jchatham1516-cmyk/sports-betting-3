@@ -536,6 +536,8 @@ def apply_smart_bet_filter(df):
         print("🚨 odds column missing — defaulting to 0")
     df["odds"] = df["odds"] if "odds" in df.columns else pd.Series(0, index=df.index)
     df["odds"] = pd.to_numeric(df["odds"], errors="coerce").fillna(0)
+    if (df["odds"] == 0).all():
+        print("🚨 ALL ODDS ARE ZERO — DATA PIPELINE FAILURE")
     if "profit_per_unit" not in df.columns:
         df["profit_per_unit"] = df["odds"].apply(get_payout)
     df["edge"] = df["model_probability"] - df["market_probability"]
@@ -698,6 +700,8 @@ def american_to_prob(odds: int) -> float:
 
 
 def get_payout(odds: int) -> float:
+    if odds is None or odds == 0:
+        return 0
     if odds > 0:
         return odds / 100
     return 100 / abs(odds)
@@ -1838,11 +1842,16 @@ def run_daily_pipeline(
         return abs(odds) / (abs(odds) + 100)
 
     def get_payout(odds):
+        if odds is None or odds == 0:
+            return 0
         if odds > 0:
             return odds / 100
         return 100 / abs(odds)
 
     if not df.empty and {"odds", "model_probability"}.issubset(df.columns):
+        df["odds"] = pd.to_numeric(df["odds"], errors="coerce").fillna(0)
+        if (df["odds"] == 0).all():
+            print("🚨 ALL ODDS ARE ZERO — DATA PIPELINE FAILURE")
         if "home_team" in df.columns:
             df["home_team"] = df["home_team"].astype(str).str.lower().str.strip()
         if "away_team" in df.columns:
