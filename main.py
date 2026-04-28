@@ -392,6 +392,9 @@ def build_parlays(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def apply_smart_bet_filter(df):
+    if not isinstance(df, pd.DataFrame):
+        raise ValueError("🚨 df is not a DataFrame")
+
     print("ENTERING FUNCTION: apply_smart_bet_filter", len(df))
 
     if df is None or len(df) == 0:
@@ -501,6 +504,16 @@ def apply_smart_bet_filter(df):
     if len(df) == 0:
         return df
 
+    if "model_probability" not in df.columns:
+        print("🚨 model_probability missing — filling default")
+        df["model_probability"] = 0.5
+
+    if "market_probability" not in df.columns:
+        print("🚨 market_probability missing — filling default")
+        df["market_probability"] = 0.5
+
+    print("[COLUMN CHECK]", df.columns.tolist())
+
     sort_key = "expected_value" if "expected_value" in df.columns else "edge"
     df_sorted = df.sort_values(by=sort_key, ascending=False)
 
@@ -510,8 +523,15 @@ def apply_smart_bet_filter(df):
     if "adjusted_edge" not in df.columns:
         df["adjusted_edge"] = pd.to_numeric(df.get("edge"), errors="coerce").fillna(0.0)
 
-    df["model_probability"] = pd.to_numeric(df.get("model_probability"), errors="coerce").fillna(0.5)
-    df["market_probability"] = pd.to_numeric(df.get("market_probability"), errors="coerce").fillna(0.5)
+    model_probability_series = (
+        df["model_probability"] if "model_probability" in df.columns else pd.Series(0.5, index=df.index)
+    )
+    market_probability_series = (
+        df["market_probability"] if "market_probability" in df.columns else pd.Series(0.5, index=df.index)
+    )
+    df["model_probability"] = pd.to_numeric(model_probability_series, errors="coerce").fillna(0.5)
+    df["market_probability"] = pd.to_numeric(df["market_probability"], errors="coerce")
+    df["market_probability"] = df["market_probability"].fillna(0.5)
     if "profit_per_unit" not in df.columns:
         df["profit_per_unit"] = pd.to_numeric(df.get("odds"), errors="coerce").apply(get_payout)
     df["edge"] = df["model_probability"] - df["market_probability"]
@@ -1971,7 +1991,10 @@ def run_daily_pipeline(
         df = games
 
         df["model_prob"] = pd.to_numeric(df.get("model_prob"), errors="coerce").fillna(
-            pd.to_numeric(df.get("model_probability"), errors="coerce").fillna(0.5)
+            pd.to_numeric(
+                df["model_probability"] if "model_probability" in df.columns else pd.Series(0.5, index=df.index),
+                errors="coerce",
+            ).fillna(0.5)
         )
 
         def apply_injury_adjustment(row):
