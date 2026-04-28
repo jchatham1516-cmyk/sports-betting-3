@@ -739,10 +739,10 @@ def predict_runtime(model, games_df: pd.DataFrame):
     if isinstance(model, tuple) and len(model) >= 2:
         runtime_model, scaler = model
 
-    feature_columns = list(getattr(runtime_model, "feature_columns", NBA_RUNTIME_FEATURE_COLUMNS))
+    FEATURE_COLUMNS = list(getattr(runtime_model, "feature_columns", NBA_RUNTIME_FEATURE_COLUMNS))
     X = df.copy()
     # Keep only training features in the same order.
-    X = X.reindex(columns=feature_columns, fill_value=0.0)
+    X = X.reindex(columns=FEATURE_COLUMNS, fill_value=0.0)
     # Force numeric values to avoid strings reaching the scaler/model.
     X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
     X = X.select_dtypes(include=["number"])
@@ -753,17 +753,10 @@ def predict_runtime(model, games_df: pd.DataFrame):
     print(f"[NBA] Prediction columns: {list(X.columns)}")
     print(f"[NBA] Non-numeric columns: {df.select_dtypes(exclude=['number']).columns.tolist()}")
     if scaler is not None:
-        X = scaler.transform(X)
+        X = pd.DataFrame(scaler.transform(X), columns=FEATURE_COLUMNS, index=X.index)
 
-    if hasattr(runtime_model, "feature_columns") and runtime_model.feature_columns is not None:
-        X_pred = X
-    elif hasattr(X, "values"):
-        X_pred = X.values
-    else:
-        X_pred = X
-
-    # Safety check: model inputs must be numeric only.
-    X = pd.DataFrame(X).select_dtypes(include=["number"])
+    # Final guard: enforce exact training feature order and fill any gaps.
+    X = X.reindex(columns=FEATURE_COLUMNS, fill_value=0.0)
     X_pred = X if hasattr(runtime_model, "feature_columns") and runtime_model.feature_columns is not None else X.values
 
     probs = runtime_model.predict_proba(X_pred)[:, 1]
