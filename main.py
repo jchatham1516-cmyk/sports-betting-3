@@ -1429,16 +1429,6 @@ def run_daily_pipeline(
                 print("🚨 NHL PIPELINE RUNNING 🚨")
             elif sport_clean == "mlb":
                 print("🚨 RUNNING SPORT: mlb 🚨")
-                print("⚠️ Skipping MLB — pitcher data not ready")
-                sport_run_summaries.append(
-                    {
-                        "sport": sport_clean,
-                        "games_processed": 0,
-                        "candidates_generated": 0,
-                    }
-                )
-                print(f"✅ LOOP END sport={sport}")
-                continue
             else:
                 print(f"⚠️ UNKNOWN SPORT: {sport_clean}")
                 print(f"✅ LOOP END sport={sport}")
@@ -1477,6 +1467,21 @@ def run_daily_pipeline(
                     daily["injury_impact_away"] = 0
                     daily["injury_impact_diff"] = 0
             daily = enrich_daily_features_by_sport(daily, sport_clean)
+            if sport_clean == "mlb":
+                if "pitcher_era_home" not in daily.columns:
+                    daily["pitcher_era_home"] = 4.20
+                if "pitcher_era_away" not in daily.columns:
+                    daily["pitcher_era_away"] = 4.20
+                daily["pitcher_era_home"] = pd.to_numeric(daily["pitcher_era_home"], errors="coerce").fillna(4.20)
+                daily["pitcher_era_away"] = pd.to_numeric(daily["pitcher_era_away"], errors="coerce").fillna(4.20)
+                daily["pitcher_diff"] = daily["pitcher_era_away"] - daily["pitcher_era_home"]
+                if len(daily) and pd.to_numeric(daily["pitcher_diff"], errors="coerce").fillna(0.0).eq(0.0).all():
+                    daily["pitcher_data_quality"] = "fallback"
+                    base_confidence = pd.to_numeric(daily["confidence"], errors="coerce").fillna(0.5) if "confidence" in daily.columns else pd.Series(0.5, index=daily.index, dtype=float)
+                    daily["confidence"] = base_confidence * 0.75
+                    print("⚠️ MLB pitcher data fallback active — reducing confidence")
+                print("[MLB PITCHER CHECK]")
+                print(daily[["home_team", "away_team", "pitcher_era_home", "pitcher_era_away", "pitcher_diff"]].head())
             if sport_clean == "nba":
                 daily = _boost_nba_signal_features(daily)
             validate_feature_signal(daily, sport_clean)
@@ -2176,9 +2181,14 @@ def run_daily_pipeline(
         if not mlb_rows.empty and "pitcher_diff" in mlb_rows.columns:
             pitcher_abs = pd.to_numeric(mlb_rows["pitcher_diff"], errors="coerce").abs().fillna(0.0)
             if pitcher_abs.eq(0.0).all():
-                print("⚠️ MODEL QUALITY WARNING: MLB pitcher_diff is all 0; skipping MLB bets as low-confidence")
-                df = df[df["sport"].astype(str).str.lower() != "mlb"].copy()
-                original_df = df.copy()
+                mlb_mask = df["sport"].astype(str).str.lower() == "mlb"
+                df.loc[mlb_mask, "pitcher_data_quality"] = "fallback"
+                if "confidence" in df.columns:
+                    base_confidence = pd.to_numeric(df.loc[mlb_mask, "confidence"], errors="coerce").fillna(0.5)
+                else:
+                    base_confidence = pd.Series(0.5, index=df.index[mlb_mask], dtype=float)
+                df.loc[mlb_mask, "confidence"] = base_confidence * 0.75
+                print("⚠️ MLB pitcher data fallback active — reducing confidence")
 
         print("\n[DEBUG EV SUMMARY]")
         print(df["expected_value"].describe())
