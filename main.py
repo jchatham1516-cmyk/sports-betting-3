@@ -66,6 +66,7 @@ PREDICTION_COLUMNS = [
     "home_odds",
     "away_odds",
     "model_probability",
+    "market_probability",
     "market_implied_probability",
     "edge",
     "expected_value",
@@ -1713,6 +1714,17 @@ def run_daily_pipeline(
             how="left",
         )
     print("STEP 1: after loading data", len(predictions_df))
+    if "market_probability" not in predictions_df.columns:
+        if "market_implied_probability" in predictions_df.columns:
+            predictions_df["market_probability"] = predictions_df["market_implied_probability"]
+        elif "market_prob" in predictions_df.columns:
+            predictions_df["market_probability"] = predictions_df["market_prob"]
+        elif "home_odds" in predictions_df.columns:
+            predictions_df["market_probability"] = pd.to_numeric(
+                predictions_df["home_odds"], errors="coerce"
+            ).apply(american_to_prob)
+        else:
+            predictions_df["market_probability"] = np.nan
     predictions_df = predictions_df.reindex(columns=PREDICTION_COLUMNS)
     print("STEP 2: after feature engineering", len(predictions_df))
     predictions_df = filter_predictions_today(predictions_df)
@@ -1723,6 +1735,12 @@ def run_daily_pipeline(
             raise ValueError(f"🚨 MISSING ODDS COLUMN: {col}")
     print("[ODDS PIPELINE CHECK]")
     print(predictions_df[["home_odds", "away_odds"]].head())
+    REQUIRED = ["market_probability"]
+    for col in REQUIRED:
+        if col not in predictions_df.columns:
+            raise ValueError(f"🚨 REQUIRED COLUMN MISSING: {col}")
+    print("[MARKET PROB CHECK]")
+    print(predictions_df["market_probability"].describe())
     predictions_df["odds"] = np.where(
         predictions_df["side"] == "home",
         predictions_df["home_odds"],
