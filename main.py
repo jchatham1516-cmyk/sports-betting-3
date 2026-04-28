@@ -510,9 +510,31 @@ def apply_smart_bet_filter(df):
     if "adjusted_edge" not in df.columns:
         df["adjusted_edge"] = pd.to_numeric(df.get("edge"), errors="coerce").fillna(0.0)
 
+    df["model_probability"] = pd.to_numeric(df.get("model_probability"), errors="coerce").fillna(0.5)
+    df["market_probability"] = pd.to_numeric(df.get("market_probability"), errors="coerce").fillna(0.5)
+    if "profit_per_unit" not in df.columns:
+        df["profit_per_unit"] = pd.to_numeric(df.get("odds"), errors="coerce").apply(get_payout)
+    df["edge"] = df["model_probability"] - df["market_probability"]
+    df["edge"] = pd.to_numeric(df["edge"], errors="coerce").clip(-0.25, 0.25)
+    df["expected_value"] = (
+        df["model_probability"] * pd.to_numeric(df["profit_per_unit"], errors="coerce")
+        - (1 - df["model_probability"])
+    )
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.dropna(subset=["model_probability", "market_probability"]).copy()
+
+    print("[EDGE DEBUG]")
+    print(df[["edge", "expected_value"]].describe())
+
     original_df = df.copy()
-    MIN_EDGE = 0.01
-    MIN_EV = 0.005
+    edge_signal = float(pd.to_numeric(df["edge"], errors="coerce").abs().mean()) if len(df) else 0.0
+    if edge_signal < 0.02:
+        print("⚠️ LOW SIGNAL MODE — relaxing thresholds")
+        MIN_EDGE = 0.005
+        MIN_EV = 0.005
+    else:
+        MIN_EDGE = 0.02
+        MIN_EV = 0.02
 
     print("\n[DEBUG EDGE SUMMARY]")
     print(df["edge"].describe())
@@ -1460,6 +1482,10 @@ def run_daily_pipeline(
                     daily["injury_impact_away"] = 0
                     daily["injury_impact_diff"] = 0
             daily = enrich_daily_features_by_sport(daily, sport_clean)
+            if daily is None or daily.empty:
+                print(f"🚨 {sport_clean.upper()} enrichment returned no usable rows — skipping sport")
+                print(f"✅ LOOP END sport={sport}")
+                continue
             if sport_clean == "mlb":
                 if "pitcher_era_home" not in daily.columns:
                     daily["pitcher_era_home"] = 4.20
@@ -1478,6 +1504,12 @@ def run_daily_pipeline(
             if sport_clean == "nba":
                 daily = _boost_nba_signal_features(daily)
             validate_feature_signal(daily, sport_clean)
+            if "starter_rating_diff" in daily.columns:
+                starter_signal = pd.to_numeric(daily["starter_rating_diff"], errors="coerce").fillna(0.0).abs().sum()
+                if starter_signal == 0:
+                    print("🚨 NO STARTER SIGNAL — SKIPPING SPORT")
+                    print(f"✅ LOOP END sport={sport}")
+                    continue
             print("[DEBUG] Daily columns BEFORE prediction:", list(daily.columns))
             runtime_home_win_model = None
             isotonic_model = None
@@ -2049,6 +2081,7 @@ def run_daily_pipeline(
         df["edge"] = df["edge"] + (
             df["injury_impact_diff"] * INJURY_WEIGHT
         )
+        df["edge"] = df["edge"].clip(-0.25, 0.25)
         df["decimal_odds"] = df["odds"].apply(_american_to_decimal)
         payout = df["decimal_odds"] - 1
         df["expected_value"] = (
@@ -2077,14 +2110,20 @@ def run_daily_pipeline(
             ].head(20)
         )
 
+        df = df.replace([np.inf, -np.inf], np.nan)
         df = df.dropna(subset=["model_probability", "market_probability"]).copy()
         print("STEP 9: after dropna model/market probability", len(df))
         df["profit_per_unit"] = df["odds"].apply(get_payout)
+        df["model_probability"] = df["model_probability"].fillna(0.5)
+        df["market_probability"] = df["market_probability"].fillna(0.5)
+        df["edge"] = (df["model_probability"] - df["market_probability"]).clip(-0.25, 0.25)
         df["expected_value"] = (
             df["model_probability"] * df["profit_per_unit"]
         ) - (1 - df["model_probability"])
         print("[EV FIX DEBUG]")
         print(df[["odds", "profit_per_unit", "model_probability", "expected_value"]].head())
+        print("[EDGE DEBUG]")
+        print(df[["edge", "expected_value"]].describe())
 
         if "expected_value" not in df.columns:
             print("ERROR: 'expected_value' column is missing. Filling with 0.5.")
@@ -2188,8 +2227,14 @@ def run_daily_pipeline(
         print("EV RANGE:", df["expected_value"].min(), df["expected_value"].max())
 
         print("STEP 14: before final edge/ev filter", len(df))
-        MIN_EDGE = 0.01
-        MIN_EV = 0.005
+        edge_signal = float(pd.to_numeric(df["edge"], errors="coerce").abs().mean()) if len(df) else 0.0
+        if edge_signal < 0.02:
+            print("⚠️ LOW SIGNAL MODE — relaxing thresholds")
+            MIN_EDGE = 0.005
+            MIN_EV = 0.005
+        else:
+            MIN_EDGE = 0.02
+            MIN_EV = 0.02
 
         filtered_df = df[
             (df["edge"] > MIN_EDGE) &

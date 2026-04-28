@@ -840,6 +840,9 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                 on=["home_team_key", "away_team_key"],
                 how="left",
             )
+            if "home_team_key" not in df.columns:
+                print("🚨 MLB MERGE FAILED — SKIPPING MLB")
+                return pd.DataFrame()
             print("[MLB TEAM KEYS SAMPLE]")
             print(df[["home_team", "home_team_key"]].drop_duplicates().head())
             print("[MLB MERGE CHECK]")
@@ -982,6 +985,9 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             df["starter_rating_diff"] = df["starter_rating_home"] - df["starter_rating_away"]
             df["hitting_rating_diff"] = df["hitting_rating_home"] - df["hitting_rating_away"]
             print("Non-zero starter_diff:", (df["starter_rating_diff"] != 0).sum())
+            if "home_team_key" not in df.columns:
+                print("🚨 MLB MERGE FAILED — SKIPPING MLB")
+                return pd.DataFrame()
             df = build_mlb_features(df)
             return df
         except Exception as exc:
