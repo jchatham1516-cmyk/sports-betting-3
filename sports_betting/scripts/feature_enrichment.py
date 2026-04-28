@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import traceback
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -131,6 +132,14 @@ MLB_TEAM_ALIASES = {
     "dbaks": "arizona diamondbacks",
 }
 
+TEAM_MAP = {
+    "oakland athletics": "athletics",
+    "athletics": "athletics",
+    "oakland a's": "athletics",
+    "la angels": "los angeles angels",
+    "los angeles angels": "los angeles angels",
+}
+
 
 def normalize_team(name: object) -> str:
     cleaned = str(name or "").lower().strip()
@@ -154,6 +163,13 @@ def clean_team_name(name: object) -> str:
         .replace(".", "")
         .replace("-", " ")
     )
+
+
+def _normalize_team_key(name: object) -> str:
+    cleaned = clean_team_name(name)
+    cleaned = re.sub(r"[^a-z0-9\s']", " ", cleaned)
+    cleaned = " ".join(cleaned.split())
+    return TEAM_MAP.get(cleaned, cleaned)
 
 def _coerce_espn_game_rows(payload: object) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
@@ -606,6 +622,7 @@ def _merge_home_away_team_stats(df: pd.DataFrame, team_df: pd.DataFrame, mapping
     if "team_norm" not in stats.columns:
         raise RuntimeError("[DATA ERROR] Team stats must include `team` or `team_norm`")
     stats["team_norm"] = stats["team_norm"].apply(clean_team_name).apply(_normalize_team)
+    stats["team_key"] = stats["team_norm"].apply(_normalize_team_key).replace(TEAM_MAP)
 
     if "home_team" in out.columns:
         out["home_team"] = out["home_team"].apply(clean_team_name)
@@ -622,6 +639,15 @@ def _merge_home_away_team_stats(df: pd.DataFrame, team_df: pd.DataFrame, mapping
     if "away_team_norm" in out.columns:
         out["away_team_norm"] = out["away_team_norm"].apply(clean_team_name).apply(_normalize_team)
 
+    if "home_team" in out.columns:
+        out["home_team_key"] = out["home_team"].astype(str).str.lower().str.strip().apply(_normalize_team_key).replace(TEAM_MAP)
+    else:
+        out["home_team_key"] = ""
+    if "away_team" in out.columns:
+        out["away_team_key"] = out["away_team"].astype(str).str.lower().str.strip().apply(_normalize_team_key).replace(TEAM_MAP)
+    else:
+        out["away_team_key"] = ""
+
     target_columns = set(mapping.values()) | {dst.replace("_home", "_away") for dst in mapping.values()}
     cols_to_drop = [col for col in out.columns if col in target_columns or col.endswith("_x") or col.endswith("_y")]
     out = out.drop(columns=cols_to_drop, errors="ignore")
@@ -635,8 +661,8 @@ def _merge_home_away_team_stats(df: pd.DataFrame, team_df: pd.DataFrame, mapping
     home_stats = stats_base.add_suffix("_home")
     away_stats = stats_base.add_suffix("_away")
 
-    out = out.merge(home_stats, left_on="home_team_norm", right_on="team_norm_home", how="left")
-    out = out.merge(away_stats, left_on="away_team_norm", right_on="team_norm_away", how="left")
+    out = out.merge(home_stats, left_on="home_team_key", right_on="team_key_home", how="left")
+    out = out.merge(away_stats, left_on="away_team_key", right_on="team_key_away", how="left")
 
     print("[MERGE SUCCESS CHECK]")
     if {"home_team", "offensive_rating_home", "offensive_rating_away"}.issubset(out.columns):
@@ -645,9 +671,14 @@ def _merge_home_away_team_stats(df: pd.DataFrame, team_df: pd.DataFrame, mapping
         print(out[["home_team", "goalie_save_strength_home", "goalie_save_strength_away"]].head())
     elif {"home_team", "starter_rating_home", "starter_rating_away"}.issubset(out.columns):
         print(out[["home_team", "starter_rating_home", "starter_rating_away"]].head())
+        missing = out["starter_rating_home"].isna().sum()
+        if missing > 0:
+            print("⚠️ MLB merge missing values:", missing)
+        out["starter_rating_home"] = out["starter_rating_home"].fillna(0)
+        out["starter_rating_away"] = out["starter_rating_away"].fillna(0)
 
-    if "home_team_norm" in out.columns and "team_norm" in stats.columns:
-        missing = set(out["home_team_norm"]) - set(stats["team_norm"])
+    if "home_team_key" in out.columns and "team_key" in stats.columns:
+        missing = set(out["home_team_key"]) - set(stats["team_key"])
         if missing:
             print("[MERGE MISMATCH HOME TEAMS]")
             print(missing)
@@ -764,188 +795,207 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         print("\n🚨 MLB PIPELINE STARTED 🚨")
         from sports_betting.sports.mlb.features import enrich_mlb_live_features, build_mlb_features
 
-        team_df, source = _resolve_mlb_team_stats()
-        print(f"[MLB ENRICHMENT SOURCE] {source}")
-        if team_df is not None:
-            mapping = {
-                "starter_rating": "starter_rating_home",
-                "bullpen_rating": "bullpen_rating_home",
-                "hitting_rating": "hitting_rating_home",
-                "home_split": "home_split_home",
-                "recent_form": "recent_form_home",
-                "starter_rating_home": "starter_rating_home",
-                "bullpen_rating_home": "bullpen_rating_home",
-                "hitting_rating_home": "hitting_rating_home",
-                "home_split_home": "home_split_home",
-                "recent_form_home": "recent_form_home",
-            }
-            df = _merge_home_away_team_stats(df, team_df, mapping)
-        else:
-            print("[MLB ENRICHMENT WARNING] No team stat source found.")
-            if source in {"missing", "historical_empty", "historical_missing_columns"}:
-                raise RuntimeError("[MLB DATA ERROR] No team stat source found after exhausting external and historical fallbacks.")
-        pitchers = load_mlb_pitchers()
-        probable_pitchers = load_mlb_probable_pitchers()
+        try:
+            team_df, source = _resolve_mlb_team_stats()
+            print(f"[MLB ENRICHMENT SOURCE] {source}")
+            if team_df is not None:
+                mapping = {
+                    "starter_rating": "starter_rating_home",
+                    "bullpen_rating": "bullpen_rating_home",
+                    "hitting_rating": "hitting_rating_home",
+                    "home_split": "home_split_home",
+                    "recent_form": "recent_form_home",
+                    "starter_rating_home": "starter_rating_home",
+                    "bullpen_rating_home": "bullpen_rating_home",
+                    "hitting_rating_home": "hitting_rating_home",
+                    "home_split_home": "home_split_home",
+                    "recent_form_home": "recent_form_home",
+                }
+                df = _merge_home_away_team_stats(df, team_df, mapping)
+            else:
+                print("[MLB ENRICHMENT WARNING] No team stat source found.")
+                if source in {"missing", "historical_empty", "historical_missing_columns"}:
+                    raise RuntimeError("[MLB DATA ERROR] No team stat source found after exhausting external and historical fallbacks.")
+            pitchers = load_mlb_pitchers()
+            probable_pitchers = load_mlb_probable_pitchers()
 
-        if "home_team_norm" not in df.columns:
-            df["home_team_norm"] = df["home_team"].map(_normalize_team)
-        if "away_team_norm" not in df.columns:
-            df["away_team_norm"] = df["away_team"].map(_normalize_team)
+            if "home_team_norm" not in df.columns:
+                df["home_team_norm"] = df["home_team"].map(_normalize_team)
+            if "away_team_norm" not in df.columns:
+                df["away_team_norm"] = df["away_team"].map(_normalize_team)
 
-        pitchers_df = get_mlb_starting_pitchers()
-        if "home_team" in df.columns and "away_team" in df.columns:
-            df["home_team_key"] = df["home_team"].astype(str).str.lower()
-            df["away_team_key"] = df["away_team"].astype(str).str.lower()
-        else:
-            df["home_team_key"] = ""
-            df["away_team_key"] = ""
-        if not pitchers_df.empty:
-            pitchers_df = pitchers_df.rename(columns={"home_team": "home_team_key", "away_team": "away_team_key"})
-        df = df.merge(
-            pitchers_df,
-            on=["home_team_key", "away_team_key"],
-            how="left",
-        )
-        if "home_pitcher_y" in df.columns:
-            df["home_pitcher"] = df["home_pitcher_y"]
-            if "home_pitcher_x" in df.columns:
-                df["home_pitcher"] = df["home_pitcher"].where(df["home_pitcher"].notna(), df["home_pitcher_x"])
-        if "away_pitcher_y" in df.columns:
-            df["away_pitcher"] = df["away_pitcher_y"]
-            if "away_pitcher_x" in df.columns:
-                df["away_pitcher"] = df["away_pitcher"].where(df["away_pitcher"].notna(), df["away_pitcher_x"])
-        df = df.drop(columns=[c for c in ["home_pitcher_x", "home_pitcher_y", "away_pitcher_x", "away_pitcher_y"] if c in df.columns])
+            pitchers_df = get_mlb_starting_pitchers()
+            if "home_team" in df.columns and "away_team" in df.columns:
+                df["home_team_key"] = df["home_team"].astype(str).str.lower().str.strip().apply(_normalize_team_key).replace(TEAM_MAP)
+                df["away_team_key"] = df["away_team"].astype(str).str.lower().str.strip().apply(_normalize_team_key).replace(TEAM_MAP)
+            else:
+                df["home_team_key"] = ""
+                df["away_team_key"] = ""
+            if not pitchers_df.empty:
+                pitchers_df = pitchers_df.rename(columns={"home_team": "home_team_key", "away_team": "away_team_key"})
+                pitchers_df["home_team_key"] = pitchers_df["home_team_key"].astype(str).str.lower().str.strip().apply(_normalize_team_key).replace(TEAM_MAP)
+                pitchers_df["away_team_key"] = pitchers_df["away_team_key"].astype(str).str.lower().str.strip().apply(_normalize_team_key).replace(TEAM_MAP)
+            df = df.merge(
+                pitchers_df,
+                on=["home_team_key", "away_team_key"],
+                how="left",
+            )
+            print("[MLB TEAM KEYS SAMPLE]")
+            print(df[["home_team", "home_team_key"]].drop_duplicates().head())
+            print("[MLB MERGE CHECK]")
+            print(df[["home_team", "starter_rating_home"]].head())
+            if "home_pitcher_y" in df.columns:
+                df["home_pitcher"] = df["home_pitcher_y"]
+                if "home_pitcher_x" in df.columns:
+                    df["home_pitcher"] = df["home_pitcher"].where(df["home_pitcher"].notna(), df["home_pitcher_x"])
+            if "away_pitcher_y" in df.columns:
+                df["away_pitcher"] = df["away_pitcher_y"]
+                if "away_pitcher_x" in df.columns:
+                    df["away_pitcher"] = df["away_pitcher"].where(df["away_pitcher"].notna(), df["away_pitcher_x"])
+            df = df.drop(columns=[c for c in ["home_pitcher_x", "home_pitcher_y", "away_pitcher_x", "away_pitcher_y"] if c in df.columns])
 
-        if "home_probable_pitcher" not in df.columns:
-            df["home_probable_pitcher"] = df.get("home_probable_pitcher", "")
-        if "away_probable_pitcher" not in df.columns:
-            df["away_probable_pitcher"] = df.get("away_probable_pitcher", "")
-        if "home_pitcher" not in df.columns:
-            df["home_pitcher"] = None
-        if "away_pitcher" not in df.columns:
-            df["away_pitcher"] = None
-        df["starting_pitcher_home"] = df["home_pitcher"]
-        df["starting_pitcher_away"] = df["away_pitcher"]
-        df["home_probable_pitcher"] = df["home_probable_pitcher"].astype(str).where(
-            df["home_probable_pitcher"].astype(str).str.strip().ne(""),
-            df["home_pitcher"].fillna("").astype(str),
-        )
-        df["away_probable_pitcher"] = df["away_probable_pitcher"].astype(str).where(
-            df["away_probable_pitcher"].astype(str).str.strip().ne(""),
-            df["away_pitcher"].fillna("").astype(str),
-        )
-
-        print("[MLB DEBUG] Checking pitcher columns...")
-        print(df[["home_team", "away_team", "pitcher_era_home", "pitcher_era_away", "pitcher_diff"]].head())
-
-        for side in ("home", "away"):
-            probable_col = f"{side}_probable_pitcher"
-            target_col = f"probable_{side}_pitcher"
-            if target_col not in df.columns:
-                df[target_col] = ""
-            if probable_col in df.columns:
-                df[target_col] = df[target_col].astype(str).where(df[target_col].astype(str).str.strip().ne(""), df[probable_col].fillna("").astype(str))
-
-        home_pitcher_stats = df.apply(
-            lambda row: _extract_pitcher_stats_from_row(
-                row,
-                side="home",
-                probable_pitchers_by_name=probable_pitchers,
-                pitchers_by_team=pitchers,
-            ),
-            axis=1,
-        )
-        away_pitcher_stats = df.apply(
-            lambda row: _extract_pitcher_stats_from_row(
-                row,
-                side="away",
-                probable_pitchers_by_name=probable_pitchers,
-                pitchers_by_team=pitchers,
-            ),
-            axis=1,
-        )
-
-        df["pitcher_name_home"] = home_pitcher_stats.map(lambda v: v.get("pitcher_name", "")).astype(str)
-        df["pitcher_name_away"] = away_pitcher_stats.map(lambda v: v.get("pitcher_name", "")).astype(str)
-        df["pitcher_era_home"] = pd.to_numeric(home_pitcher_stats.map(lambda v: v.get("pitcher_era")), errors="coerce")
-        df["pitcher_era_away"] = pd.to_numeric(away_pitcher_stats.map(lambda v: v.get("pitcher_era")), errors="coerce")
-        df["pitcher_whip_home"] = pd.to_numeric(home_pitcher_stats.map(lambda v: v.get("pitcher_whip")), errors="coerce")
-        df["pitcher_whip_away"] = pd.to_numeric(away_pitcher_stats.map(lambda v: v.get("pitcher_whip")), errors="coerce")
-        df["pitcher_k_rate_home"] = pd.to_numeric(home_pitcher_stats.map(lambda v: v.get("pitcher_k_rate")), errors="coerce")
-        df["pitcher_k_rate_away"] = pd.to_numeric(away_pitcher_stats.map(lambda v: v.get("pitcher_k_rate")), errors="coerce")
-
-        missing_pitchers = df[
-            df["pitcher_name_home"].eq("")
-            | df["pitcher_name_away"].eq("")
-            | df["pitcher_era_home"].isna()
-            | df["pitcher_era_away"].isna()
-        ]
-        if not missing_pitchers.empty:
-            print("[MLB PITCHER MISSING]")
-            print(
-                missing_pitchers[
-                    [
-                        "home_team",
-                        "away_team",
-                        "pitcher_name_home",
-                        "pitcher_name_away",
-                        "pitcher_era_home",
-                        "pitcher_era_away",
-                    ]
-                ].to_string(index=False)
+            if "home_probable_pitcher" not in df.columns:
+                df["home_probable_pitcher"] = df.get("home_probable_pitcher", "")
+            if "away_probable_pitcher" not in df.columns:
+                df["away_probable_pitcher"] = df.get("away_probable_pitcher", "")
+            if "home_pitcher" not in df.columns:
+                df["home_pitcher"] = None
+            if "away_pitcher" not in df.columns:
+                df["away_pitcher"] = None
+            df["starting_pitcher_home"] = df["home_pitcher"]
+            df["starting_pitcher_away"] = df["away_pitcher"]
+            df["home_probable_pitcher"] = df["home_probable_pitcher"].astype(str).where(
+                df["home_probable_pitcher"].astype(str).str.strip().ne(""),
+                df["home_pitcher"].fillna("").astype(str),
+            )
+            df["away_probable_pitcher"] = df["away_probable_pitcher"].astype(str).where(
+                df["away_probable_pitcher"].astype(str).str.strip().ne(""),
+                df["away_pitcher"].fillna("").astype(str),
             )
 
-        def get_pitcher_era(name: object) -> float:
-            if name is None or (isinstance(name, float) and pd.isna(name)):
+            print("[MLB DEBUG] Checking pitcher columns...")
+            print(df[["home_team", "away_team", "pitcher_era_home", "pitcher_era_away", "pitcher_diff"]].head())
+
+            for side in ("home", "away"):
+                probable_col = f"{side}_probable_pitcher"
+                target_col = f"probable_{side}_pitcher"
+                if target_col not in df.columns:
+                    df[target_col] = ""
+                if probable_col in df.columns:
+                    df[target_col] = df[target_col].astype(str).where(df[target_col].astype(str).str.strip().ne(""), df[probable_col].fillna("").astype(str))
+
+            home_pitcher_stats = df.apply(
+                lambda row: _extract_pitcher_stats_from_row(
+                    row,
+                    side="home",
+                    probable_pitchers_by_name=probable_pitchers,
+                    pitchers_by_team=pitchers,
+                ),
+                axis=1,
+            )
+            away_pitcher_stats = df.apply(
+                lambda row: _extract_pitcher_stats_from_row(
+                    row,
+                    side="away",
+                    probable_pitchers_by_name=probable_pitchers,
+                    pitchers_by_team=pitchers,
+                ),
+                axis=1,
+            )
+
+            df["pitcher_name_home"] = home_pitcher_stats.map(lambda v: v.get("pitcher_name", "")).astype(str)
+            df["pitcher_name_away"] = away_pitcher_stats.map(lambda v: v.get("pitcher_name", "")).astype(str)
+            df["pitcher_era_home"] = pd.to_numeric(home_pitcher_stats.map(lambda v: v.get("pitcher_era")), errors="coerce")
+            df["pitcher_era_away"] = pd.to_numeric(away_pitcher_stats.map(lambda v: v.get("pitcher_era")), errors="coerce")
+            df["pitcher_whip_home"] = pd.to_numeric(home_pitcher_stats.map(lambda v: v.get("pitcher_whip")), errors="coerce")
+            df["pitcher_whip_away"] = pd.to_numeric(away_pitcher_stats.map(lambda v: v.get("pitcher_whip")), errors="coerce")
+            df["pitcher_k_rate_home"] = pd.to_numeric(home_pitcher_stats.map(lambda v: v.get("pitcher_k_rate")), errors="coerce")
+            df["pitcher_k_rate_away"] = pd.to_numeric(away_pitcher_stats.map(lambda v: v.get("pitcher_k_rate")), errors="coerce")
+
+            missing_pitchers = df[
+                df["pitcher_name_home"].eq("")
+                | df["pitcher_name_away"].eq("")
+                | df["pitcher_era_home"].isna()
+                | df["pitcher_era_away"].isna()
+            ]
+            if not missing_pitchers.empty:
+                print("[MLB PITCHER MISSING]")
+                print(
+                    missing_pitchers[
+                        [
+                            "home_team",
+                            "away_team",
+                            "pitcher_name_home",
+                            "pitcher_name_away",
+                            "pitcher_era_home",
+                            "pitcher_era_away",
+                        ]
+                    ].to_string(index=False)
+                )
+
+            def get_pitcher_era(name: object) -> float:
+                if name is None or (isinstance(name, float) and pd.isna(name)):
+                    return 4.2
+                normalized = str(name).strip().lower()
+                if not normalized:
+                    return 4.2
+
+                elite = ["scherzer", "degrom", "ohtani", "cole"]
+                good = ["webb", "gilbert", "fried", "senga"]
+
+                if any(token in normalized for token in elite):
+                    return 2.9
+                if any(token in normalized for token in good):
+                    return 3.5
                 return 4.2
-            normalized = str(name).strip().lower()
-            if not normalized:
-                return 4.2
 
-            elite = ["scherzer", "degrom", "ohtani", "cole"]
-            good = ["webb", "gilbert", "fried", "senga"]
+            fallback_home_era = df["home_pitcher"].apply(get_pitcher_era)
+            fallback_away_era = df["away_pitcher"].apply(get_pitcher_era)
+            df["pitcher_era_home"] = df["pitcher_era_home"].fillna(fallback_home_era)
+            df["pitcher_era_away"] = df["pitcher_era_away"].fillna(fallback_away_era)
+            df["pitcher_era_home"] = df["pitcher_era_home"].fillna(pd.to_numeric(df.get("starter_rating_home"), errors="coerce").rsub(125).div(25))
+            df["pitcher_era_away"] = df["pitcher_era_away"].fillna(pd.to_numeric(df.get("starter_rating_away"), errors="coerce").rsub(125).div(25))
+            df["pitcher_whip_home"] = df["pitcher_whip_home"].fillna((df["pitcher_era_home"] / 4.0).clip(lower=0.9, upper=1.8))
+            df["pitcher_whip_away"] = df["pitcher_whip_away"].fillna((df["pitcher_era_away"] / 4.0).clip(lower=0.9, upper=1.8))
+            df["pitcher_k_rate_home"] = df["pitcher_k_rate_home"].fillna((0.30 - (df["pitcher_era_home"] - 3.0) * 0.025).clip(lower=0.12, upper=0.35))
+            df["pitcher_k_rate_away"] = df["pitcher_k_rate_away"].fillna((0.30 - (df["pitcher_era_away"] - 3.0) * 0.025).clip(lower=0.12, upper=0.35))
+            df["pitcher_diff"] = df["pitcher_era_away"] - df["pitcher_era_home"]
+            if df["pitcher_era_home"].isna().all() or (df["pitcher_era_home"] == 0).all():
+                print("🚨 MLB PITCHERS NOT WORKING — ALL ZERO OR NULL")
+            df["pitcher_whip_diff"] = df["pitcher_whip_away"] - df["pitcher_whip_home"]
+            df["pitcher_k_rate_diff"] = df["pitcher_k_rate_home"] - df["pitcher_k_rate_away"]
+            print("[MLB FIXED] Pitcher data sample:")
+            print(df[["home_team", "away_team", "home_pitcher", "away_pitcher", "pitcher_diff"]].head())
 
-            if any(token in normalized for token in elite):
-                return 2.9
-            if any(token in normalized for token in good):
-                return 3.5
-            return 4.2
-
-        fallback_home_era = df["home_pitcher"].apply(get_pitcher_era)
-        fallback_away_era = df["away_pitcher"].apply(get_pitcher_era)
-        df["pitcher_era_home"] = df["pitcher_era_home"].fillna(fallback_home_era)
-        df["pitcher_era_away"] = df["pitcher_era_away"].fillna(fallback_away_era)
-        df["pitcher_era_home"] = df["pitcher_era_home"].fillna(pd.to_numeric(df.get("starter_rating_home"), errors="coerce").rsub(125).div(25))
-        df["pitcher_era_away"] = df["pitcher_era_away"].fillna(pd.to_numeric(df.get("starter_rating_away"), errors="coerce").rsub(125).div(25))
-        df["pitcher_whip_home"] = df["pitcher_whip_home"].fillna((df["pitcher_era_home"] / 4.0).clip(lower=0.9, upper=1.8))
-        df["pitcher_whip_away"] = df["pitcher_whip_away"].fillna((df["pitcher_era_away"] / 4.0).clip(lower=0.9, upper=1.8))
-        df["pitcher_k_rate_home"] = df["pitcher_k_rate_home"].fillna((0.30 - (df["pitcher_era_home"] - 3.0) * 0.025).clip(lower=0.12, upper=0.35))
-        df["pitcher_k_rate_away"] = df["pitcher_k_rate_away"].fillna((0.30 - (df["pitcher_era_away"] - 3.0) * 0.025).clip(lower=0.12, upper=0.35))
-        df["pitcher_diff"] = df["pitcher_era_away"] - df["pitcher_era_home"]
-        if df["pitcher_era_home"].isna().all() or (df["pitcher_era_home"] == 0).all():
-            print("🚨 MLB PITCHERS NOT WORKING — ALL ZERO OR NULL")
-        df["pitcher_whip_diff"] = df["pitcher_whip_away"] - df["pitcher_whip_home"]
-        df["pitcher_k_rate_diff"] = df["pitcher_k_rate_home"] - df["pitcher_k_rate_away"]
-        print("[MLB FIXED] Pitcher data sample:")
-        print(df[["home_team", "away_team", "home_pitcher", "away_pitcher", "pitcher_diff"]].head())
-
-        PITCHER_WEIGHT = 0.015
-        if "edge" in df.columns:
-            if "adjusted_edge" in df.columns:
-                df["adjusted_edge"] = pd.to_numeric(df["adjusted_edge"], errors="coerce")
-                df["adjusted_edge"] = df["adjusted_edge"].where(df["adjusted_edge"].notna(), pd.to_numeric(df["edge"], errors="coerce") + (df["pitcher_diff"] * PITCHER_WEIGHT))
+            PITCHER_WEIGHT = 0.015
+            if "edge" in df.columns:
+                if "adjusted_edge" in df.columns:
+                    df["adjusted_edge"] = pd.to_numeric(df["adjusted_edge"], errors="coerce")
+                    df["adjusted_edge"] = df["adjusted_edge"].where(df["adjusted_edge"].notna(), pd.to_numeric(df["edge"], errors="coerce") + (df["pitcher_diff"] * PITCHER_WEIGHT))
+                else:
+                    df["adjusted_edge"] = pd.to_numeric(df["edge"], errors="coerce") + (df["pitcher_diff"] * PITCHER_WEIGHT)
+            df = enrich_mlb_live_features(df)
+            df["starter_rating_home"] = pd.to_numeric(df["starter_rating_home"], errors="coerce").replace(0, 50).fillna(50)
+            df["starter_rating_away"] = pd.to_numeric(df["starter_rating_away"], errors="coerce").replace(0, 50).fillna(50)
+            df["hitting_rating_home"] = pd.to_numeric(df["hitting_rating_home"], errors="coerce").replace(0, 100).fillna(100)
+            df["hitting_rating_away"] = pd.to_numeric(df["hitting_rating_away"], errors="coerce").replace(0, 100).fillna(100)
+            df["starter_rating_diff"] = df["starter_rating_home"] - df["starter_rating_away"]
+            df["hitting_rating_diff"] = df["hitting_rating_home"] - df["hitting_rating_away"]
+            print("Non-zero starter_diff:", (df["starter_rating_diff"] != 0).sum())
+            df = build_mlb_features(df)
+            return df
+        except Exception as exc:
+            print(f"[MLB PIPELINE ERROR] {exc}")
+            print(traceback.format_exc())
+            if "starter_rating_home" in df.columns:
+                df["starter_rating_home"] = pd.to_numeric(df["starter_rating_home"], errors="coerce").fillna(0)
             else:
-                df["adjusted_edge"] = pd.to_numeric(df["edge"], errors="coerce") + (df["pitcher_diff"] * PITCHER_WEIGHT)
-        df = enrich_mlb_live_features(df)
-        df["starter_rating_home"] = pd.to_numeric(df["starter_rating_home"], errors="coerce").replace(0, 50).fillna(50)
-        df["starter_rating_away"] = pd.to_numeric(df["starter_rating_away"], errors="coerce").replace(0, 50).fillna(50)
-        df["hitting_rating_home"] = pd.to_numeric(df["hitting_rating_home"], errors="coerce").replace(0, 100).fillna(100)
-        df["hitting_rating_away"] = pd.to_numeric(df["hitting_rating_away"], errors="coerce").replace(0, 100).fillna(100)
-        df["starter_rating_diff"] = df["starter_rating_home"] - df["starter_rating_away"]
-        df["hitting_rating_diff"] = df["hitting_rating_home"] - df["hitting_rating_away"]
-        print("Non-zero starter_diff:", (df["starter_rating_diff"] != 0).sum())
-        df = build_mlb_features(df)
-        return df
+                df["starter_rating_home"] = 0
+            if "starter_rating_away" in df.columns:
+                df["starter_rating_away"] = pd.to_numeric(df["starter_rating_away"], errors="coerce").fillna(0)
+            else:
+                df["starter_rating_away"] = 0
+            return df
 
     if sport == "nfl":
         from sports_betting.sports.nfl.features import enrich_nfl_live_features, build_nfl_diff_features
