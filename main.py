@@ -1712,6 +1712,13 @@ def run_daily_pipeline(
     print("STEP 2: after feature engineering", len(predictions_df))
     predictions_df = filter_predictions_today(predictions_df)
     print("STEP 3: after predictions", len(predictions_df))
+    predictions_df["odds"] = np.where(
+        predictions_df["side"] == "home",
+        predictions_df["home_odds"],
+        predictions_df["away_odds"],
+    )
+    predictions_df["odds"] = pd.to_numeric(predictions_df["odds"], errors="coerce").fillna(0)
+    print("[ODDS CHECK]", predictions_df["odds"].describe())
     predictions_df = apply_smart_bet_filter(predictions_df)
     print("STEP 4: after bet filtering", len(predictions_df))
     save_dataframe(predictions_df, out_dir / "predictions.csv")
