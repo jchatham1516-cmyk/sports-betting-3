@@ -61,6 +61,10 @@ PREDICTION_COLUMNS = [
     "sport",
     "market",
     "side",
+    "home_team",
+    "away_team",
+    "home_odds",
+    "away_odds",
     "model_probability",
     "market_implied_probability",
     "edge",
@@ -1699,11 +1703,26 @@ def run_daily_pipeline(
     logger.info("Total games processed: %s", total_games_processed)
 
     predictions_df = pd.DataFrame(all_predictions)
+    game_context_df = pd.DataFrame.from_dict(game_rows_by_id, orient="index")
+    if not game_context_df.empty:
+        game_context_df.index.name = "game_id"
+        game_context_df = game_context_df.reset_index()
+        predictions_df = predictions_df.merge(
+            game_context_df[["game_id", "home_team", "away_team", "home_odds", "away_odds"]],
+            on="game_id",
+            how="left",
+        )
     print("STEP 1: after loading data", len(predictions_df))
     predictions_df = predictions_df.reindex(columns=PREDICTION_COLUMNS)
     print("STEP 2: after feature engineering", len(predictions_df))
     predictions_df = filter_predictions_today(predictions_df)
     print("STEP 3: after predictions", len(predictions_df))
+    REQUIRED_ODDS = ["home_odds", "away_odds"]
+    for col in REQUIRED_ODDS:
+        if col not in predictions_df.columns:
+            raise ValueError(f"🚨 MISSING ODDS COLUMN: {col}")
+    print("[ODDS PIPELINE CHECK]")
+    print(predictions_df[["home_odds", "away_odds"]].head())
     predictions_df["odds"] = np.where(
         predictions_df["side"] == "home",
         predictions_df["home_odds"],
