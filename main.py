@@ -532,8 +532,12 @@ def apply_smart_bet_filter(df):
     df["model_probability"] = pd.to_numeric(model_probability_series, errors="coerce").fillna(0.5)
     df["market_probability"] = pd.to_numeric(df["market_probability"], errors="coerce")
     df["market_probability"] = df["market_probability"].fillna(0.5)
+    if "odds" not in df.columns:
+        print("🚨 odds column missing — defaulting to 0")
+    df["odds"] = df["odds"] if "odds" in df.columns else pd.Series(0, index=df.index)
+    df["odds"] = pd.to_numeric(df["odds"], errors="coerce").fillna(0)
     if "profit_per_unit" not in df.columns:
-        df["profit_per_unit"] = pd.to_numeric(df.get("odds"), errors="coerce").apply(get_payout)
+        df["profit_per_unit"] = df["odds"].apply(get_payout)
     df["edge"] = df["model_probability"] - df["market_probability"]
     df["edge"] = pd.to_numeric(df["edge"], errors="coerce").clip(-0.25, 0.25)
     df["expected_value"] = (
