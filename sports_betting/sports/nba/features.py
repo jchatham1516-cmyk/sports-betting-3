@@ -11,10 +11,15 @@ from sports_betting.sports.common.team_names import normalize_team_name as share
 NBA_FEATURE_COLUMNS = [
     "elo_diff",
     "rest_diff",
+    "rest_advantage_weighted",
     "travel_fatigue_diff",
     "injury_impact_diff",
     "net_rating_diff",
     "pace_diff",
+    "rolling_off_rating_diff_last5",
+    "rolling_def_rating_diff_last5",
+    "home_away_net_rating_split_diff",
+    "pace_adjusted_scoring_diff",
     "last5_net_rating_diff",
     "last10_net_rating_diff",
     "market_prob_home",
@@ -64,10 +69,15 @@ NBA_REQUIRED_SOURCE_COLUMNS = [
 FEATURE_CLIP_BOUNDS: dict[str, tuple[float, float]] = {
     "elo_diff": (-450.0, 450.0),
     "rest_diff": (-5.0, 5.0),
+    "rest_advantage_weighted": (-8.0, 8.0),
     "travel_fatigue_diff": (-6000.0, 6000.0),
     "injury_impact_diff": (-25.0, 25.0),
     "net_rating_diff": (-35.0, 35.0),
     "pace_diff": (-15.0, 15.0),
+    "rolling_off_rating_diff_last5": (-30.0, 30.0),
+    "rolling_def_rating_diff_last5": (-30.0, 30.0),
+    "home_away_net_rating_split_diff": (-35.0, 35.0),
+    "pace_adjusted_scoring_diff": (-45.0, 45.0),
     "last5_net_rating_diff": (-40.0, 40.0),
     "last10_net_rating_diff": (-30.0, 30.0),
     "market_prob_home": (0.02, 0.98),
@@ -254,6 +264,39 @@ def build_nba_features(df: pd.DataFrame) -> pd.DataFrame:
     out["pace_diff"] = _coalesce_numeric(out, ["pace_diff"], default=np.nan)
     if out["pace_diff"].isna().all():
         out["pace_diff"] = _coalesce_numeric(out, ["pace_home"], 0.0) - _coalesce_numeric(out, ["pace_away"], 0.0)
+
+    out["rest_advantage_weighted"] = _coalesce_numeric(out, ["rest_advantage_weighted"], default=np.nan)
+    if out["rest_advantage_weighted"].isna().all():
+        out["rest_advantage_weighted"] = out["rest_diff"] * (1.0 + (out["travel_fatigue_diff"].abs() / 4000.0))
+
+    out["rolling_off_rating_diff_last5"] = _coalesce_numeric(out, ["rolling_off_rating_diff_last5"], default=np.nan)
+    if out["rolling_off_rating_diff_last5"].isna().all():
+        out["rolling_off_rating_diff_last5"] = (
+            _coalesce_numeric(out, ["off_rating_last5_home", "rolling_off_rating_last5_home", "offensive_rating_last5_home"], 0.0)
+            - _coalesce_numeric(out, ["off_rating_last5_away", "rolling_off_rating_last5_away", "offensive_rating_last5_away"], 0.0)
+        )
+
+    out["rolling_def_rating_diff_last5"] = _coalesce_numeric(out, ["rolling_def_rating_diff_last5"], default=np.nan)
+    if out["rolling_def_rating_diff_last5"].isna().all():
+        out["rolling_def_rating_diff_last5"] = (
+            _coalesce_numeric(out, ["def_rating_last5_home", "rolling_def_rating_last5_home", "defensive_rating_last5_home"], 0.0)
+            - _coalesce_numeric(out, ["def_rating_last5_away", "rolling_def_rating_last5_away", "defensive_rating_last5_away"], 0.0)
+        )
+
+    out["home_away_net_rating_split_diff"] = _coalesce_numeric(out, ["home_away_net_rating_split_diff"], default=np.nan)
+    if out["home_away_net_rating_split_diff"].isna().all():
+        out["home_away_net_rating_split_diff"] = (
+            _coalesce_numeric(out, ["net_rating_home_split", "home_net_rating_split", "net_rating_home"], 0.0)
+            - _coalesce_numeric(out, ["net_rating_away_split", "away_net_rating_split", "net_rating_away"], 0.0)
+        )
+
+    out["pace_adjusted_scoring_diff"] = _coalesce_numeric(out, ["pace_adjusted_scoring_diff"], default=np.nan)
+    if out["pace_adjusted_scoring_diff"].isna().all():
+        home_off = _coalesce_numeric(out, ["offensive_rating_home", "off_rating_home"], 0.0)
+        away_off = _coalesce_numeric(out, ["offensive_rating_away", "off_rating_away"], 0.0)
+        home_pace = _coalesce_numeric(out, ["pace_home"], 100.0).replace(0, 100.0)
+        away_pace = _coalesce_numeric(out, ["pace_away"], 100.0).replace(0, 100.0)
+        out["pace_adjusted_scoring_diff"] = (home_off * (home_pace / 100.0)) - (away_off * (away_pace / 100.0))
 
     out["last5_net_rating_diff"] = _coalesce_numeric(out, ["last5_net_rating_diff"], default=np.nan)
     if out["last5_net_rating_diff"].isna().all():
