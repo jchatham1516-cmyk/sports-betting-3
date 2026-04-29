@@ -55,6 +55,10 @@ def clean_team_name(name: str | None) -> str:
     )
 
 
+def normalize_team(name: object) -> str:
+    return str(name or "").lower().strip()
+
+
 def _normalize_team_name(name: str | None) -> str:
     return normalize_team_name(clean_team_name(str(name or "")))
 
@@ -294,13 +298,15 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
     if "away_team" not in out.columns:
         out["away_team"] = ""
 
-    injuries["team_clean"] = injuries["team"].apply(clean_team_name)
-    out["home_team_clean"] = out["home_team"].apply(clean_team_name)
-    out["away_team_clean"] = out["away_team"].apply(clean_team_name)
+    injuries["team_clean"] = injuries["team"].apply(normalize_team)
+    out["home_team_clean"] = out["home_team"].apply(normalize_team)
+    out["away_team_clean"] = out["away_team"].apply(normalize_team)
 
     injuries["team_norm"] = injuries["team_clean"].apply(normalize_team_name)
     out["home_team_norm"] = out["home_team_clean"].apply(normalize_team_name)
     out["away_team_norm"] = out["away_team_clean"].apply(normalize_team_name)
+    print("INJURY TEAMS:", injuries["team"].dropna().astype(str).unique())
+    print("MODEL TEAMS:", out["home_team"].dropna().astype(str).unique())
 
     injuries["player_weight"] = injuries.apply(
         lambda injury_row: classify_player(

@@ -833,6 +833,10 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                 df["away_team_key"] = ""
             if not pitchers_df.empty:
                 pitchers_df = pitchers_df.rename(columns={"home_team": "home_team_key", "away_team": "away_team_key"})
+                if "home_team_key" not in pitchers_df.columns:
+                    pitchers_df["home_team_key"] = ""
+                if "away_team_key" not in pitchers_df.columns:
+                    pitchers_df["away_team_key"] = ""
                 pitchers_df["home_team_key"] = pitchers_df["home_team_key"].astype(str).str.lower().str.strip().apply(_normalize_team_key).replace(TEAM_MAP)
                 pitchers_df["away_team_key"] = pitchers_df["away_team_key"].astype(str).str.lower().str.strip().apply(_normalize_team_key).replace(TEAM_MAP)
             df = df.merge(
