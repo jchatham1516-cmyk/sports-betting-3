@@ -123,26 +123,28 @@ def build_nhl_diff_features(df: pd.DataFrame) -> pd.DataFrame:
         out["xgf_home"].notna().any() or out["xgf_away"].notna().any()
     )
 
-    if goalie_has_data:
-        out["goalie_save_strength_home"] = pd.to_numeric(out.get("goalie_save_strength_home", 0.905), errors="coerce").fillna(0.905)
-        out["goalie_save_strength_away"] = pd.to_numeric(out.get("goalie_save_strength_away", 0.905), errors="coerce").fillna(0.905)
-        out["goalie_diff"] = out["goalie_save_strength_home"] - out["goalie_save_strength_away"]
-    else:
-        out["goalie_diff"] = np.random.normal(0, 0.02, len(out))
+    out["goalie_save_home"] = pd.to_numeric(
+        out.get("goalie_save_home", out.get("goalie_save_strength_home", 0.905)),
+        errors="coerce",
+    )
+    out["goalie_save_away"] = pd.to_numeric(
+        out.get("goalie_save_away", out.get("goalie_save_strength_away", 0.905)),
+        errors="coerce",
+    )
+    out["goalie_save_strength_diff"] = out["goalie_save_home"].fillna(0) - out["goalie_save_away"].fillna(0)
+    out["goalie_diff"] = out["goalie_save_strength_diff"] if goalie_has_data else out["goalie_save_strength_diff"]
 
-    if special_teams_has_data:
-        out["special_teams_diff"] = pd.to_numeric(out.get("special_teams_efficiency_home", 0), errors="coerce").fillna(
-            0.0
-        ) - pd.to_numeric(out.get("special_teams_efficiency_away", 0), errors="coerce").fillna(0.0)
-    else:
-        out["special_teams_diff"] = out["recent_goal_diff"]
+    out["special_teams_diff"] = pd.to_numeric(out.get("special_teams_efficiency_home", 0), errors="coerce").fillna(0) - pd.to_numeric(
+        out.get("special_teams_efficiency_away", 0), errors="coerce"
+    ).fillna(0)
+    if not special_teams_has_data:
+        out["special_teams_diff"] = out["special_teams_diff"].fillna(0)
 
-    if xgf_has_data:
-        out["xgf_diff"] = pd.to_numeric(out.get("xgf_home", 0), errors="coerce").fillna(0.0) - pd.to_numeric(
-            out.get("xgf_away", 0), errors="coerce"
-        ).fillna(0.0)
-    else:
-        out["xgf_diff"] = out["elo_diff"]
+    out["xgf_diff"] = pd.to_numeric(out.get("xgf_home", 0), errors="coerce").fillna(0) - pd.to_numeric(
+        out.get("xgf_away", 0), errors="coerce"
+    ).fillna(0)
+    if not xgf_has_data:
+        out["xgf_diff"] = out["xgf_diff"].fillna(0)
 
     out["xga_diff"] = _num(out, "xga_home") - _num(out, "xga_away")
     out["shot_share_diff"] = _num(out, "shot_share_home") - _num(out, "shot_share_away")

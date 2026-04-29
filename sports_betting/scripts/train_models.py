@@ -99,6 +99,12 @@ def _fit_binary_classifier(frame: pd.DataFrame, target: str, features: list[str]
         working[feature] = pd.to_numeric(working[feature], errors="coerce").fillna(0.0)
 
     X = working[features]
+    dead_features = [col for col in X.columns if pd.to_numeric(X[col], errors="coerce").fillna(0.0).std() == 0]
+    if dead_features:
+        X = X.drop(columns=dead_features, errors="ignore")
+        print(f"[TRAINING] Dropped zero-variance features: {dead_features}")
+    for col in X.columns:
+        print(col, X[col].mean(), X[col].std())
     feature_columns = X.columns.tolist()
     y = working[target].round().clip(0, 1).astype(int)
 
