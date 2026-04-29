@@ -8,9 +8,10 @@ import pickle
 
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss, roc_auc_score
+from sklearn.preprocessing import StandardScaler
 
 from sports_betting.sports.nba.features import NBA_FEATURE_COLUMNS, build_nba_features
 
@@ -50,13 +51,12 @@ def _time_split(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return ordered.iloc[:split_idx], ordered.iloc[split_idx:]
 
 
-def _base_estimator() -> HistGradientBoostingClassifier:
-    return HistGradientBoostingClassifier(
-        random_state=42,
+def _base_estimator() -> GradientBoostingClassifier:
+    return GradientBoostingClassifier(
+        n_estimators=200,
         learning_rate=0.05,
-        max_iter=320,
-        max_leaf_nodes=31,
-        min_samples_leaf=20,
+        max_depth=3,
+        random_state=42,
     )
 
 
@@ -111,14 +111,17 @@ def train_nba_models(historical_df: pd.DataFrame) -> NBATrainingArtifact:
 
         x_train = train_df[NBA_FEATURE_COLUMNS]
         x_val = val_df[NBA_FEATURE_COLUMNS]
+        scaler = StandardScaler()
+        x_train_scaled = pd.DataFrame(scaler.fit_transform(x_train), columns=NBA_FEATURE_COLUMNS, index=x_train.index)
+        x_val_scaled = pd.DataFrame(scaler.transform(x_val), columns=NBA_FEATURE_COLUMNS, index=x_val.index)
 
         base_model = _base_estimator()
-        base_model.fit(x_train, y_train)
+        base_model.fit(x_train_scaled, y_train)
 
-        calibrator = CalibratedClassifierCV(base_model, cv="prefit", method="sigmoid")
-        calibrator.fit(x_val, y_val)
+        calibrator = CalibratedClassifierCV(base_model, cv="prefit", method="isotonic")
+        calibrator.fit(x_val_scaled, y_val)
 
-        p_val = pd.Series(calibrator.predict_proba(x_val)[:, 1], index=x_val.index).clip(0.01, 0.99)
+        p_val = pd.Series(calibrator.predict_proba(x_val_scaled)[:, 1], index=x_val.index).clip(0.01, 0.99)
         market_metrics = _evaluate(y_val, p_val)
         market_metrics.update({
             "rows_train": int(len(train_df)),
@@ -127,10 +130,19 @@ def train_nba_models(historical_df: pd.DataFrame) -> NBATrainingArtifact:
             "validation_seasons": str(sorted(val_df["season"].dropna().unique().tolist())),
         })
 
-        perm = permutation_importance(base_model, x_val, y_val, n_repeats=5, random_state=42, n_jobs=1)
+        perm = permutation_importance(base_model, x_val_scaled, y_val, n_repeats=5, random_state=42, n_jobs=1)
         importances[market] = {
             col: float(score) for col, score in zip(NBA_FEATURE_COLUMNS, perm.importances_mean, strict=False)
         }
+        print(f"[NBA TRAIN] {market} feature importance:", importances[market])
+        print(
+            f"[NBA TRAIN] {market} model_probability distribution:",
+            p_val.describe(percentiles=[0.1, 0.25, 0.5, 0.75, 0.9]).to_dict(),
+        )
+        bucket_frame = pd.DataFrame({"probability": p_val, "actual": y_val})
+        bucket_frame["bucket"] = pd.cut(bucket_frame["probability"], bins=[0.0, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 1.0], include_lowest=True)
+        bucket_stats = bucket_frame.groupby("bucket", observed=False).agg(win_rate=("actual", "mean"), bets=("actual", "size"))
+        print(f"[NBA TRAIN] {market} win rate by probability bucket:", bucket_stats.to_dict(orient="index"))
 
         models[market] = calibrator
         metrics[market] = market_metrics

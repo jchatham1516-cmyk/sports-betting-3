@@ -41,7 +41,7 @@ def test_confidence_tier():
     assert confidence_tier(0.72) == "B"
 
 
-def test_qualify_prediction_scales_units_instead_of_hard_confidence_reject():
+def test_qualify_prediction_rejects_when_sharpness_ev_floor_not_met():
     cfg = BankrollConfig(bankroll=5000, unit_size=50, max_units_per_bet=2.0, kelly_fraction=0.25)
     pred = Prediction(
         game_id="game-1",
@@ -67,12 +67,10 @@ def test_qualify_prediction_scales_units_instead_of_hard_confidence_reject():
         stake_mode="fractional_kelly",
     )
 
-    assert rec is not None
-    assert rec.recommended_units > 0
-    assert rec.recommended_units <= 1.0
+    assert rec is None
 
 
-def test_qualify_prediction_extreme_low_confidence_scales_units_with_low_ev():
+def test_qualify_prediction_accepts_when_sharpness_filter_passes():
     cfg = BankrollConfig(bankroll=5000, unit_size=50, max_units_per_bet=2.0, kelly_fraction=0.25)
     pred = Prediction(
         game_id="game-2",
@@ -82,7 +80,7 @@ def test_qualify_prediction_extreme_low_confidence_scales_units_with_low_ev():
         model_probability=0.60,
         market_implied_probability=0.50,
         edge=0.10,
-        expected_value=0.03,
+        expected_value=0.06,
         confidence=0.005,
         reason_summary="test",
     )

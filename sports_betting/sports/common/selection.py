@@ -38,6 +38,8 @@ def _passes_base_checks(pred: Prediction, odds: int) -> bool:
         return False
     if odds > 2000:
         return False
+    if pred.model_probability < 0.55 or pred.model_probability > 0.75:
+        return False
     return True
 
 
@@ -133,12 +135,8 @@ def qualify_prediction(
     if expected_value < -0.05:
         pass_filter = False
 
-    # PRIMARY PATH (lower EV allowed only when edge is strong)
-    if expected_value >= 0.005 and edge >= 0.03:
-        pass_filter = True
-
-    # STANDARD EV AUTO-PASS
-    if expected_value >= 0.01:
+    # SHARPNESS FILTER
+    if edge > 0.03 and expected_value > 0.05 and 0.55 <= rec.model_probability <= 0.75:
         pass_filter = True
 
     confidence_multiplier = max(0.5, min(1.2, confidence))
