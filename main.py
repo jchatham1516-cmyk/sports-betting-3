@@ -163,10 +163,17 @@ def nba_feature_health_check(df: pd.DataFrame, model=None) -> dict[str, object]:
     all_zero = [col for col in feature_columns if filled[col].eq(0.0).all()]
     zero_share = (len(all_zero) / len(feature_columns)) if feature_columns else 0.0
     degraded = zero_share > 0.40
+    debug_enabled = os.getenv("DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
     print("[NBA FEATURE HEALTH]")
-    print("missing feature columns:", missing)
-    print("all-zero feature columns:", all_zero)
-    print("all-NaN feature columns:", all_nan)
+    print(f"missing feature columns count: {len(missing)}")
+    print(f"all-zero feature columns count: {len(all_zero)}")
+    print(f"all-NaN feature columns count: {len(all_nan)}")
+    if debug_enabled:
+        print("missing feature columns:", missing)
+        print("all-zero feature columns:", all_zero)
+        print("all-NaN feature columns:", all_nan)
+    elif missing or all_zero or all_nan:
+        print("Set DEBUG=true to print full NBA feature health column lists.")
     if model is not None and hasattr(model, "feature_importances_"):
         print("top 15 feature importances:")
         print(model.feature_importances_.head(15).to_string())
@@ -677,22 +684,24 @@ def enforce_unique_market_bets(df: pd.DataFrame, min_expected_value: float = 0.0
 
 
 def dedupe_final_bets(final_bets: pd.DataFrame) -> pd.DataFrame:
-    """Remove exact duplicate final betting rows without collapsing distinct markets."""
+    """Remove duplicate final picks after all sports are combined.
+
+    Dedupe by sport/market/selection/home/away so the same pick cannot be
+    exported twice at different books or odds. Keep the strongest EV, then the
+    best odds, while preserving original output order for surviving rows.
+    """
     before = len(final_bets)
     if final_bets.empty:
         print(f"[FINAL BET DEDUPE] before: {before} after: {before} removed: 0")
         return final_bets.copy()
 
     deduped = final_bets.copy()
-    if "game_id" not in deduped.columns:
-        deduped["game_id"] = ""
-
-    key_columns = ["sport", "game_id", "home_team", "away_team", "market", "selection", "odds"]
+    key_columns = ["sport", "market", "selection", "home_team", "away_team"]
     for col in key_columns:
         if col not in deduped.columns:
             deduped[col] = ""
 
-    for col in ["expected_value", "edge", "confidence"]:
+    for col in ["expected_value", "odds", "edge", "confidence"]:
         if col not in deduped.columns:
             deduped[col] = 0.0
         deduped[col] = pd.to_numeric(deduped[col], errors="coerce").fillna(0.0)
@@ -701,17 +710,13 @@ def dedupe_final_bets(final_bets: pd.DataFrame) -> pd.DataFrame:
     normalized_keys = []
     for col in key_columns:
         key_col = f"_dedupe_key_{col}"
-        if col == "odds":
-            normalized = pd.to_numeric(deduped[col], errors="coerce").round(4).astype("string").fillna("")
-        else:
-            normalized = deduped[col].astype("string").fillna("").str.lower().str.strip()
-        deduped[key_col] = normalized
+        deduped[key_col] = deduped[col].astype("string").fillna("").str.lower().str.strip()
         normalized_keys.append(key_col)
 
     deduped = (
         deduped.sort_values(
-            by=["expected_value", "edge", "confidence", "_final_bet_original_order"],
-            ascending=[False, False, False, True],
+            by=["expected_value", "odds", "edge", "confidence", "_final_bet_original_order"],
+            ascending=[False, False, False, False, True],
         )
         .drop_duplicates(subset=normalized_keys, keep="first")
         .sort_values(by="_final_bet_original_order")
@@ -945,8 +950,13 @@ def predict_runtime(model, games_df: pd.DataFrame):
     if "implied_home_prob" in X.columns:
         X["implied_home_prob"] = X["implied_home_prob"].replace(0.0, 0.5)
 
-    print(f"[NBA] Prediction columns: {list(X.columns)}")
-    print(f"[NBA] Non-numeric columns: {df.select_dtypes(exclude=['number']).columns.tolist()}")
+    if os.getenv("DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
+        print(f"[NBA] Prediction columns: {list(X.columns)}")
+        print(f"[NBA] Non-numeric columns: {df.select_dtypes(exclude=['number']).columns.tolist()}")
+    else:
+        non_numeric_count = len(df.select_dtypes(exclude=["number"]).columns)
+        print(f"[NBA] Prediction feature count: {len(X.columns)}")
+        print(f"[NBA] Non-numeric column count: {non_numeric_count} (set DEBUG=true for full lists)")
     if scaler is not None:
         X = pd.DataFrame(scaler.transform(X), columns=FEATURE_COLUMNS, index=X.index)
 

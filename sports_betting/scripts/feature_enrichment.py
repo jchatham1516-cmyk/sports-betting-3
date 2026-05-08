@@ -1193,16 +1193,27 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         if team_df is not None and "team" in team_df.columns:
             stats_keys = set(team_df["team"].apply(_normalize_goalie_team_key).dropna().astype(str))
 
-        def _side_goalie_value(team_key: object) -> tuple[float, str, str, int]:
-            record = goalies.get(str(team_key), {}) if isinstance(goalies, dict) else {}
+        print("[NHL GOALIE PARSE DEBUG]")
+        print(f"goalie_records_parsed: {len(goalies) if isinstance(goalies, dict) else 0}")
+        sample_goalies = [
+            {"team_key": key, **(value if isinstance(value, dict) else {})}
+            for key, value in list((goalies or {}).items())[:5]
+        ]
+        print("sample_parsed_goalie_records:", sample_goalies)
+        print("goalie_map_team_keys:", sorted(goalie_keys)[:40])
+
+        def _side_goalie_value(team_key: object) -> tuple[float, str, str, int, str]:
+            normalized_key = str(team_key)
+            record = goalies.get(normalized_key, {}) if isinstance(goalies, dict) else {}
             raw_save = record.get("save_pct", record.get("team_save_pct", np.nan)) if isinstance(record, dict) else np.nan
             save_pct = pd.to_numeric(pd.Series([raw_save]), errors="coerce").iloc[0]
             goalie_name = str(record.get("goalie", "")) if isinstance(record, dict) else ""
             source = str(record.get("source", "")) if isinstance(record, dict) else ""
+            matched_key = normalized_key if normalized_key in goalie_keys else ""
             if pd.notna(save_pct) and float(save_pct) > 0:
                 source_type = "real" if goalie_name and "probable" in source else "team_fallback"
-                return float(save_pct), goalie_name, source_type, 0
-            return NHL_NEUTRAL_GOALIE_SAVE_PCT, goalie_name, "neutral", 0
+                return float(save_pct), goalie_name, source_type, 0, matched_key
+            return NHL_NEUTRAL_GOALIE_SAVE_PCT, "", "neutral", 0, matched_key
 
         home_rows = df["home_team_norm"].map(_side_goalie_value)
         away_rows = df["away_team_norm"].map(_side_goalie_value)
@@ -1212,13 +1223,52 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         df["goalie_away"] = away_rows.map(lambda item: item[1])
         df["goalie_source_home"] = home_rows.map(lambda item: item[2])
         df["goalie_source_away"] = away_rows.map(lambda item: item[2])
+        df["goalie_home_source"] = df["goalie_source_home"]
+        df["goalie_away_source"] = df["goalie_source_away"]
+        df["goalie_home_team_key_used"] = home_rows.map(lambda item: item[4])
+        df["goalie_away_team_key_used"] = away_rows.map(lambda item: item[4])
         df["starting_goalie_out_flag_home"] = home_rows.map(lambda item: item[3]).astype(int)
         df["starting_goalie_out_flag_away"] = away_rows.map(lambda item: item[3]).astype(int)
+
+        different_teams = df["home_team"].astype(str).ne(df["away_team"].astype(str))
+        same_goalie_mask = (
+            df["goalie_home"].astype(str).str.strip().ne("")
+            & df["goalie_home"].astype(str).str.strip().eq(df["goalie_away"].astype(str).str.strip())
+            & different_teams
+        )
+        same_key_mask = (
+            df["goalie_home_team_key_used"].astype(str).str.strip().ne("")
+            & df["goalie_home_team_key_used"].astype(str).str.strip().eq(df["goalie_away_team_key_used"].astype(str).str.strip())
+            & different_teams
+        )
+        invalid_goalie_mask = same_goalie_mask | same_key_mask
+        invalid_goalie_assignments = int(invalid_goalie_mask.sum())
+        if invalid_goalie_assignments:
+            print(
+                f"[NHL GOALIE WARNING] {invalid_goalie_assignments} games had invalid same-goalie "
+                "or same-team-key assignments; using neutral goalie defaults for those games"
+            )
+            df.loc[invalid_goalie_mask, ["goalie_save_home", "goalie_save_away"]] = NHL_NEUTRAL_GOALIE_SAVE_PCT
+            df.loc[invalid_goalie_mask, ["goalie_home", "goalie_away"]] = ""
+            df.loc[
+                invalid_goalie_mask,
+                ["goalie_source_home", "goalie_source_away", "goalie_home_source", "goalie_away_source"],
+            ] = "neutral_invalid"
+            df.loc[invalid_goalie_mask, ["goalie_home_team_key_used", "goalie_away_team_key_used"]] = ""
+
+        unmatched_home = sorted(set(df.loc[df["goalie_home_team_key_used"].eq(""), "home_team_norm"].dropna().astype(str)))
+        unmatched_away = sorted(set(df.loc[df["goalie_away_team_key_used"].eq(""), "away_team_norm"].dropna().astype(str)))
+        print("unmatched_home_teams:", unmatched_home[:40])
+        print("unmatched_away_teams:", unmatched_away[:40])
+
         real_home = int((df["goalie_source_home"] == "real").sum())
         real_away = int((df["goalie_source_away"] == "real").sum())
         team_fallback_home = int((df["goalie_source_home"] == "team_fallback").sum())
         team_fallback_away = int((df["goalie_source_away"] == "team_fallback").sum())
-        neutral_defaults = int((df["goalie_source_home"] == "neutral").sum() + (df["goalie_source_away"] == "neutral").sum())
+        neutral_defaults = int(
+            df["goalie_source_home"].astype(str).str.startswith("neutral").sum()
+            + df["goalie_source_away"].astype(str).str.startswith("neutral").sum()
+        )
         covered_sides = real_home + real_away + team_fallback_home + team_fallback_away
         coverage_pct = (covered_sides / (2 * len(df)) * 100.0) if len(df) else 0.0
         if neutral_defaults == 2 * len(df) and coverage_pct < 50.0:
@@ -1249,7 +1299,20 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         print(f"data_quality: {quality}")
         _print_nhl_goalie_api_status(coverage_pct)
         print("[NHL GOALIE MATCH SAMPLE]")
-        print(df[["home_team", "away_team", "goalie_home", "goalie_away", "goalie_save_home", "goalie_save_away", "goalie_diff"]].head().to_string(index=False))
+        goalie_sample_columns = [
+            "home_team",
+            "away_team",
+            "goalie_home",
+            "goalie_away",
+            "goalie_home_source",
+            "goalie_away_source",
+            "goalie_home_team_key_used",
+            "goalie_away_team_key_used",
+            "goalie_save_home",
+            "goalie_save_away",
+            "goalie_diff",
+        ]
+        print(df[goalie_sample_columns].head().to_string(index=False))
         return df
 
     if sport == "mlb":
