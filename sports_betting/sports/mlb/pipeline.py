@@ -8,7 +8,8 @@ import numpy as np
 import pandas as pd
 
 from sports_betting.data_collection.mlb_pitchers import get_probable_pitchers
-from sports_betting.data_collection.pitcher_stats import build_pitcher_era_map
+from sports_betting.data_collection.pitcher_stats import build_pitcher_era_map, get_pitcher_era_source_map
+from sports_betting.sports.common.name_normalization import normalize_person_name
 from sports_betting.sports.common.odds import american_to_implied_probability, expected_value, remove_vig_two_way
 
 from .features import build_mlb_features, enrich_mlb_live_features
@@ -65,7 +66,7 @@ def normalize_team(team: object) -> str:
 
 
 def normalize_pitcher_name(name: object) -> str:
-    return " ".join(str(name or "").lower().strip().split())
+    return normalize_person_name(name)
 
 
 def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -90,20 +91,27 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     print("[PITCHER MATCH CHECK]")
     print(out[["home_team", "pitcher_home"]].head(10))
 
-    era_map = build_pitcher_era_map(pitchers_dict)
+    raw_era_map = build_pitcher_era_map(pitchers_dict)
+    raw_era_source_map = get_pitcher_era_source_map()
     clean_era_map: dict[str, float] = {}
-    for pitcher, era in era_map.items():
+    era_source_map: dict[str, str] = {}
+    for pitcher, era in raw_era_map.items():
         try:
             era_value = float(era)
         except (TypeError, ValueError):
             continue
-        if era_value <= 0 or era_value > 15:
+        if era_value <= 0 or era_value > 15 or np.isclose(era_value, DEFAULT_MLB_ERA):
             continue
-        clean_era_map[normalize_pitcher_name(pitcher)] = era_value
+        normalized_pitcher = normalize_pitcher_name(pitcher)
+        if not normalized_pitcher:
+            continue
+        clean_era_map[normalized_pitcher] = era_value
+        era_source_map[normalized_pitcher] = raw_era_source_map.get(normalized_pitcher, "pitcher_stats_lookup")
     era_map = clean_era_map
     home_pitcher_keys = out["pitcher_home"].map(normalize_pitcher_name)
     away_pitcher_keys = out["pitcher_away"].map(normalize_pitcher_name)
-    missing_pitchers = set(home_pitcher_keys[home_pitcher_keys.ne("")].dropna()) - set(era_map.keys())
+    all_pitcher_keys = pd.concat([home_pitcher_keys, away_pitcher_keys], ignore_index=True)
+    missing_pitchers = sorted(set(all_pitcher_keys[all_pitcher_keys.ne("")].dropna()) - set(era_map.keys()))
     print("\n[MISSING PITCHERS]:", missing_pitchers)
 
     existing_home_era = pd.to_numeric(out.get("pitcher_era_home", pd.Series(np.nan, index=out.index)), errors="coerce").replace(0, np.nan)
@@ -112,6 +120,27 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     mapped_away_era = pd.to_numeric(away_pitcher_keys.map(era_map), errors="coerce")
     real_home_from_map = home_pitcher_keys.ne("") & mapped_home_era.notna() & _is_non_default_era(mapped_home_era)
     real_away_from_map = away_pitcher_keys.ne("") & mapped_away_era.notna() & _is_non_default_era(mapped_away_era)
+
+    debug_rows: list[dict[str, object]] = []
+    for side, pitcher_series, key_series, mapped_series, real_series in (
+        ("home", out["pitcher_home"], home_pitcher_keys, mapped_home_era, real_home_from_map),
+        ("away", out["pitcher_away"], away_pitcher_keys, mapped_away_era, real_away_from_map),
+    ):
+        for idx in out.index:
+            normalized_name = str(key_series.loc[idx])
+            matched = bool(real_series.loc[idx])
+            debug_rows.append(
+                {
+                    "side": side,
+                    "pitcher_name": pitcher_series.loc[idx],
+                    "normalized_pitcher_name": normalized_name,
+                    "era_matched": matched,
+                    "era_source": era_source_map.get(normalized_name, "unmatched"),
+                    "era": mapped_series.loc[idx] if pd.notna(mapped_series.loc[idx]) else np.nan,
+                }
+            )
+    print("[MLB PITCHER ERA DEBUG]")
+    print(pd.DataFrame(debug_rows).to_string(index=False))
 
     out["pitcher_era_home"] = mapped_home_era.fillna(existing_home_era)
     out["pitcher_era_away"] = mapped_away_era.fillna(existing_away_era)

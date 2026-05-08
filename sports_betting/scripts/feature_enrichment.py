@@ -13,6 +13,8 @@ import numpy as np
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+from sports_betting.data_collection.pitcher_stats import build_pitcher_era_records
+from sports_betting.sports.common.name_normalization import normalize_person_name
 from sports_betting.sports.common.team_names import normalize_team_name
 
 DEFAULT_MLB_ERA = 4.20
@@ -45,11 +47,58 @@ def _normalize_team(name: object) -> str:
     return str(normalize_team_name(name))
 
 
+NHL_GOALIE_TEAM_ALIASES = {
+    "anaheim": "anaheim ducks",
+    "arizona coyotes": "utah mammoth",
+    "boston": "boston bruins",
+    "buffalo": "buffalo sabres",
+    "calgary": "calgary flames",
+    "carolina": "carolina hurricanes",
+    "chicago": "chicago blackhawks",
+    "colorado": "colorado avalanche",
+    "columbus": "columbus blue jackets",
+    "dallas": "dallas stars",
+    "detroit": "detroit red wings",
+    "edmonton": "edmonton oilers",
+    "florida": "florida panthers",
+    "los angeles": "los angeles kings",
+    "la kings": "los angeles kings",
+    "minnesota": "minnesota wild",
+    "montreal": "montreal canadiens",
+    "nashville": "nashville predators",
+    "new jersey": "new jersey devils",
+    "new york islanders": "new york islanders",
+    "new york rangers": "new york rangers",
+    "ny islanders": "new york islanders",
+    "ny rangers": "new york rangers",
+    "ottawa": "ottawa senators",
+    "philadelphia": "philadelphia flyers",
+    "pittsburgh": "pittsburgh penguins",
+    "san jose": "san jose sharks",
+    "seattle": "seattle kraken",
+    "st louis": "st louis blues",
+    "st louis blues": "st louis blues",
+    "tampa bay": "tampa bay lightning",
+    "toronto": "toronto maple leafs",
+    "utah hockey club": "utah mammoth",
+    "utah mammoth": "utah mammoth",
+    "vancouver": "vancouver canucks",
+    "vegas": "vegas golden knights",
+    "vegas golden knights": "vegas golden knights",
+    "washington": "washington capitals",
+    "winnipeg": "winnipeg jets",
+}
+
+
 def _normalize_goalie_team_key(name: object) -> str:
-    cleaned = str(normalize_team_name(name)).lower().strip()
+    raw = str(name or "")
+    cleaned = str(normalize_team_name(raw)).lower().strip()
     cleaned = cleaned.replace(".", "").replace("'", "")
     cleaned = re.sub(r"[^a-z0-9\s]", " ", cleaned)
-    return " ".join(cleaned.split())
+    cleaned = " ".join(cleaned.split())
+    if cleaned == "utah hockey club" and "mammoth" in raw.lower():
+        cleaned = "utah mammoth"
+    return NHL_GOALIE_TEAM_ALIASES.get(cleaned, cleaned)
 
 
 def load_mlb_pitchers() -> dict[str, dict[str, float]]:
@@ -71,7 +120,7 @@ def load_mlb_pitchers() -> dict[str, dict[str, float]]:
 
 
 def _normalize_pitcher_name(name: object) -> str:
-    return " ".join(str(name or "").strip().lower().split())
+    return normalize_person_name(name)
 
 
 def _standardize_mlb_pitcher_name_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -120,6 +169,13 @@ def _populate_mlb_starter_ratings_from_era(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_mlb_probable_pitchers() -> dict[str, dict[str, float | str]]:
+    normalized: dict[str, dict[str, float | str]] = {}
+    for norm_name, record in build_pitcher_era_records().items():
+        normalized[norm_name] = {
+            "era": float(record["era"]),
+            "source": str(record.get("source", "unknown")),
+        }
+
     candidates = [
         Path("data/inputs/mlb_probable_pitchers.json"),
         Path("sports_betting/data/inputs/mlb_probable_pitchers.json"),
@@ -134,16 +190,15 @@ def load_mlb_probable_pitchers() -> dict[str, dict[str, float | str]]:
             continue
         if not isinstance(payload, dict):
             continue
-        normalized: dict[str, dict[str, float | str]] = {}
         for pitcher_name, values in payload.items():
             if not isinstance(values, dict):
                 continue
             norm_name = _normalize_pitcher_name(pitcher_name)
             if not norm_name:
                 continue
-            normalized[norm_name] = dict(values)
-        return normalized
-    return {}
+            normalized.setdefault(norm_name, dict(values))
+        break
+    return normalized
 
 
 def _extract_pitcher_stats_from_row(
@@ -179,6 +234,7 @@ def _extract_pitcher_stats_from_row(
                 "pitcher_whip": float(whip_val) if whip_val is not None else float("nan"),
                 "pitcher_k_rate": float(k_rate_val) if k_rate_val is not None else float("nan"),
                 "pitcher_era_is_real": bool(_normalize_pitcher_name(row.get(col)) and _is_real_mlb_era_value(era_val)),
+                "pitcher_era_source": str(probable_stats.get("source", "probable_pitcher_stats")),
             }
 
     team_key = _normalize_team(row.get(f"{side}_team_norm"))
@@ -189,6 +245,7 @@ def _extract_pitcher_stats_from_row(
         "pitcher_whip": float(team_defaults.get("whip")) if team_defaults.get("whip") is not None else float("nan"),
         "pitcher_k_rate": float(team_defaults.get("k_rate")) if team_defaults.get("k_rate") is not None else float("nan"),
         "pitcher_era_is_real": False,
+        "pitcher_era_source": "team_default",
     }
 
 
@@ -498,7 +555,60 @@ def fetch_mlb_probable_pitchers(target_date: date | datetime | str | None = None
 
     return pd.DataFrame(rows, columns=columns).drop_duplicates(subset=["home_team_norm", "away_team_norm"], keep="last")
 
+def _extract_nhl_team_display_name(team_payload: dict) -> str:
+    for key in ("default", "en", "fr"):
+        value = team_payload.get(key) if isinstance(team_payload, dict) else None
+        if value:
+            return str(value)
+    return ""
+
+
+def _fetch_nhl_goalies_from_api() -> dict[str, dict[str, float]]:
+    try:
+        standings_response = requests.get("https://api-web.nhle.com/v1/standings/now", timeout=20)
+        standings_response.raise_for_status()
+        standings_payload = standings_response.json()
+    except (requests.RequestException, ValueError) as exc:
+        print(f"[NHL GOALIES WARNING] NHL standings request failed: {exc}")
+        return {}
+
+    teams: list[tuple[str, str]] = []
+    for row in standings_payload.get("standings", []):
+        abbrev_payload = row.get("teamAbbrev") or {}
+        name_payload = row.get("teamName") or {}
+        abbrev = _extract_nhl_team_display_name(abbrev_payload)
+        team_name = _extract_nhl_team_display_name(name_payload)
+        if abbrev and team_name:
+            teams.append((abbrev.upper(), _normalize_goalie_team_key(team_name)))
+
+    goalies: dict[str, dict[str, float]] = {}
+    for abbrev, team_key in teams:
+        try:
+            response = requests.get(f"https://api-web.nhle.com/v1/club-stats/{abbrev}/now", timeout=20)
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            print(f"[NHL GOALIES WARNING] NHL goalie stats request failed for {abbrev}: {exc}")
+            continue
+
+        goalie_rows = payload.get("goalies") or []
+        save_pcts = []
+        for goalie in goalie_rows:
+            save_pct = pd.to_numeric(pd.Series([goalie.get("savePctg")]), errors="coerce").iloc[0]
+            games_played = pd.to_numeric(pd.Series([goalie.get("gamesPlayed")]), errors="coerce").iloc[0]
+            if pd.notna(save_pct) and save_pct > 0 and pd.notna(games_played) and games_played > 0:
+                save_pcts.append((float(games_played), float(save_pct)))
+        if not save_pcts:
+            continue
+        total_games = sum(games for games, _ in save_pcts)
+        weighted_save_pct = sum(games * save_pct for games, save_pct in save_pcts) / total_games
+        goalies[team_key] = {"save_pct": weighted_save_pct, "source": "nhl_api_club_stats"}
+    return goalies
+
+
 def load_nhl_goalies() -> dict[str, dict[str, float]]:
+    goalies = _fetch_nhl_goalies_from_api()
+
     candidates = [
         Path("data/inputs/nhl_goalies.json"),
         Path("sports_betting/data/inputs/nhl_goalies.json"),
@@ -512,9 +622,11 @@ def load_nhl_goalies() -> dict[str, dict[str, float]]:
             print(f"[NHL GOALIES WARNING] Invalid JSON in {path}: {exc}")
             continue
         if isinstance(payload, dict):
-            return {_normalize_goalie_team_key(team): dict(values) for team, values in payload.items() if isinstance(values, dict)}
-    return {}
-
+            for team, values in payload.items():
+                if isinstance(values, dict):
+                    goalies.setdefault(_normalize_goalie_team_key(team), dict(values))
+            break
+    return goalies
 
 def build_nba_team_stats(historical: pd.DataFrame) -> pd.DataFrame:
     frame = historical.copy()
@@ -1026,6 +1138,23 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             df["pitcher_era_away"] = pd.to_numeric(away_pitcher_stats.map(lambda v: v.get("pitcher_era")), errors="coerce")
             df["pitcher_era_home_is_real"] = home_pitcher_stats.map(lambda v: bool(v.get("pitcher_era_is_real", False))) & df["pitcher_name_home"].str.strip().ne("") & df["pitcher_era_home"].map(_is_real_mlb_era_value)
             df["pitcher_era_away_is_real"] = away_pitcher_stats.map(lambda v: bool(v.get("pitcher_era_is_real", False))) & df["pitcher_name_away"].str.strip().ne("") & df["pitcher_era_away"].map(_is_real_mlb_era_value)
+            pitcher_debug_rows = []
+            for side, stats_series in (("home", home_pitcher_stats), ("away", away_pitcher_stats)):
+                name_col = f"pitcher_name_{side}"
+                real_col = f"pitcher_era_{side}_is_real"
+                for idx in df.index:
+                    pitcher_name = df.at[idx, name_col]
+                    pitcher_debug_rows.append(
+                        {
+                            "side": side,
+                            "pitcher_name": pitcher_name,
+                            "normalized_pitcher_name": _normalize_pitcher_name(pitcher_name),
+                            "era_matched": bool(df.at[idx, real_col]),
+                            "era_source": stats_series.loc[idx].get("pitcher_era_source", "unmatched"),
+                        }
+                    )
+            print("[MLB PITCHER ERA DEBUG]")
+            print(pd.DataFrame(pitcher_debug_rows).to_string(index=False))
             total_mlb_games = int(len(df))
             real_home_era_count = int(df["pitcher_era_home_is_real"].sum())
             real_away_era_count = int(df["pitcher_era_away_is_real"].sum())

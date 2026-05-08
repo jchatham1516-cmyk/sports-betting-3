@@ -66,6 +66,79 @@ NBA_REQUIRED_SOURCE_COLUMNS = [
 ]
 
 # Conservative hard caps to keep outliers from dominating tree splits.
+
+_NBA_FEATURE_HEALTH_PRINTED = False
+
+NBA_FEATURE_HEALTH_GROUPS: dict[str, dict[str, list[str]]] = {
+    "ratings": {
+        "inputs": ["offensive_rating_home", "offensive_rating_away", "defensive_rating_home", "defensive_rating_away", "net_rating_home", "net_rating_away"],
+        "features": ["net_rating_diff", "pace_adjusted_scoring_diff"],
+    },
+    "pace": {
+        "inputs": ["pace_home", "pace_away"],
+        "features": ["pace_diff"],
+    },
+    "rest_travel": {
+        "inputs": ["rest_days_home", "rest_days_away", "travel_distance_away", "timezone_shift_away", "road_trip_length_away", "travel_distance_home", "timezone_shift_home", "road_trip_length_home"],
+        "features": ["rest_diff", "rest_advantage_weighted", "travel_fatigue_diff"],
+    },
+    "injuries": {
+        "inputs": ["injury_impact_home", "injury_impact_away", "injury_impact_diff"],
+        "features": ["injury_impact_diff"],
+    },
+    "rolling_form": {
+        "inputs": ["off_rating_last5_home", "off_rating_last5_away", "def_rating_last5_home", "def_rating_last5_away", "last5_net_rating_home", "last5_net_rating_away", "last10_net_rating_home", "last10_net_rating_away"],
+        "features": ["rolling_off_rating_diff_last5", "rolling_def_rating_diff_last5", "last5_net_rating_diff", "last10_net_rating_diff"],
+    },
+    "market": {
+        "inputs": ["market_prob_home", "closing_moneyline_home", "home_odds"],
+        "features": ["market_prob_home"],
+    },
+}
+
+
+def _print_nba_feature_health(df_before: pd.DataFrame, df_after: pd.DataFrame) -> None:
+    global _NBA_FEATURE_HEALTH_PRINTED
+    if _NBA_FEATURE_HEALTH_PRINTED:
+        return
+    _NBA_FEATURE_HEALTH_PRINTED = True
+
+    rows: list[dict[str, object]] = []
+    for group, config in NBA_FEATURE_HEALTH_GROUPS.items():
+        inputs = config["inputs"]
+        features = config["features"]
+        present_inputs = [col for col in inputs if col in df_before.columns]
+        non_null_inputs = [col for col in present_inputs if pd.to_numeric(df_before[col], errors="coerce").notna().any()]
+        feature_states = []
+        for feature in features:
+            series = pd.to_numeric(df_after.get(feature, pd.Series(np.nan, index=df_after.index)), errors="coerce")
+            if series.isna().all():
+                state = "all_nan"
+            elif series.fillna(0.0).abs().sum() == 0:
+                state = "all_zero"
+            else:
+                state = "has_signal"
+            feature_states.append(f"{feature}:{state}")
+        if not present_inputs:
+            reason = "source_unavailable"
+        elif not non_null_inputs:
+            reason = "source_all_null"
+        elif all("has_signal" not in state for state in feature_states):
+            reason = "merge_or_transform_no_signal"
+        else:
+            reason = "ok"
+        rows.append(
+            {
+                "group": group,
+                "present_inputs": len(present_inputs),
+                "non_null_inputs": len(non_null_inputs),
+                "diagnosis": reason,
+                "features": ", ".join(feature_states),
+            }
+        )
+    print("[NBA FEATURE HEALTH]")
+    print(pd.DataFrame(rows).to_string(index=False))
+
 FEATURE_CLIP_BOUNDS: dict[str, tuple[float, float]] = {
     "elo_diff": (-450.0, 450.0),
     "rest_diff": (-5.0, 5.0),
@@ -230,6 +303,7 @@ def build_nba_features(df: pd.DataFrame) -> pd.DataFrame:
     """
 
     out = df.copy()
+    feature_health_input = out.copy()
 
     out["elo_diff"] = _coalesce_numeric(out, ["elo_diff", "elo_home", "elo_away"], default=0.0)
     if "elo_home" in out.columns and "elo_away" in out.columns:
@@ -323,4 +397,5 @@ def build_nba_features(df: pd.DataFrame) -> pd.DataFrame:
         lo, hi = FEATURE_CLIP_BOUNDS[column]
         out[column] = out[column].clip(lo, hi)
 
+    _print_nba_feature_health(feature_health_input, out)
     return out
