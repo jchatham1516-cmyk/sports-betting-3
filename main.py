@@ -676,6 +676,53 @@ def enforce_unique_market_bets(df: pd.DataFrame, min_expected_value: float = 0.0
     return best_per_market
 
 
+def dedupe_final_bets(final_bets: pd.DataFrame) -> pd.DataFrame:
+    """Remove exact duplicate final betting rows without collapsing distinct markets."""
+    before = len(final_bets)
+    if final_bets.empty:
+        print(f"[FINAL BET DEDUPE] before: {before} after: {before} removed: 0")
+        return final_bets.copy()
+
+    deduped = final_bets.copy()
+    if "game_id" not in deduped.columns:
+        deduped["game_id"] = ""
+
+    key_columns = ["sport", "game_id", "home_team", "away_team", "market", "selection", "odds"]
+    for col in key_columns:
+        if col not in deduped.columns:
+            deduped[col] = ""
+
+    for col in ["expected_value", "edge", "confidence"]:
+        if col not in deduped.columns:
+            deduped[col] = 0.0
+        deduped[col] = pd.to_numeric(deduped[col], errors="coerce").fillna(0.0)
+
+    deduped["_final_bet_original_order"] = np.arange(len(deduped))
+    normalized_keys = []
+    for col in key_columns:
+        key_col = f"_dedupe_key_{col}"
+        if col == "odds":
+            normalized = pd.to_numeric(deduped[col], errors="coerce").round(4).astype("string").fillna("")
+        else:
+            normalized = deduped[col].astype("string").fillna("").str.lower().str.strip()
+        deduped[key_col] = normalized
+        normalized_keys.append(key_col)
+
+    deduped = (
+        deduped.sort_values(
+            by=["expected_value", "edge", "confidence", "_final_bet_original_order"],
+            ascending=[False, False, False, True],
+        )
+        .drop_duplicates(subset=normalized_keys, keep="first")
+        .sort_values(by="_final_bet_original_order")
+        .drop(columns=normalized_keys + ["_final_bet_original_order"], errors="ignore")
+        .reset_index(drop=True)
+    )
+    after = len(deduped)
+    print(f"[FINAL BET DEDUPE] before: {before} after: {after} removed: {before - after}")
+    return deduped
+
+
 
 def _validate_game_odds_mapping(game_id: str, game_row: dict, game: str) -> tuple[bool, str | None]:
     home_team = str(game_row["home_team"])
@@ -2557,8 +2604,6 @@ def run_daily_pipeline(
             final_bets = original_df.sort_values(by="expected_value", ascending=False).head(2).copy()
             final_bets["bet_tier"] = "Fallback"
 
-        final_bets = enforce_unique_market_bets(final_bets, min_expected_value=0.02)
-
         final_bets = final_bets.sort_values(
             by=["expected_value", "edge", confidence_col], ascending=[False, False, False]
         )
@@ -2652,6 +2697,28 @@ def run_daily_pipeline(
         final_bets["units"] = final_bets.apply(assign_units, axis=1)
         print("[BET TIER DEBUG]")
         print(final_bets[["expected_value", "edge", confidence_col, "bet_tier", "units"]])
+
+    final_bets = dedupe_final_bets(final_bets)
+    if not final_bets.empty:
+        final_bets = final_bets.sort_values(
+            by=["expected_value", "edge", confidence_col], ascending=[False, False, False]
+        ).reset_index(drop=True)
+        final_debug_columns = [
+            "sport",
+            "market",
+            "selection",
+            "away_team",
+            "home_team",
+            "odds",
+            "model_probability",
+            "market_probability",
+            "edge",
+            "expected_value",
+            "bet_tier",
+            "units",
+        ]
+        print("[FINAL BET DEDUPE TABLE]")
+        print(final_bets.reindex(columns=final_debug_columns).to_string(index=False))
 
     if not final_bets.empty and {"odds", "model_probability", "market_probability", "edge", "expected_value"}.issubset(final_bets.columns):
         print("FINAL EV CHECK:")
