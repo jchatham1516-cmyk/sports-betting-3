@@ -28,6 +28,13 @@ def _normalize_team(name: object) -> str:
     return str(normalize_team_name(name))
 
 
+def _normalize_goalie_team_key(name: object) -> str:
+    cleaned = str(normalize_team_name(name)).lower().strip()
+    cleaned = cleaned.replace(".", "").replace("'", "")
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", cleaned)
+    return " ".join(cleaned.split())
+
+
 def load_mlb_pitchers() -> dict[str, dict[str, float]]:
     candidates = [
         Path("data/inputs/mlb_pitchers.json"),
@@ -42,7 +49,7 @@ def load_mlb_pitchers() -> dict[str, dict[str, float]]:
             print(f"[MLB PITCHERS WARNING] Invalid JSON in {path}: {exc}")
             continue
         if isinstance(payload, dict):
-            return {str(_normalize_team(team)): dict(values) for team, values in payload.items() if isinstance(values, dict)}
+            return {str(_normalize_team_key(team)): dict(values) for team, values in payload.items() if isinstance(values, dict)}
     return {}
 
 
@@ -183,8 +190,13 @@ MLB_TEAM_ALIASES = {
 
 TEAM_MAP = {
     "oakland athletics": "athletics",
+    "sacramento athletics": "athletics",
     "athletics": "athletics",
     "oakland a's": "athletics",
+    "oakland a s": "athletics",
+    "oakland as": "athletics",
+    "st. louis cardinals": "st louis cardinals",
+    "st louis cardinals": "st louis cardinals",
     "la angels": "los angeles angels",
     "los angeles angels": "los angeles angels",
 }
@@ -210,6 +222,7 @@ def clean_team_name(name: object) -> str:
         str(name or "").lower()
         .strip()
         .replace(".", "")
+        .replace("'", "")
         .replace("-", " ")
     )
 
@@ -480,7 +493,7 @@ def load_nhl_goalies() -> dict[str, dict[str, float]]:
             print(f"[NHL GOALIES WARNING] Invalid JSON in {path}: {exc}")
             continue
         if isinstance(payload, dict):
-            return {str(_normalize_team(team)): dict(values) for team, values in payload.items() if isinstance(values, dict)}
+            return {_normalize_goalie_team_key(team): dict(values) for team, values in payload.items() if isinstance(values, dict)}
     return {}
 
 
@@ -829,18 +842,29 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             print("[NHL ENRICHMENT WARNING] No team stat source found.")
             if source in {"missing", "historical_empty", "historical_missing_columns"}:
                 raise RuntimeError("[NHL DATA ERROR] No team stat source found after exhausting external and historical fallbacks.")
-        if "home_team_norm" not in df.columns and "home_team" in df.columns:
-            df["home_team_norm"] = df["home_team"].apply(clean_team_name).apply(_normalize_team)
-        if "away_team_norm" not in df.columns and "away_team" in df.columns:
-            df["away_team_norm"] = df["away_team"].apply(clean_team_name).apply(_normalize_team)
+        if "home_team" in df.columns:
+            df["home_team_norm"] = df["home_team"].apply(_normalize_goalie_team_key)
+        if "away_team" in df.columns:
+            df["away_team_norm"] = df["away_team"].apply(_normalize_goalie_team_key)
         df = enrich_nhl_live_features(df, nhl_team_stats=None)
-        df = build_nhl_diff_features(df)
         goalies = load_nhl_goalies()
-        df["goalie_save_home"] = df["home_team_norm"].map(lambda t: goalies.get(str(t), {}).get("save_pct", 0.0))
-        df["goalie_save_away"] = df["away_team_norm"].map(lambda t: goalies.get(str(t), {}).get("save_pct", 0.0))
-        df["goalie_save_home"] = pd.to_numeric(df["goalie_save_home"], errors="coerce").fillna(0.905)
-        df["goalie_save_away"] = pd.to_numeric(df["goalie_save_away"], errors="coerce").fillna(0.905)
-        df["goalie_diff"] = df["goalie_save_home"] - df["goalie_save_away"]
+        print(f"[NHL GOALIE DEBUG] goalie source rows: {len(goalies)}")
+        print("[NHL GOALIE DEBUG] normalized team keys sample:", list(goalies.keys())[:10])
+        home_goalie_raw = df["home_team_norm"].map(lambda t: goalies.get(str(t), {}).get("save_pct", np.nan))
+        away_goalie_raw = df["away_team_norm"].map(lambda t: goalies.get(str(t), {}).get("save_pct", np.nan))
+        home_matched = home_goalie_raw.notna()
+        away_matched = away_goalie_raw.notna()
+        matched_rows = int((home_matched & away_matched).sum())
+        coverage_pct = (matched_rows / len(df) * 100.0) if len(df) else 0.0
+        print(f"[NHL GOALIE DEBUG] matched goalie rows: {matched_rows}/{len(df)} ({coverage_pct:.1f}%)")
+        unmatched_home = sorted(df.loc[~home_matched, "home_team_norm"].dropna().unique().tolist())
+        unmatched_away = sorted(df.loc[~away_matched, "away_team_norm"].dropna().unique().tolist())
+        print("[NHL GOALIE DEBUG] unmatched home teams:", unmatched_home[:20])
+        print("[NHL GOALIE DEBUG] unmatched away teams:", unmatched_away[:20])
+        df["nhl_goalie_coverage_pct"] = coverage_pct
+        df["goalie_save_home"] = pd.to_numeric(home_goalie_raw, errors="coerce")
+        df["goalie_save_away"] = pd.to_numeric(away_goalie_raw, errors="coerce")
+        df = build_nhl_diff_features(df)
         print("Non-zero goalie_diff:", (df["goalie_diff"] != 0).sum())
         return df
 
@@ -988,22 +1012,15 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             pitcher_coverage_pct = (both_era_count / total_mlb_games * 100.0) if total_mlb_games else 0.0
             df["mlb_pitcher_coverage_pct"] = pitcher_coverage_pct
             df["pitcher_coverage_pct"] = pitcher_coverage_pct
-            print("[MLB PITCHER COVERAGE]")
-            print(f"total MLB games: {total_mlb_games}")
-            print(f"games with home pitcher ERA: {home_era_count}")
-            print(f"games with away pitcher ERA: {away_era_count}")
-            print(f"games with both pitcher ERAs: {both_era_count}")
-            print(f"pitcher coverage percentage: {pitcher_coverage_pct:.1f}%")
-            if pitcher_coverage_pct <= 0.0:
-                print("[MLB SKIP] Pitcher coverage is 0%; no usable ERA signal")
-                return pd.DataFrame()
+            print(f"[MLB PITCHER COVERAGE] both ERAs: {both_era_count}/{total_mlb_games} ({pitcher_coverage_pct:.1f}%)")
+            print(f"[MLB PITCHER COVERAGE] home ERAs: {home_era_count}/{total_mlb_games}; away ERAs: {away_era_count}/{total_mlb_games}")
             if pitcher_coverage_pct < 50.0:
                 df["data_quality_status"] = "degraded"
                 if "confidence" in df.columns:
                     df["confidence"] = pd.to_numeric(df["confidence"], errors="coerce").fillna(0.5) * 0.75
-                print("⚠️ MLB pitcher coverage below 50%; data_quality_status=degraded and units/confidence will be reduced")
             else:
-                df["data_quality_status"] = df.get("data_quality_status", pd.Series("ok", index=df.index)).fillna("ok")
+                df["data_quality_status"] = "normal"
+            print(f"[MLB DATA QUALITY] {df['data_quality_status'].iloc[0] if len(df) else 'degraded'}")
             df["pitcher_whip_home"] = pd.to_numeric(home_pitcher_stats.map(lambda v: v.get("pitcher_whip")), errors="coerce")
             df["pitcher_whip_away"] = pd.to_numeric(away_pitcher_stats.map(lambda v: v.get("pitcher_whip")), errors="coerce")
             df["pitcher_k_rate_home"] = pd.to_numeric(home_pitcher_stats.map(lambda v: v.get("pitcher_k_rate")), errors="coerce")
@@ -1030,33 +1047,14 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                     ].to_string(index=False)
                 )
 
-            def get_pitcher_era(name: object) -> float:
-                if name is None or (isinstance(name, float) and pd.isna(name)):
-                    return 4.2
-                normalized = str(name).strip().lower()
-                if not normalized:
-                    return 4.2
-
-                elite = ["scherzer", "degrom", "ohtani", "cole"]
-                good = ["webb", "gilbert", "fried", "senga"]
-
-                if any(token in normalized for token in elite):
-                    return 2.9
-                if any(token in normalized for token in good):
-                    return 3.5
-                return 4.2
-
-            fallback_home_era = df["home_pitcher"].apply(get_pitcher_era)
-            fallback_away_era = df["away_pitcher"].apply(get_pitcher_era)
-            df["pitcher_era_home"] = df["pitcher_era_home"].fillna(fallback_home_era)
-            df["pitcher_era_away"] = df["pitcher_era_away"].fillna(fallback_away_era)
-            df["pitcher_era_home"] = df["pitcher_era_home"].fillna(pd.to_numeric(df.get("starter_rating_home"), errors="coerce").rsub(125).div(25))
-            df["pitcher_era_away"] = df["pitcher_era_away"].fillna(pd.to_numeric(df.get("starter_rating_away"), errors="coerce").rsub(125).div(25))
+            df["pitcher_era_home"] = df["pitcher_era_home"].fillna(4.20)
+            df["pitcher_era_away"] = df["pitcher_era_away"].fillna(4.20)
             df["pitcher_whip_home"] = df["pitcher_whip_home"].fillna((df["pitcher_era_home"] / 4.0).clip(lower=0.9, upper=1.8))
             df["pitcher_whip_away"] = df["pitcher_whip_away"].fillna((df["pitcher_era_away"] / 4.0).clip(lower=0.9, upper=1.8))
             df["pitcher_k_rate_home"] = df["pitcher_k_rate_home"].fillna((0.30 - (df["pitcher_era_home"] - 3.0) * 0.025).clip(lower=0.12, upper=0.35))
             df["pitcher_k_rate_away"] = df["pitcher_k_rate_away"].fillna((0.30 - (df["pitcher_era_away"] - 3.0) * 0.025).clip(lower=0.12, upper=0.35))
-            df["pitcher_diff"] = df["pitcher_era_away"] - df["pitcher_era_home"]
+            df["pitcher_era_diff"] = df["pitcher_era_away"] - df["pitcher_era_home"]
+            df["pitcher_diff"] = df["pitcher_era_diff"]
             df = _populate_mlb_starter_ratings_from_era(df)
             if df["pitcher_era_home"].isna().all() or (df["pitcher_era_home"] == 0).all():
                 print("🚨 MLB PITCHERS NOT WORKING — ALL ZERO OR NULL")
@@ -1088,7 +1086,11 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             pitcher_signal = pd.to_numeric(df.get("pitcher_diff", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0.0).abs().sum()
             starter_signal = pd.to_numeric(df.get("starter_rating_diff", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0.0).abs().sum()
             odds_loaded = {"home_odds", "away_odds"}.issubset(df.columns) and (pd.to_numeric(df["home_odds"], errors="coerce").fillna(0).ne(0).any())
-            if (pitcher_signal == 0 and starter_signal == 0) or not odds_loaded:
+            if not odds_loaded:
+                reason = f"pitcher_diff signal={pitcher_signal:.3f}, starter_rating_diff signal={starter_signal:.3f}, odds_loaded={odds_loaded}"
+                print(f"[MLB SKIP] Required odds unavailable — {reason}")
+                return pd.DataFrame()
+            if pitcher_signal == 0 and starter_signal == 0 and pitcher_coverage_pct >= 50.0:
                 reason = f"pitcher_diff signal={pitcher_signal:.3f}, starter_rating_diff signal={starter_signal:.3f}, odds_loaded={odds_loaded}"
                 print(f"[MLB SKIP] Required starter/pitcher signals unavailable — {reason}")
                 return pd.DataFrame()

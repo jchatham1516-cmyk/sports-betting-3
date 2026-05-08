@@ -89,18 +89,6 @@ def enrich_mlb_live_features(df: pd.DataFrame) -> pd.DataFrame:
     if {"starter_rating_home", "starter_rating_away"}.issubset(out.columns):
         out["starter_rating_diff"] = _num(out, "starter_rating_home", default=0.0).fillna(0.0) - _num(out, "starter_rating_away", default=0.0).fillna(0.0)
 
-    print(
-        "[MLB SOURCE DEBUG]",
-        out[[
-            "starter_rating_home",
-            "starter_rating_away",
-            "bullpen_rating_home",
-            "bullpen_rating_away",
-            "hitting_rating_home",
-            "hitting_rating_away",
-        ]].head(),
-    )
-
     return out
 
 
@@ -132,6 +120,7 @@ def ensure_mlb_core_columns(df: pd.DataFrame) -> pd.DataFrame:
         "pitcher_k_rate_home": 0.0,
         "pitcher_k_rate_away": 0.0,
         "pitcher_diff": 0.0,
+        "pitcher_era_diff": 0.0,
         "pitcher_whip_diff": 0.0,
         "pitcher_k_rate_diff": 0.0,
     }
@@ -152,8 +141,10 @@ def build_mlb_features(df: pd.DataFrame) -> pd.DataFrame:
     df["pitcher_k_rate_away"] = _num(df, "pitcher_k_rate_away", default=0.22).replace(0, 0.22).fillna(0.22)
 
     if {"pitcher_era_home", "pitcher_era_away"}.issubset(df.columns):
-        df["pitcher_diff"] = df["pitcher_era_away"] - df["pitcher_era_home"]
+        df["pitcher_era_diff"] = df["pitcher_era_away"] - df["pitcher_era_home"]
+        df["pitcher_diff"] = df["pitcher_era_diff"]
     else:
+        df["pitcher_era_diff"] = _num(df, "pitcher_era_diff", default=0.0)
         df["pitcher_diff"] = _num(df, "pitcher_diff", default=0.0)
     df["pitcher_whip_diff"] = df["pitcher_whip_away"] - df["pitcher_whip_home"]
     df["pitcher_k_rate_diff"] = df["pitcher_k_rate_home"] - df["pitcher_k_rate_away"]

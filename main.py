@@ -1614,23 +1614,25 @@ def run_daily_pipeline(
                 daily = _boost_nba_signal_features(daily)
             validate_feature_signal(daily, sport_clean)
             if sport_clean == "nhl":
-                goalie_signal = pd.to_numeric(daily.get("goalie_diff", pd.Series(0.0, index=daily.index)), errors="coerce").fillna(0.0).abs().sum()
-                goalie_nan = pd.to_numeric(daily.get("goalie_diff", pd.Series(np.nan, index=daily.index)), errors="coerce").isna().all()
-                if goalie_signal == 0 or goalie_nan:
+                goalie_coverage = float(pd.to_numeric(daily.get("nhl_goalie_coverage_pct", pd.Series(0.0, index=daily.index)), errors="coerce").fillna(0.0).max()) if len(daily) else 0.0
+                if goalie_coverage < 50.0:
                     print("[NHL SKIP] Goalie data unavailable or all zero — skipping NHL")
-                    sport_skip_reasons["nhl"] = "goalie data unavailable or all zero"
+                    sport_skip_reasons["nhl"] = "goalie coverage below 50%"
                     print(f"✅ LOOP END sport={sport}")
                     continue
             if sport_clean == "mlb":
                 pitcher_signal = pd.to_numeric(daily.get("pitcher_diff", pd.Series(0.0, index=daily.index)), errors="coerce").fillna(0.0).abs().sum()
                 starter_signal = pd.to_numeric(daily.get("starter_rating_diff", pd.Series(0.0, index=daily.index)), errors="coerce").fillna(0.0).abs().sum()
                 pitcher_coverage = float(pd.to_numeric(daily.get("mlb_pitcher_coverage_pct", daily.get("pitcher_coverage_pct", pd.Series(0.0, index=daily.index))), errors="coerce").fillna(0.0).max()) if len(daily) else 0.0
-                if pitcher_coverage <= 0.0:
-                    print("[MLB SKIP] Pitcher coverage is 0%; no usable ERA signal")
-                    sport_skip_reasons["mlb"] = "pitcher coverage is 0%"
-                    print(f"✅ LOOP END sport={sport}")
-                    continue
-                if pitcher_signal == 0 and starter_signal == 0:
+                if pitcher_coverage < 50.0:
+                    daily["data_quality_status"] = "degraded"
+                    base_confidence = pd.to_numeric(daily["confidence"], errors="coerce").fillna(0.5) if "confidence" in daily.columns else pd.Series(0.5, index=daily.index, dtype=float)
+                    daily["confidence"] = base_confidence * 0.75
+                    print("[MLB DATA QUALITY] degraded")
+                else:
+                    daily["data_quality_status"] = "normal"
+                    print("[MLB DATA QUALITY] normal")
+                if pitcher_signal == 0 and starter_signal == 0 and pitcher_coverage >= 50.0:
                     print(f"[MLB SKIP] Required starter/pitcher signal unavailable — pitcher_diff={pitcher_signal:.3f}, starter_rating_diff={starter_signal:.3f}")
                     sport_skip_reasons["mlb"] = "starter/pitcher signal unavailable"
                     print(f"✅ LOOP END sport={sport}")
@@ -1646,6 +1648,18 @@ def run_daily_pipeline(
             runtime_home_win_model = None
             isotonic_model = None
             total_games_processed += len(daily)
+            if sport_clean == "mlb":
+                sport_candidates = run_mlb(historical=historical, daily=daily)
+                prebuilt_candidates.extend(sport_candidates)
+                sport_run_summaries.append(
+                    {
+                        "sport": sport_clean,
+                        "games_processed": len(daily),
+                        "candidates_generated": len(sport_candidates),
+                    }
+                )
+                print(f"✅ LOOP END sport={sport}")
+                continue
             if sport_clean == "soccer":
                 if historical.empty or len(historical) < 30:
                     logger.error(
@@ -2498,6 +2512,8 @@ def run_daily_pipeline(
                 ).fillna(0.0)
                 mlb_pitcher_signal = pd.to_numeric(final_bets.loc[mlb_mask, "pitcher_diff"] if "pitcher_diff" in final_bets.columns else pd.Series(0.0, index=final_bets.index[mlb_mask]), errors="coerce").fillna(0.0).abs()
                 mlb_starter_signal = pd.to_numeric(final_bets.loc[mlb_mask, "starter_rating_diff"] if "starter_rating_diff" in final_bets.columns else pd.Series(0.0, index=final_bets.index[mlb_mask]), errors="coerce").fillna(0.0).abs()
+                mlb_quality = final_bets.loc[mlb_mask, "data_quality_status"].astype(str).str.lower() if "data_quality_status" in final_bets.columns else pd.Series("normal", index=final_bets.index[mlb_mask])
+                mlb_degraded = mlb_quality.str.contains("degraded", na=False)
                 mlb_valid = (
                     mlb_odds.notna()
                     & mlb_odds.ne(0)
@@ -2506,12 +2522,12 @@ def run_daily_pipeline(
                     & mlb_model_prob.notna()
                     & mlb_market_prob.notna()
                     & mlb_ev.notna()
-                    & mlb_coverage.gt(0)
-                    & (mlb_pitcher_signal.gt(0) | mlb_starter_signal.gt(0))
+                    & (mlb_coverage.gt(0) | mlb_degraded)
+                    & (mlb_pitcher_signal.gt(0) | mlb_starter_signal.gt(0) | mlb_degraded)
                 )
                 invalid_mlb_count = int((~mlb_valid).sum())
                 if invalid_mlb_count:
-                    print(f"[MLB FINAL SAFETY] Removing {invalid_mlb_count} MLB bets without real odds/probabilities/EV/pitcher coverage/signal")
+                    print(f"[MLB FINAL SAFETY] Removing {invalid_mlb_count} MLB bets without real odds/probabilities/EV or non-degraded pitcher signal")
                     final_bets = final_bets.loc[~mlb_mask | mlb_valid.reindex(final_bets.index, fill_value=False)].copy()
 
         if "sport" in final_bets.columns:

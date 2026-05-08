@@ -30,8 +30,14 @@ class MLBModel(DisciplinedBaselineModel):
     WIN_FEATURES = list(MLB_REQUIRED_FEATURES)
 
 
+def prepare_mlb_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Build the MLB-only feature frame used by MLB training and prediction."""
+    print("[MLB MODEL] using MLB feature set")
+    return build_mlb_features(df).copy()
+
+
 def train_mlb_model(historical_df: pd.DataFrame) -> MLBModelBundle:
-    df = build_mlb_features(historical_df).copy()
+    df = prepare_mlb_features(historical_df)
     df = df.dropna(subset=["home_win"])
     if len(df) < MIN_TRAINING_ROWS:
         raise ValueError(f"[MLB] Insufficient historical rows ({len(df)}) for runtime training; need at least {MIN_TRAINING_ROWS}.")
@@ -52,14 +58,19 @@ def train_mlb_model(historical_df: pd.DataFrame) -> MLBModelBundle:
     return MLBModelBundle(runtime_model=model, feature_columns=feature_columns)
 
 
-def predict_mlb_model(bundle: MLBModelBundle, daily_df: pd.DataFrame) -> pd.DataFrame:
-    df = build_mlb_features(daily_df).copy()
+def predict_mlb_games(bundle: MLBModelBundle, daily_df: pd.DataFrame) -> pd.DataFrame:
+    df = prepare_mlb_features(daily_df)
 
     X = df.reindex(columns=bundle.feature_columns, fill_value=0.0).fillna(0.0)
     probs = bundle.runtime_model.predict_proba(X)[:, 1]
     df["predicted_home_win_prob"] = probs
     df["predicted_away_win_prob"] = 1.0 - probs
     return df
+
+
+def predict_mlb_model(bundle: MLBModelBundle, daily_df: pd.DataFrame) -> pd.DataFrame:
+    """Backward-compatible alias for MLB-specific predictions."""
+    return predict_mlb_games(bundle, daily_df)
 
 
 def save_mlb_model_bundle(bundle: MLBModelBundle, model_path: Path) -> Path:

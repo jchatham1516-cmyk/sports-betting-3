@@ -4,22 +4,26 @@ from __future__ import annotations
 
 
 MLB_REQUIRED_FEATURES = [
+    "implied_home_prob",
+    "spread",
+    "spread_abs",
+    "is_favorite",
     "elo_diff",
-    "rest_diff",
-    "travel_distance",
-    "travel_fatigue_diff",
-    "injury_impact_diff",
     "pitcher_diff",
+    "pitcher_era_home",
+    "pitcher_era_away",
+    "pitcher_era_diff",
     "starter_rating_diff",
     "bullpen_rating_diff",
     "hitting_rating_diff",
     "home_split_diff",
     "recent_form_diff",
+    "rest_diff",
+    "injury_impact_diff",
+    # Neutral compatibility features used by the existing non-NBA bet logic.
+    "travel_distance",
+    "travel_fatigue_diff",
     "home_moneyline",
-    "spread",
-    "implied_home_prob",
-    "spread_abs",
-    "is_favorite",
 ]
 
 MLB_HISTORICAL_COLUMNS = [
