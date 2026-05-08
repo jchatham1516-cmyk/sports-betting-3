@@ -137,8 +137,21 @@ def build_nhl_diff_features(df: pd.DataFrame) -> pd.DataFrame:
         goalie_away_source = pd.Series(goalie_away_source, index=out.index, dtype=float)
     out["goalie_save_home"] = pd.to_numeric(goalie_home_source, errors="coerce").fillna(0.905)
     out["goalie_save_away"] = pd.to_numeric(goalie_away_source, errors="coerce").fillna(0.905)
+    out["goalie_save_strength_home"] = out["goalie_save_home"]
+    out["goalie_save_strength_away"] = out["goalie_save_away"]
     out["goalie_save_strength_diff"] = out["goalie_save_home"].fillna(0) - out["goalie_save_away"].fillna(0)
     out["goalie_diff"] = out["goalie_save_strength_diff"] if goalie_has_data else out["goalie_save_strength_diff"]
+    for flag_col in ["starting_goalie_out_flag_home", "starting_goalie_out_flag_away"]:
+        if flag_col not in out.columns:
+            out[flag_col] = 0
+        out[flag_col] = pd.to_numeric(out[flag_col], errors="coerce").fillna(0).astype(int)
+    if "goalie_coverage_pct" not in out.columns:
+        out["goalie_coverage_pct"] = np.where(
+            (out["goalie_save_home"].notna()) & (out["goalie_save_away"].notna()), 100.0, 0.0
+        )
+    if "goalie_data_quality_status" not in out.columns:
+        neutral_sides = (np.isclose(out["goalie_save_home"], 0.905)).astype(int) + (np.isclose(out["goalie_save_away"], 0.905)).astype(int)
+        out["goalie_data_quality_status"] = np.where(neutral_sides == 2, "severe", np.where(neutral_sides == 1, "degraded", "normal"))
 
     special_home = out.get("special_teams_efficiency_home", pd.Series(0.0, index=out.index, dtype=float))
     special_away = out.get("special_teams_efficiency_away", pd.Series(0.0, index=out.index, dtype=float))

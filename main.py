@@ -1479,6 +1479,17 @@ def _boost_nba_signal_features(df: pd.DataFrame) -> pd.DataFrame:
         + out["net_rating_diff"] * 0.3
         + out["last5_net_rating_diff"] * 0.2
     )
+    if "feature_zero_pct" not in out.columns:
+        feature_cols = [
+            "recent_form_diff", "recent_form_last5_diff", "recent_form_last10_diff", "momentum_diff",
+            "offensive_rating_diff", "defensive_rating_diff", "net_rating_diff", "rest_diff",
+            "back_to_back_home", "back_to_back_away", "three_in_four_home", "three_in_four_away",
+            "travel_fatigue_diff", "market_implied_probability", "spread_value_signal", "line_movement",
+        ]
+        present = [col for col in feature_cols if col in out.columns]
+        if present:
+            zero_pct = float((pd.DataFrame({col: pd.to_numeric(out[col], errors="coerce").fillna(0.0) for col in present}).abs().sum(axis=0) == 0).mean() * 100.0)
+            out["feature_zero_pct"] = zero_pct
     return out
 
 def run_daily_pipeline(
@@ -1564,6 +1575,7 @@ def run_daily_pipeline(
             historical, daily = load_historical_and_daily(sport_clean)
             historical = ensure_required_features(historical)
             daily = ensure_required_features(daily)
+            injuries_df = pd.DataFrame()
             if sport_clean == "nba":
                 historical = ensure_required_nba_features(historical)
             daily = _ensure_runtime_prediction_columns(daily)
@@ -1589,6 +1601,9 @@ def run_daily_pipeline(
                     daily["injury_impact_home"] = 0
                     daily["injury_impact_away"] = 0
                     daily["injury_impact_diff"] = 0
+                    daily["injury_data_stale_flag"] = 1
+                    daily["injury_confidence_score"] = 0
+                    daily["injury_data_quality_status"] = "degraded"
             daily = enrich_daily_features_by_sport(daily, sport_clean)
             if daily is None or daily.empty:
                 print(f"🚨 {sport_clean.upper()} enrichment returned no usable rows — skipping sport")
@@ -1615,9 +1630,10 @@ def run_daily_pipeline(
             validate_feature_signal(daily, sport_clean)
             if sport_clean == "nhl":
                 goalie_coverage = float(pd.to_numeric(daily.get("nhl_goalie_coverage_pct", pd.Series(0.0, index=daily.index)), errors="coerce").fillna(0.0).max()) if len(daily) else 0.0
-                if goalie_coverage < 50.0:
-                    print("[NHL SKIP] Goalie data unavailable or all zero — skipping NHL")
-                    sport_skip_reasons["nhl"] = "goalie coverage below 50%"
+                goalie_quality = str(daily.get("goalie_data_quality_status", pd.Series("severe", index=daily.index)).astype(str).mode().iloc[0]) if len(daily) else "severe"
+                if goalie_coverage < 50.0 and goalie_quality == "severe":
+                    print("[NHL SKIP] Goalie data severe and below 50% coverage — skipping NHL")
+                    sport_skip_reasons["nhl"] = "severe goalie coverage below 50%"
                     print(f"✅ LOOP END sport={sport}")
                     continue
             if sport_clean == "mlb":
@@ -1662,6 +1678,7 @@ def run_daily_pipeline(
                         "sport": sport_clean,
                         "games_processed": len(daily),
                         "candidates_generated": len(sport_candidates),
+                        "pitcher_coverage_pct": float(pd.to_numeric(daily.get("real_pitcher_coverage_pct", daily.get("mlb_pitcher_coverage_pct", pd.Series(0.0, index=daily.index))), errors="coerce").fillna(0.0).max()) if len(daily) else 0.0,
                     }
                 )
                 print(f"✅ LOOP END sport={sport}")
@@ -1819,6 +1836,10 @@ def run_daily_pipeline(
                     "games_processed": len(daily),
                     "candidates_generated": len(preds),
                     "data_quality_status": str(daily.get("data_quality_status", pd.Series("ok", index=daily.index)).iloc[0]) if len(daily) else "ok",
+                    "injury_rows": int(getattr(injuries_df, "attrs", {}).get("rows_parsed", 0)) if sport_clean == "nba" else 0,
+                    "feature_zero_pct": float(pd.to_numeric(daily.get("feature_zero_pct", pd.Series(0.0, index=daily.index)), errors="coerce").fillna(0.0).max()) if sport_clean == "nba" and len(daily) else 0.0,
+                    "goalie_coverage_pct": float(pd.to_numeric(daily.get("goalie_coverage_pct", daily.get("nhl_goalie_coverage_pct", pd.Series(0.0, index=daily.index))), errors="coerce").fillna(0.0).max()) if sport_clean == "nhl" and len(daily) else 0.0,
+                    "goalie_data_quality_status": str(daily.get("goalie_data_quality_status", pd.Series("ok", index=daily.index)).iloc[0]) if sport_clean == "nhl" and len(daily) else "ok",
                 }
             )
         except Exception as e:
@@ -2673,19 +2694,33 @@ Final bets: {int(final_bets_by_sport.get(sport_name, 0))}
     print(f"- candidates: {int(nba_summary.get('candidates_generated', 0)) if nba_summary else 0}")
     print(f"- final bets: {int(final_bets_by_sport.get('nba', 0))}")
     print(f"- data quality status: {nba_status}")
+    print(f"- injury rows: {int(nba_summary.get('injury_rows', 0)) if nba_summary else 0}")
+    print(f"- feature zero pct: {float(nba_summary.get('feature_zero_pct', 0.0)) if nba_summary else 0.0:.1f}")
     if nba_backtest_summary:
         print(f"- backtest summary: games={nba_backtest_summary.get('total_games_tested')}, win_rate={nba_backtest_summary.get('win_rate'):.3f}, roi={nba_backtest_summary.get('roi'):.3f}, profit_loss={nba_backtest_summary.get('profit_loss'):.3f}")
     else:
         print("- backtest summary: unavailable")
-    for league in ["mlb", "nhl"]:
-        league_summary = next((s for s in sport_run_summaries if str(s.get("sport", "")).lower() == league), None)
-        if league_summary is None:
-            print(f"{league.upper()}: skipped")
-            print(f"- reason: {sport_skip_reasons.get(league, 'not selected or no usable games/signals')}")
-        else:
-            print(f"{league.upper()}: ran")
-            print(f"- games processed: {league_summary.get('games_processed')}")
-            print(f"- candidates: {league_summary.get('candidates_generated')}")
+    nhl_summary = next((s for s in sport_run_summaries if str(s.get("sport", "")).lower() == "nhl"), None)
+    if nhl_summary is None:
+        print("NHL: skipped")
+        print(f"- reason: {sport_skip_reasons.get('nhl', 'not selected or no usable games/signals')}")
+    else:
+        print("NHL: ran")
+        print(f"- games processed: {nhl_summary.get('games_processed')}")
+        print(f"- goalie coverage pct: {float(nhl_summary.get('goalie_coverage_pct', 0.0)):.1f}")
+        print(f"- data quality status: {nhl_summary.get('goalie_data_quality_status', nhl_summary.get('data_quality_status', 'ok'))}")
+        print(f"- final bets: {int(final_bets_by_sport.get('nhl', 0))}")
+
+    mlb_summary = next((s for s in sport_run_summaries if str(s.get("sport", "")).lower() == "mlb"), None)
+    if mlb_summary is None:
+        print("MLB: skipped")
+        print(f"- reason: {sport_skip_reasons.get('mlb', 'not selected or no usable games/signals')}")
+    else:
+        print("MLB: ran")
+        print(f"- games processed: {mlb_summary.get('games_processed')}")
+        print(f"- candidates: {mlb_summary.get('candidates_generated')}")
+        print(f"- pitcher coverage pct: {float(mlb_summary.get('pitcher_coverage_pct', 0.0)):.1f}")
+        print(f"- final bets: {int(final_bets_by_sport.get('mlb', 0))}")
     print("NFL: skipped because out of season / no games")
 
     recommendations_df = pd.DataFrame(final_bets_records)

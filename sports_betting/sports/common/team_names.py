@@ -15,8 +15,8 @@ def normalize_team_name(name: object) -> object:
 
     replacements = {
         "portland blazers": "portland trail blazers",
-        "st louis blues": "st. louis blues",
-        "st louis cardinals": "st. louis cardinals",
+        "st louis blues": "st louis blues",
+        "st louis cardinals": "st louis cardinals",
         "canadiens": "montreal canadiens",
         "utah mammoth": "utah hockey club",
         "la clippers": "los angeles clippers",

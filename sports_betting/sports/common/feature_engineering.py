@@ -210,6 +210,9 @@ def add_travel_fatigue_features(games_df: pd.DataFrame, sport: str, data_root: P
     out = games_df.copy()
     out["event_date"] = pd.to_datetime(out.get("event_date"), errors="coerce", utc=True)
     out["elo_diff"] = pd.to_numeric(out.get("elo_diff", pd.Series(0.0, index=out.index)), errors="coerce").fillna(0.0).astype(float)
+    out["travel_fatigue_diff"] = pd.to_numeric(
+        out.get("travel_fatigue_diff", pd.Series(0.0, index=out.index)), errors="coerce"
+    ).fillna(0.0).astype(float)
     locs = _load_team_locations(data_root, sport)
 
     states: dict[str, TeamTravelState] = {}
