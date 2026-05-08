@@ -62,21 +62,35 @@ def _first_valid_pct_from_frame(df: pd.DataFrame, columns: tuple[str, ...]) -> f
 
 
 def _dedupe_mlb_odds_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """Collapse duplicate MLB odds events while keeping the most complete odds row."""
+    """Collapse duplicate MLB odds events while keeping the most complete odds row.
+
+    Duplicate sportsbook rows are keyed by sport, event date, teams, market,
+    and selection when those fields are present. This runs before model
+    candidate generation so duplicate Odds API events cannot inflate picks.
+    """
     if df.empty:
         print("[MLB DEDUPE] before: 0 after: 0 removed: 0")
         return df.copy()
 
     out = df.copy()
     before = len(out)
-    key_cols = ["home_team", "away_team", "commence_time"]
-    if "market" in out.columns:
-        key_cols.append("market")
+    if "sport" not in out.columns:
+        out["sport"] = "mlb"
+    if "event_date" not in out.columns:
+        out["event_date"] = out.get("commence_time", pd.Series("", index=out.index))
+    if "market" not in out.columns:
+        out["market"] = "moneyline"
+    if "selection" not in out.columns:
+        out["selection"] = ""
+
+    out["_mlb_event_date_key"] = pd.to_datetime(out["event_date"], errors="coerce", utc=True).dt.strftime("%Y-%m-%d")
+    out["_mlb_event_date_key"] = out["_mlb_event_date_key"].fillna(out["event_date"].astype(str).str[:10])
+    key_cols = ["sport", "_mlb_event_date_key", "home_team", "away_team", "market", "selection"]
 
     missing = [col for col in key_cols if col not in out.columns]
     if missing:
         print(f"[MLB DEDUPE] before: {before} after: {before} removed: 0")
-        return out
+        return out.drop(columns=["_mlb_event_date_key"], errors="ignore")
 
     odds_cols = [
         col
@@ -104,13 +118,64 @@ def _dedupe_mlb_odds_rows(df: pd.DataFrame) -> pd.DataFrame:
         out["_mlb_market_completeness"] = 0
         out["_mlb_odds_strength"] = 0.0
 
-    sort_cols = key_cols + ["_mlb_market_completeness", "_mlb_odds_strength"]
-    out = out.sort_values(sort_cols, ascending=[True] * len(key_cols) + [False, False], kind="mergesort")
-    out = out.drop_duplicates(subset=key_cols, keep="first").drop(columns=["_mlb_market_completeness", "_mlb_odds_strength"])
+    normalized_key_cols = []
+    for key_col in key_cols:
+        normalized_key_col = f"_mlb_dedupe_key_{key_col.lstrip('_')}"
+        out[normalized_key_col] = out[key_col].astype("string").fillna("").str.lower().str.strip()
+        normalized_key_cols.append(normalized_key_col)
+
+    sort_cols = normalized_key_cols + ["_mlb_market_completeness", "_mlb_odds_strength"]
+    out = out.sort_values(sort_cols, ascending=[True] * len(normalized_key_cols) + [False, False], kind="mergesort")
+    out = out.drop_duplicates(subset=normalized_key_cols, keep="first").drop(
+        columns=["_mlb_market_completeness", "_mlb_odds_strength", "_mlb_event_date_key", *normalized_key_cols],
+        errors="ignore",
+    )
     out = out.reset_index(drop=True)
     after = len(out)
     print(f"[MLB DEDUPE] before: {before} after: {after} removed: {before - after}")
     return out
+
+
+
+
+def _dedupe_mlb_candidate_rows(candidates: list[dict]) -> list[dict]:
+    """Remove duplicate MLB candidate picks from duplicate sportsbook/event rows."""
+    if not candidates:
+        return []
+    frame = pd.DataFrame(candidates)
+    before = len(frame)
+    if "event_date" not in frame.columns:
+        frame["event_date"] = frame.get("commence_time", pd.Series("", index=frame.index))
+    frame["_mlb_event_date_key"] = pd.to_datetime(frame["event_date"], errors="coerce", utc=True).dt.strftime("%Y-%m-%d")
+    frame["_mlb_event_date_key"] = frame["_mlb_event_date_key"].fillna(frame["event_date"].astype(str).str[:10])
+    for col in ["sport", "home_team", "away_team", "market", "selection"]:
+        if col not in frame.columns:
+            frame[col] = ""
+    key_cols = ["sport", "_mlb_event_date_key", "home_team", "away_team", "market", "selection"]
+    normalized_key_cols = []
+    for key_col in key_cols:
+        normalized_key_col = f"_mlb_candidate_key_{key_col.lstrip('_')}"
+        frame[normalized_key_col] = frame[key_col].astype("string").fillna("").str.lower().str.strip()
+        normalized_key_cols.append(normalized_key_col)
+    for col in ["expected_value", "odds", "edge", "confidence"]:
+        if col not in frame.columns:
+            frame[col] = 0.0
+        frame[col] = pd.to_numeric(frame[col], errors="coerce").fillna(0.0)
+    frame["_mlb_candidate_original_order"] = np.arange(len(frame))
+    frame = (
+        frame.sort_values(
+            by=["expected_value", "odds", "edge", "confidence", "_mlb_candidate_original_order"],
+            ascending=[False, False, False, False, True],
+            kind="mergesort",
+        )
+        .drop_duplicates(subset=normalized_key_cols, keep="first")
+        .sort_values("_mlb_candidate_original_order", kind="mergesort")
+        .drop(columns=["_mlb_event_date_key", "_mlb_candidate_original_order", *normalized_key_cols], errors="ignore")
+        .reset_index(drop=True)
+    )
+    after = len(frame)
+    print(f"[MLB CANDIDATE DEDUPE] before: {before} after: {after} removed: {before - after}")
+    return frame.to_dict("records")
 
 
 MLB_TEAM_ALIASES = {
@@ -415,6 +480,8 @@ def run_mlb_pipeline(
                     "confidence": confidence,
                 }
             )
+
+    candidates = _dedupe_mlb_candidate_rows(candidates)
 
     unique_games = int(len(frame))
     real_pitcher_coverage_pct = _first_valid_pct_from_frame(

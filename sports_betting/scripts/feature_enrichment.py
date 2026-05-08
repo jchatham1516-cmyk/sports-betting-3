@@ -7,6 +7,7 @@ import os
 import re
 import time
 import traceback
+import unicodedata
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -199,6 +200,118 @@ def _normalize_goalie_team_key(name: object) -> str:
     if cleaned == "utah hockey club" and "mammoth" in raw.lower():
         cleaned = "utah mammoth"
     return NHL_GOALIE_TEAM_ALIASES.get(cleaned, cleaned)
+
+
+def _normalize_goalie_name(name: object) -> str:
+    """Normalize NHL goalie names for matching parsed starters to stat rows."""
+    text = str(name or "").strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return " ".join(text.split())
+
+
+def _goalie_name_tokens(name: object) -> list[str]:
+    normalized = _normalize_goalie_name(name)
+    return [token for token in normalized.split() if token]
+
+
+def _goalie_initial_last_key(name: object) -> str:
+    tokens = _goalie_name_tokens(name)
+    if len(tokens) < 2:
+        return ""
+    return f"{tokens[0][0]} {tokens[-1]}"
+
+
+def _coerce_nhl_goalie_save_pct(value: object) -> float:
+    save_pct = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.notna(save_pct) and 0.0 < float(save_pct) <= 1.0:
+        return float(save_pct)
+    return float("nan")
+
+
+def _extract_nhl_goalie_stat_name(goalie: dict[str, object]) -> str:
+    if not isinstance(goalie, dict):
+        return ""
+    direct = _extract_nhl_display_value(goalie.get("name") or goalie.get("fullName") or goalie.get("displayName"))
+    if direct:
+        return direct.strip()
+    first = _extract_nhl_display_value(goalie.get("firstName") or goalie.get("first_name"))
+    last = _extract_nhl_display_value(goalie.get("lastName") or goalie.get("last_name"))
+    return " ".join(part for part in (first, last) if part).strip()
+
+
+def _goalie_stat_records_from_goalie_map(goalies: dict[str, dict[str, object]]) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for team_key, payload in (goalies or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        goalie_stats = payload.get("goalie_stats", [])
+        if isinstance(goalie_stats, list):
+            for stat in goalie_stats:
+                if isinstance(stat, dict):
+                    record = dict(stat)
+                    record.setdefault("team_key", team_key)
+                    records.append(record)
+        goalie_name = str(payload.get("goalie", "")).strip()
+        save_pct = _coerce_nhl_goalie_save_pct(payload.get("save_pct"))
+        source = str(payload.get("source", "")).lower()
+        has_goalie_specific_source = "goalie" in source and "probable" not in source and "club_stats" not in source
+        if goalie_name and pd.notna(save_pct) and has_goalie_specific_source:
+            records.append({"team_key": team_key, "goalie": goalie_name, "save_pct": save_pct})
+    return records
+
+
+def _match_goalie_stat(
+    parsed_goalie_name: object,
+    team_stat_records: list[dict[str, object]],
+    all_stat_records: list[dict[str, object]],
+) -> dict[str, object] | None:
+    """Match a parsed goalie name to a real goalie save-percentage stat row."""
+    parsed = str(parsed_goalie_name or "").strip()
+    normalized = _normalize_goalie_name(parsed)
+    if not normalized:
+        return None
+
+    def valid_records(records: list[dict[str, object]]) -> list[dict[str, object]]:
+        out: list[dict[str, object]] = []
+        for record in records:
+            save_pct = _coerce_nhl_goalie_save_pct(record.get("save_pct"))
+            stat_name = str(record.get("goalie", record.get("name", ""))).strip()
+            if stat_name and pd.notna(save_pct):
+                enriched = dict(record)
+                enriched["goalie"] = stat_name
+                enriched["save_pct"] = save_pct
+                enriched["normalized_goalie"] = _normalize_goalie_name(stat_name)
+                enriched["initial_last"] = _goalie_initial_last_key(stat_name)
+                tokens = _goalie_name_tokens(stat_name)
+                enriched["last_name"] = tokens[-1] if tokens else ""
+                out.append(enriched)
+        return out
+
+    scopes = [("team", valid_records(team_stat_records)), ("global", valid_records(all_stat_records))]
+    parsed_initial_last = _goalie_initial_last_key(parsed)
+    parsed_tokens = _goalie_name_tokens(parsed)
+    parsed_last = parsed_tokens[-1] if parsed_tokens else ""
+
+    for scope_name, records in scopes:
+        for match_source, predicate in (
+            ("exact_normalized_full_name", lambda r: r["normalized_goalie"] == normalized),
+            ("initial_last", lambda r: bool(parsed_initial_last) and r["initial_last"] == parsed_initial_last),
+        ):
+            matches = [record for record in records if predicate(record)]
+            if len(matches) == 1:
+                matched = dict(matches[0])
+                matched["match_source"] = f"{scope_name}_{match_source}"
+                return matched
+        if parsed_last:
+            last_matches = [record for record in records if record.get("last_name") == parsed_last]
+            unique_names = {record.get("normalized_goalie") for record in last_matches}
+            if len(last_matches) == 1 or len(unique_names) == 1:
+                matched = dict(last_matches[0])
+                matched["match_source"] = f"{scope_name}_unique_last_name"
+                return matched
+    return None
 
 
 def _extract_nhl_display_value(payload: object) -> str:
@@ -799,20 +912,47 @@ def _fetch_nhl_goalies_from_api() -> dict[str, dict[str, float]]:
 
         goalie_rows = payload.get("goalies") or []
         save_pcts = []
+        goalie_stat_records: list[dict[str, object]] = []
         for goalie in goalie_rows:
-            save_pct = pd.to_numeric(pd.Series([goalie.get("savePctg")]), errors="coerce").iloc[0]
+            if not isinstance(goalie, dict):
+                continue
+            save_pct = _coerce_nhl_goalie_save_pct(goalie.get("savePctg"))
             games_played = pd.to_numeric(pd.Series([goalie.get("gamesPlayed")]), errors="coerce").iloc[0]
-            if pd.notna(save_pct) and save_pct > 0 and pd.notna(games_played) and games_played > 0:
+            goalie_name = _extract_nhl_goalie_stat_name(goalie)
+            if pd.notna(save_pct) and pd.notna(games_played) and games_played > 0:
                 save_pcts.append((float(games_played), float(save_pct)))
+                if goalie_name:
+                    goalie_stat_records.append(
+                        {
+                            "team_key": team_key,
+                            "goalie": goalie_name,
+                            "normalized_goalie": _normalize_goalie_name(goalie_name),
+                            "initial_last": _goalie_initial_last_key(goalie_name),
+                            "save_pct": float(save_pct),
+                            "games_played": float(games_played),
+                            "source": "nhl_api_goalie_stats",
+                        }
+                    )
         if not save_pcts:
             NHL_GOALIE_TEAM_STATS_CACHE[cache_key] = {}
             continue
         total_games = sum(games for games, _ in save_pcts)
         weighted_save_pct = sum(games * save_pct for games, save_pct in save_pcts) / total_games
-        team_values = {"save_pct": weighted_save_pct, "team_save_pct": weighted_save_pct, "source": "nhl_api_club_stats"}
+        team_values = {
+            "save_pct": weighted_save_pct,
+            "team_save_pct": weighted_save_pct,
+            "goalie_stats": goalie_stat_records,
+            "source": "nhl_api_club_stats",
+        }
         NHL_GOALIE_TEAM_STATS_CACHE[cache_key] = team_values
         goalies.setdefault(team_key, {})
+        existing_goalie = goalies[team_key].get("goalie") if isinstance(goalies.get(team_key), dict) else None
+        existing_source = goalies[team_key].get("source") if isinstance(goalies.get(team_key), dict) else None
         goalies[team_key].update(team_values)
+        if existing_goalie:
+            goalies[team_key]["goalie"] = existing_goalie
+        if existing_source:
+            goalies[team_key]["source"] = existing_source
     return goalies
 
 def load_nhl_goalies() -> dict[str, dict[str, float]]:
@@ -1202,33 +1342,88 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         print("sample_parsed_goalie_records:", sample_goalies)
         print("goalie_map_team_keys:", sorted(goalie_keys)[:40])
 
-        def _side_goalie_value(team_key: object) -> tuple[float, str, str, int, str]:
+        all_goalie_stat_records = _goalie_stat_records_from_goalie_map(goalies if isinstance(goalies, dict) else {})
+
+        def _side_goalie_value(team_key: object) -> dict[str, object]:
             normalized_key = str(team_key)
             record = goalies.get(normalized_key, {}) if isinstance(goalies, dict) else {}
-            raw_save = record.get("save_pct", record.get("team_save_pct", np.nan)) if isinstance(record, dict) else np.nan
-            save_pct = pd.to_numeric(pd.Series([raw_save]), errors="coerce").iloc[0]
-            goalie_name = str(record.get("goalie", "")) if isinstance(record, dict) else ""
-            source = str(record.get("source", "")) if isinstance(record, dict) else ""
+            goalie_name = str(record.get("goalie", "")).strip() if isinstance(record, dict) else ""
             matched_key = normalized_key if normalized_key in goalie_keys else ""
-            if pd.notna(save_pct) and float(save_pct) > 0:
-                source_type = "real" if goalie_name and "probable" in source else "team_fallback"
-                return float(save_pct), goalie_name, source_type, 0, matched_key
-            return NHL_NEUTRAL_GOALIE_SAVE_PCT, "", "neutral", 0, matched_key
+            team_stat_records = record.get("goalie_stats", []) if isinstance(record, dict) else []
+            if not isinstance(team_stat_records, list):
+                team_stat_records = []
+
+            matched_stat = _match_goalie_stat(goalie_name, team_stat_records, all_goalie_stat_records) if goalie_name else None
+            if matched_stat is not None:
+                matched_goalie = str(matched_stat.get("goalie", "")).strip()
+                save_pct = _coerce_nhl_goalie_save_pct(matched_stat.get("save_pct"))
+                if pd.notna(save_pct):
+                    return {
+                        "save_pct": float(save_pct),
+                        "goalie": matched_goalie,
+                        "source_type": "real",
+                        "starting_goalie_out_flag": 0,
+                        "matched_key": matched_key,
+                        "parsed_goalie_name": goalie_name,
+                        "normalized_parsed_goalie": _normalize_goalie_name(goalie_name),
+                        "matched_stat_goalie": matched_goalie,
+                        "goalie_save_pct": float(save_pct),
+                        "match_source": str(matched_stat.get("match_source", "goalie_stat_match")),
+                    }
+
+            raw_team_save = record.get("save_pct", record.get("team_save_pct", np.nan)) if isinstance(record, dict) else np.nan
+            team_save_pct = _coerce_nhl_goalie_save_pct(raw_team_save)
+            if pd.notna(team_save_pct) and not goalie_name:
+                return {
+                    "save_pct": float(team_save_pct),
+                    "goalie": "",
+                    "source_type": "team_fallback",
+                    "starting_goalie_out_flag": 0,
+                    "matched_key": matched_key,
+                    "parsed_goalie_name": "",
+                    "normalized_parsed_goalie": "",
+                    "matched_stat_goalie": "",
+                    "goalie_save_pct": float(team_save_pct),
+                    "match_source": "team_save_pct_fallback",
+                }
+
+            return {
+                "save_pct": NHL_NEUTRAL_GOALIE_SAVE_PCT,
+                "goalie": goalie_name if goalie_name else "",
+                "source_type": "neutral",
+                "starting_goalie_out_flag": 0,
+                "matched_key": matched_key,
+                "parsed_goalie_name": goalie_name,
+                "normalized_parsed_goalie": _normalize_goalie_name(goalie_name),
+                "matched_stat_goalie": "",
+                "goalie_save_pct": np.nan,
+                "match_source": "neutral_no_goalie_stat_match" if goalie_name else "neutral_no_goalie",
+            }
 
         home_rows = df["home_team_norm"].map(_side_goalie_value)
         away_rows = df["away_team_norm"].map(_side_goalie_value)
-        df["goalie_save_home"] = home_rows.map(lambda item: item[0]).astype(float)
-        df["goalie_save_away"] = away_rows.map(lambda item: item[0]).astype(float)
-        df["goalie_home"] = home_rows.map(lambda item: item[1])
-        df["goalie_away"] = away_rows.map(lambda item: item[1])
-        df["goalie_source_home"] = home_rows.map(lambda item: item[2])
-        df["goalie_source_away"] = away_rows.map(lambda item: item[2])
+        df["goalie_save_home"] = home_rows.map(lambda item: item["save_pct"]).astype(float)
+        df["goalie_save_away"] = away_rows.map(lambda item: item["save_pct"]).astype(float)
+        df["goalie_home"] = home_rows.map(lambda item: item["goalie"])
+        df["goalie_away"] = away_rows.map(lambda item: item["goalie"])
+        df["goalie_source_home"] = home_rows.map(lambda item: item["source_type"])
+        df["goalie_source_away"] = away_rows.map(lambda item: item["source_type"])
         df["goalie_home_source"] = df["goalie_source_home"]
         df["goalie_away_source"] = df["goalie_source_away"]
-        df["goalie_home_team_key_used"] = home_rows.map(lambda item: item[4])
-        df["goalie_away_team_key_used"] = away_rows.map(lambda item: item[4])
-        df["starting_goalie_out_flag_home"] = home_rows.map(lambda item: item[3]).astype(int)
-        df["starting_goalie_out_flag_away"] = away_rows.map(lambda item: item[3]).astype(int)
+        df["goalie_home_team_key_used"] = home_rows.map(lambda item: item["matched_key"])
+        df["goalie_away_team_key_used"] = away_rows.map(lambda item: item["matched_key"])
+        df["starting_goalie_out_flag_home"] = home_rows.map(lambda item: item["starting_goalie_out_flag"]).astype(int)
+        df["starting_goalie_out_flag_away"] = away_rows.map(lambda item: item["starting_goalie_out_flag"]).astype(int)
+        df["parsed_goalie_name_home"] = home_rows.map(lambda item: item["parsed_goalie_name"])
+        df["parsed_goalie_name_away"] = away_rows.map(lambda item: item["parsed_goalie_name"])
+        df["normalized_parsed_goalie_home"] = home_rows.map(lambda item: item["normalized_parsed_goalie"])
+        df["normalized_parsed_goalie_away"] = away_rows.map(lambda item: item["normalized_parsed_goalie"])
+        df["matched_stat_goalie_home"] = home_rows.map(lambda item: item["matched_stat_goalie"])
+        df["matched_stat_goalie_away"] = away_rows.map(lambda item: item["matched_stat_goalie"])
+        df["goalie_save_pct_home"] = home_rows.map(lambda item: item["goalie_save_pct"])
+        df["goalie_save_pct_away"] = away_rows.map(lambda item: item["goalie_save_pct"])
+        df["goalie_match_source_home"] = home_rows.map(lambda item: item["match_source"])
+        df["goalie_match_source_away"] = away_rows.map(lambda item: item["match_source"])
 
         different_teams = df["home_team"].astype(str).ne(df["away_team"].astype(str))
         same_goalie_mask = (
@@ -1271,14 +1466,20 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         )
         covered_sides = real_home + real_away + team_fallback_home + team_fallback_away
         coverage_pct = (covered_sides / (2 * len(df)) * 100.0) if len(df) else 0.0
-        if neutral_defaults == 2 * len(df) and coverage_pct < 50.0:
+        real_goalie_coverage_pct = ((real_home + real_away) / (2 * len(df)) * 100.0) if len(df) else 0.0
+        parsed_goalie_sides = int(
+            df["parsed_goalie_name_home"].astype(str).str.strip().ne("").sum()
+            + df["parsed_goalie_name_away"].astype(str).str.strip().ne("").sum()
+        )
+        if parsed_goalie_sides and real_goalie_coverage_pct < 50.0:
             quality = "severe"
         elif neutral_defaults or (real_home + real_away and team_fallback_home + team_fallback_away):
             quality = "degraded"
         else:
             quality = "normal"
         df["goalie_coverage_pct"] = coverage_pct
-        df["nhl_goalie_coverage_pct"] = coverage_pct
+        df["real_goalie_coverage_pct"] = real_goalie_coverage_pct
+        df["nhl_goalie_coverage_pct"] = real_goalie_coverage_pct
         df["goalie_data_quality_status"] = quality
         df = build_nhl_diff_features(df)
         print("[NHL TEAM KEY CHECK]")
@@ -1296,6 +1497,7 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         print(f"team_fallback_away: {team_fallback_away}")
         print(f"neutral_defaults: {neutral_defaults}")
         print(f"coverage_pct: {coverage_pct:.1f}")
+        print(f"real_goalie_coverage_pct: {real_goalie_coverage_pct:.1f}")
         print(f"data_quality: {quality}")
         _print_nhl_goalie_api_status(coverage_pct)
         print("[NHL GOALIE MATCH SAMPLE]")
@@ -1308,6 +1510,16 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             "goalie_away_source",
             "goalie_home_team_key_used",
             "goalie_away_team_key_used",
+            "parsed_goalie_name_home",
+            "normalized_parsed_goalie_home",
+            "matched_stat_goalie_home",
+            "goalie_save_pct_home",
+            "goalie_match_source_home",
+            "parsed_goalie_name_away",
+            "normalized_parsed_goalie_away",
+            "matched_stat_goalie_away",
+            "goalie_save_pct_away",
+            "goalie_match_source_away",
             "goalie_save_home",
             "goalie_save_away",
             "goalie_diff",
