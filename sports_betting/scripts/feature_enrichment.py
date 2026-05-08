@@ -233,11 +233,30 @@ def _coerce_nhl_goalie_save_pct(value: object) -> float:
 def _extract_nhl_goalie_stat_name(goalie: dict[str, object]) -> str:
     if not isinstance(goalie, dict):
         return ""
-    direct = _extract_nhl_display_value(goalie.get("name") or goalie.get("fullName") or goalie.get("displayName"))
-    if direct:
-        return direct.strip()
-    first = _extract_nhl_display_value(goalie.get("firstName") or goalie.get("first_name"))
-    last = _extract_nhl_display_value(goalie.get("lastName") or goalie.get("last_name"))
+    for key in (
+        "goalie",
+        "name",
+        "fullName",
+        "displayName",
+        "playerName",
+        "skaterFullName",
+        "goalieFullName",
+    ):
+        direct = _extract_nhl_display_value(goalie.get(key))
+        if direct:
+            return direct.strip()
+    first = _extract_nhl_display_value(
+        goalie.get("firstName")
+        or goalie.get("first_name")
+        or goalie.get("first")
+        or goalie.get("givenName")
+    )
+    last = _extract_nhl_display_value(
+        goalie.get("lastName")
+        or goalie.get("last_name")
+        or goalie.get("last")
+        or goalie.get("familyName")
+    )
     return " ".join(part for part in (first, last) if part).strip()
 
 
@@ -252,8 +271,11 @@ def _goalie_stat_records_from_goalie_map(goalies: dict[str, dict[str, object]]) 
                 if isinstance(stat, dict):
                     record = dict(stat)
                     record.setdefault("team_key", team_key)
+                    stat_name = _extract_nhl_goalie_stat_name(record)
+                    if stat_name:
+                        record["goalie"] = stat_name
                     records.append(record)
-        goalie_name = str(payload.get("goalie", "")).strip()
+        goalie_name = _extract_nhl_goalie_stat_name(payload)
         save_pct = _coerce_nhl_goalie_save_pct(payload.get("save_pct"))
         source = str(payload.get("source", "")).lower()
         has_goalie_specific_source = "goalie" in source and "probable" not in source and "club_stats" not in source
@@ -277,7 +299,7 @@ def _match_goalie_stat(
         out: list[dict[str, object]] = []
         for record in records:
             save_pct = _coerce_nhl_goalie_save_pct(record.get("save_pct"))
-            stat_name = str(record.get("goalie", record.get("name", ""))).strip()
+            stat_name = _extract_nhl_goalie_stat_name(record)
             if stat_name and pd.notna(save_pct):
                 enriched = dict(record)
                 enriched["goalie"] = stat_name
@@ -294,17 +316,19 @@ def _match_goalie_stat(
     parsed_tokens = _goalie_name_tokens(parsed)
     parsed_last = parsed_tokens[-1] if parsed_tokens else ""
 
-    for scope_name, records in scopes:
-        for match_source, predicate in (
-            ("exact_normalized_full_name", lambda r: r["normalized_goalie"] == normalized),
-            ("initial_last", lambda r: bool(parsed_initial_last) and r["initial_last"] == parsed_initial_last),
-        ):
+    for match_source, predicate in (
+        ("exact_normalized_full_name", lambda r: r["normalized_goalie"] == normalized),
+        ("initial_last", lambda r: bool(parsed_initial_last) and r["initial_last"] == parsed_initial_last),
+    ):
+        for scope_name, records in scopes:
             matches = [record for record in records if predicate(record)]
             if len(matches) == 1:
                 matched = dict(matches[0])
                 matched["match_source"] = f"{scope_name}_{match_source}"
                 return matched
-        if parsed_last:
+
+    if parsed_last:
+        for scope_name, records in scopes:
             last_matches = [record for record in records if record.get("last_name") == parsed_last]
             unique_names = {record.get("normalized_goalie") for record in last_matches}
             if len(last_matches) == 1 or len(unique_names) == 1:
@@ -935,7 +959,13 @@ def _fetch_nhl_goalies_from_api() -> dict[str, dict[str, float]]:
         for goalie in goalie_rows:
             if not isinstance(goalie, dict):
                 continue
-            save_pct = _coerce_nhl_goalie_save_pct(goalie.get("savePctg"))
+            save_pct = _coerce_nhl_goalie_save_pct(
+                goalie.get("savePctg")
+                if goalie.get("savePctg") is not None
+                else goalie.get("savePct")
+                if goalie.get("savePct") is not None
+                else goalie.get("savePercentage")
+            )
             games_played = pd.to_numeric(pd.Series([goalie.get("gamesPlayed")]), errors="coerce").iloc[0]
             goalie_name = _extract_nhl_goalie_stat_name(goalie)
             if pd.notna(save_pct) and pd.notna(games_played) and games_played > 0:
@@ -1513,8 +1543,11 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         else:
             quality = "normal"
         df["goalie_coverage_pct"] = coverage_pct
+        df["real_home_goalies"] = real_home
+        df["real_away_goalies"] = real_away
         df["real_goalie_coverage_pct"] = real_goalie_coverage_pct
         df["nhl_goalie_coverage_pct"] = real_goalie_coverage_pct
+        df["neutral_defaults"] = neutral_defaults
         df["goalie_data_quality_status"] = quality
         df = build_nhl_diff_features(df)
         print("[NHL TEAM KEY CHECK]")
@@ -1563,6 +1596,26 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             "goalie_diff",
         ]
         print(df[goalie_sample_columns].head().to_string(index=False))
+        print("[NHL GOALIE MATCH DEBUG]")
+        for side in ("home", "away"):
+            debug_columns = [
+                f"parsed_goalie_name_{side}",
+                f"normalized_parsed_goalie_{side}",
+                f"matched_stat_goalie_{side}",
+                f"goalie_save_pct_{side}",
+                f"goalie_match_source_{side}",
+            ]
+            side_debug = df[debug_columns].rename(
+                columns={
+                    f"parsed_goalie_name_{side}": "parsed_goalie_name",
+                    f"normalized_parsed_goalie_{side}": "normalized_parsed_goalie",
+                    f"matched_stat_goalie_{side}": "matched_stat_goalie",
+                    f"goalie_save_pct_{side}": "matched_save_percentage",
+                    f"goalie_match_source_{side}": "match_method",
+                }
+            )
+            side_debug.insert(0, "side", side)
+            print(side_debug.head().to_string(index=False))
         return df
 
     if sport == "mlb":
