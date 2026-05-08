@@ -1,7 +1,8 @@
 import json
 import pandas as pd
 from pathlib import Path
-from urllib.request import urlopen
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 from sports_betting.sports.common.team_names import normalize_team_name as shared_normalize_team_name
 
 STAR_PLAYER_MULTIPLIER = 2.0
@@ -69,8 +70,8 @@ def normalize_team_name(name):
     normalized = str(shared_normalize_team_name(name)).strip()
     replacements = {
         "portland blazers": "portland trail blazers",
-        "st louis blues": "st. louis blues",
-        "utah mammoth": "utah hockey club",
+        "st louis blues": "st louis blues",
+        "utah hockey club": "utah mammoth",
     }
     return replacements.get(normalized, normalized)
 
@@ -160,10 +161,16 @@ def fetch_espn_injuries_for_sport(sport: str) -> pd.DataFrame:
     if sport_key not in endpoints:
         raise ValueError(f"Unsupported sport for injury fetch: {sport}")
     url = endpoints[sport_key]
-    with urlopen(url, timeout=20) as response:
-        data = json.loads(response.read().decode("utf-8"))
-
+    fetch_success = False
+    fallback_used = False
     injuries = []
+    try:
+        with urlopen(url, timeout=20) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        fetch_success = True
+    except (URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+        print(f"[INJURY WARNING] ESPN injury API fetch failed for {sport_key}: {exc}")
+        data = {}
     for team in data.get("teams", []):
         team_name = team.get("team", {}).get("displayName")
         for athlete in team.get("injuries", []):
@@ -178,10 +185,63 @@ def fetch_espn_injuries_for_sport(sport: str) -> pd.DataFrame:
                 }
             )
 
+    if sport_key == "nba" and fetch_success and not injuries:
+        fallback_used = True
+        injuries.extend(_fetch_nba_espn_scoreboard_injuries())
+
     df = pd.DataFrame(injuries)
     if df.empty:
-        return pd.DataFrame(columns=["sport", "team", "player", "status"])
+        df = pd.DataFrame(columns=["sport", "team", "player", "status"])
+    teams_found = int(df["team"].nunique()) if "team" in df.columns else 0
+    status = "normal" if len(df) else "degraded"
+    df.attrs["source"] = "espn_api" if not fallback_used else "espn_scoreboard_fallback"
+    df.attrs["fetch_success"] = fetch_success
+    df.attrs["rows_parsed"] = int(len(df))
+    df.attrs["teams_found"] = teams_found
+    df.attrs["fallback_used"] = fallback_used
+    df.attrs["data_quality_status"] = status
+    print("[INJURY SOURCE STATUS]")
+    print(f"source: {df.attrs['source']}")
+    print(f"fetch_success: {fetch_success}")
+    print(f"rows_parsed: {len(df)}")
+    print(f"teams_found: {teams_found}")
+    print(f"fallback_used: {fallback_used}")
+    print(f"data_quality_status: {status}")
     return df
+
+
+def _fetch_nba_espn_scoreboard_injuries() -> list[dict[str, object]]:
+    """Fallback parser for injuries embedded in ESPN's NBA scoreboard payload."""
+    rows: list[dict[str, object]] = []
+    try:
+        request = Request(
+            "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        with urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+        print(f"[INJURY WARNING] ESPN scoreboard fallback failed for nba: {exc}")
+        return rows
+
+    for event in payload.get("events", []):
+        for competition in event.get("competitions", []):
+            for competitor in competition.get("competitors", []):
+                team_name = competitor.get("team", {}).get("displayName")
+                for injury in competitor.get("injuries", []) or []:
+                    athlete = injury.get("athlete", {}) if isinstance(injury, dict) else {}
+                    player = athlete.get("displayName") or injury.get("displayName") or injury.get("name")
+                    if not player:
+                        continue
+                    rows.append(
+                        {
+                            "sport": "nba",
+                            "team": _normalize_team_name(team_name),
+                            "player": player,
+                            "status": injury.get("status") or injury.get("type") or "out",
+                        }
+                    )
+    return rows
 
 
 def fetch_nba_injuries() -> pd.DataFrame:
@@ -243,6 +303,9 @@ def _player_injury_impact(row: pd.Series) -> float:
 
 def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> pd.DataFrame:
     out = df_games.copy()
+    injury_status = getattr(df_injuries, "attrs", {}) if isinstance(df_injuries, pd.DataFrame) else {}
+    injury_rows_parsed = int(injury_status.get("rows_parsed", len(df_injuries) if isinstance(df_injuries, pd.DataFrame) else 0))
+    injury_degraded = injury_rows_parsed == 0 or str(injury_status.get("data_quality_status", "normal")) != "normal"
     injuries_path = Path("sports_betting/data/injuries/injuries.json")
     if not injuries_path.exists():
         injuries_path = Path(__file__).resolve().parent / "injuries" / "injuries.json"
@@ -288,10 +351,17 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
                 }
             )
 
-    injuries = pd.DataFrame(rows)
+    injuries = pd.DataFrame(rows, columns=["team", "player", "status", "role"])
 
     if injuries.empty:
-        print("[ERROR] Injuries dataframe is empty after rebuild")
+        print("[INJURY INFO] No parsed injuries available; using neutral injury features with degraded status")
+        out["injury_impact_home"] = 0.0
+        out["injury_impact_away"] = 0.0
+        out["injury_impact_diff"] = 0.0
+        out["injury_data_stale_flag"] = 1
+        out["injury_confidence_score"] = 0.0
+        out["injury_data_quality_status"] = "degraded"
+        return out
 
     if "home_team" not in out.columns:
         out["home_team"] = ""
@@ -328,6 +398,9 @@ def compute_injury_impact(df_games: pd.DataFrame, df_injuries: pd.DataFrame) -> 
     out["injury_impact_home"] = out["home_team_match"].map(injury_counts).fillna(0)
     out["injury_impact_away"] = out["away_team_match"].map(injury_counts).fillna(0)
     out["injury_impact_diff"] = out["injury_impact_home"] - out["injury_impact_away"]
+    out["injury_data_stale_flag"] = int(injury_degraded)
+    out["injury_confidence_score"] = 0.0 if injury_degraded else 1.0
+    out["injury_data_quality_status"] = "degraded" if injury_degraded else "normal"
 
     print("\n[INJURY RAW SAMPLE]:", list(raw.keys())[:5])
     print("\n[INJURY DF SAMPLE]:")

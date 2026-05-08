@@ -23,6 +23,19 @@ NBA_FEATURE_COLUMNS = [
     "last5_net_rating_diff",
     "last10_net_rating_diff",
     "market_prob_home",
+    "recent_form_diff",
+    "recent_form_last5_diff",
+    "recent_form_last10_diff",
+    "momentum_diff",
+    "offensive_rating_diff",
+    "defensive_rating_diff",
+    "back_to_back_home",
+    "back_to_back_away",
+    "three_in_four_home",
+    "three_in_four_away",
+    "market_implied_probability",
+    "spread_value_signal",
+    "line_movement",
 ]
 
 NBA_SOURCE_COLUMNS = [
@@ -154,6 +167,19 @@ FEATURE_CLIP_BOUNDS: dict[str, tuple[float, float]] = {
     "last5_net_rating_diff": (-40.0, 40.0),
     "last10_net_rating_diff": (-30.0, 30.0),
     "market_prob_home": (0.02, 0.98),
+    "recent_form_diff": (-1.0, 1.0),
+    "recent_form_last5_diff": (-1.0, 1.0),
+    "recent_form_last10_diff": (-1.0, 1.0),
+    "momentum_diff": (-35.0, 35.0),
+    "offensive_rating_diff": (-35.0, 35.0),
+    "defensive_rating_diff": (-35.0, 35.0),
+    "back_to_back_home": (0.0, 1.0),
+    "back_to_back_away": (0.0, 1.0),
+    "three_in_four_home": (0.0, 1.0),
+    "three_in_four_away": (0.0, 1.0),
+    "market_implied_probability": (0.02, 0.98),
+    "spread_value_signal": (-30.0, 30.0),
+    "line_movement": (-25.0, 25.0),
 }
 
 
@@ -314,6 +340,7 @@ def build_nba_features(df: pd.DataFrame) -> pd.DataFrame:
         out["rest_diff"] = _coalesce_numeric(out, ["rest_days_home"], 0.0) - _coalesce_numeric(out, ["rest_days_away"], 0.0)
 
     out["travel_fatigue_diff"] = _coalesce_numeric(out, ["travel_fatigue_diff"], default=np.nan)
+    out["travel_fatigue_diff"] = out["travel_fatigue_diff"].astype(float)
     if out["travel_fatigue_diff"].isna().all():
         away_fatigue = (
             _coalesce_numeric(out, ["travel_distance_away"], 0.0)
@@ -326,6 +353,7 @@ def build_nba_features(df: pd.DataFrame) -> pd.DataFrame:
             + 150.0 * _coalesce_numeric(out, ["road_trip_length_home"], 0.0)
         )
         out["travel_fatigue_diff"] = away_fatigue - home_fatigue
+    out["travel_fatigue_diff"] = out["travel_fatigue_diff"].astype(float)
 
     out["injury_impact_diff"] = _coalesce_numeric(out, ["injury_impact_diff"], default=np.nan)
     if out["injury_impact_diff"].isna().all():
@@ -387,6 +415,50 @@ def build_nba_features(df: pd.DataFrame) -> pd.DataFrame:
         elif "home_odds" in out.columns:
             out["market_prob_home"] = _american_to_prob(out["home_odds"])
 
+    out["market_implied_probability"] = _coalesce_numeric(out, ["market_implied_probability", "market_prob_home"], default=np.nan)
+    if out["market_implied_probability"].isna().all():
+        out["market_implied_probability"] = out["market_prob_home"]
+
+    out["offensive_rating_diff"] = _coalesce_numeric(out, ["offensive_rating_diff"], default=np.nan)
+    if out["offensive_rating_diff"].isna().all():
+        out["offensive_rating_diff"] = _coalesce_numeric(out, ["offensive_rating_home", "off_rating_home"], 0.0) - _coalesce_numeric(out, ["offensive_rating_away", "off_rating_away"], 0.0)
+
+    out["defensive_rating_diff"] = _coalesce_numeric(out, ["defensive_rating_diff"], default=np.nan)
+    if out["defensive_rating_diff"].isna().all():
+        out["defensive_rating_diff"] = _coalesce_numeric(out, ["defensive_rating_home", "def_rating_home"], 0.0) - _coalesce_numeric(out, ["defensive_rating_away", "def_rating_away"], 0.0)
+
+    out["recent_form_diff"] = _coalesce_numeric(out, ["recent_form_diff"], default=np.nan)
+    if out["recent_form_diff"].isna().all():
+        out["recent_form_diff"] = _coalesce_numeric(out, ["recent_form_home", "win_pct_home"], 0.0) - _coalesce_numeric(out, ["recent_form_away", "win_pct_away"], 0.0)
+    out["recent_form_last5_diff"] = _coalesce_numeric(out, ["recent_form_last5_diff", "last5_win_pct_diff"], default=np.nan)
+    if out["recent_form_last5_diff"].isna().all():
+        out["recent_form_last5_diff"] = _coalesce_numeric(out, ["last5_win_pct_home", "recent_form_last5_home"], 0.0) - _coalesce_numeric(out, ["last5_win_pct_away", "recent_form_last5_away"], 0.0)
+    out["recent_form_last10_diff"] = _coalesce_numeric(out, ["recent_form_last10_diff", "last10_win_pct_diff"], default=np.nan)
+    if out["recent_form_last10_diff"].isna().all():
+        out["recent_form_last10_diff"] = _coalesce_numeric(out, ["last10_win_pct_home", "recent_form_last10_home"], 0.0) - _coalesce_numeric(out, ["last10_win_pct_away", "recent_form_last10_away"], 0.0)
+    out["momentum_diff"] = _coalesce_numeric(out, ["momentum_diff"], default=np.nan)
+    if out["momentum_diff"].isna().all():
+        out["momentum_diff"] = out["last5_net_rating_diff"] - (0.5 * out["last10_net_rating_diff"])
+
+    out["back_to_back_home"] = _coalesce_numeric(out, ["back_to_back_home"], default=np.nan)
+    if out["back_to_back_home"].isna().all():
+        out["back_to_back_home"] = (_coalesce_numeric(out, ["rest_days_home"], 99.0) <= 0).astype(float)
+    out["back_to_back_away"] = _coalesce_numeric(out, ["back_to_back_away"], default=np.nan)
+    if out["back_to_back_away"].isna().all():
+        out["back_to_back_away"] = (_coalesce_numeric(out, ["rest_days_away"], 99.0) <= 0).astype(float)
+    out["three_in_four_home"] = _coalesce_numeric(out, ["three_in_four_home"], default=np.nan)
+    if out["three_in_four_home"].isna().all():
+        out["three_in_four_home"] = (_coalesce_numeric(out, ["games_last_four_days_home"], 0.0) >= 3).astype(float)
+    out["three_in_four_away"] = _coalesce_numeric(out, ["three_in_four_away"], default=np.nan)
+    if out["three_in_four_away"].isna().all():
+        out["three_in_four_away"] = (_coalesce_numeric(out, ["games_last_four_days_away"], 0.0) >= 3).astype(float)
+    out["spread_value_signal"] = _coalesce_numeric(out, ["spread_value_signal"], default=np.nan)
+    if out["spread_value_signal"].isna().all():
+        out["spread_value_signal"] = _coalesce_numeric(out, ["model_spread", "projected_spread"], 0.0) - _coalesce_numeric(out, ["spread", "spread_line"], 0.0)
+    out["line_movement"] = _coalesce_numeric(out, ["line_movement"], default=np.nan)
+    if out["line_movement"].isna().all():
+        out["line_movement"] = _coalesce_numeric(out, ["closing_spread_home", "spread_line"], 0.0) - _coalesce_numeric(out, ["opening_spread_home", "spread_line"], 0.0)
+
     for column in NBA_FEATURE_COLUMNS:
         out[column] = pd.to_numeric(out[column], errors="coerce")
         if column == "market_prob_home":
@@ -398,4 +470,34 @@ def build_nba_features(df: pd.DataFrame) -> pd.DataFrame:
         out[column] = out[column].clip(lo, hi)
 
     _print_nba_feature_health(feature_health_input, out)
+    _print_nba_neutral_feature_reasons(feature_health_input, out)
     return out
+
+
+def _print_nba_neutral_feature_reasons(df_before: pd.DataFrame, df_after: pd.DataFrame) -> None:
+    checked = [
+        "recent_form_diff",
+        "recent_form_last5_diff",
+        "recent_form_last10_diff",
+        "momentum_diff",
+        "offensive_rating_diff",
+        "defensive_rating_diff",
+        "net_rating_diff",
+        "rest_diff",
+        "back_to_back_home",
+        "back_to_back_away",
+        "three_in_four_home",
+        "three_in_four_away",
+        "travel_fatigue_diff",
+        "market_implied_probability",
+        "spread_value_signal",
+        "line_movement",
+    ]
+    rows = []
+    for feature in checked:
+        series = pd.to_numeric(df_after.get(feature, pd.Series(np.nan, index=df_after.index)), errors="coerce")
+        state = "real" if series.notna().any() and series.fillna(0.0).abs().sum() != 0 else "neutral"
+        reason = "has non-zero calculated signal" if state == "real" else "source columns unavailable or calculate to neutral zero"
+        rows.append({"feature": feature, "status": state, "reason": reason})
+    print("[NBA FEATURE QUALITY DETAIL]")
+    print(pd.DataFrame(rows).to_string(index=False))
