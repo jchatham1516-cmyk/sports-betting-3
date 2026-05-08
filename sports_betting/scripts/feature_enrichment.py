@@ -15,6 +15,23 @@ import requests
 from bs4 import BeautifulSoup
 from sports_betting.sports.common.team_names import normalize_team_name
 
+DEFAULT_MLB_ERA = 4.20
+MLB_REAL_ERA_NORMAL_THRESHOLD = 50.0
+MLB_REAL_ERA_SEVERE_THRESHOLD = 25.0
+
+
+def _is_real_mlb_era_value(value: object) -> bool:
+    era = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    return bool(pd.notna(era) and era > 0 and era <= 15 and not np.isclose(float(era), DEFAULT_MLB_ERA))
+
+
+def _mlb_quality_from_real_coverage(real_coverage_pct: float) -> str:
+    if real_coverage_pct < MLB_REAL_ERA_SEVERE_THRESHOLD:
+        return "severe"
+    if real_coverage_pct < MLB_REAL_ERA_NORMAL_THRESHOLD:
+        return "degraded"
+    return "normal"
+
 
 def _safe_read_csv(path: Path) -> pd.DataFrame | None:
     return pd.read_csv(path) if path.exists() else None
@@ -161,6 +178,7 @@ def _extract_pitcher_stats_from_row(
                 "pitcher_era": float(era_val) if era_val is not None else float("nan"),
                 "pitcher_whip": float(whip_val) if whip_val is not None else float("nan"),
                 "pitcher_k_rate": float(k_rate_val) if k_rate_val is not None else float("nan"),
+                "pitcher_era_is_real": bool(_normalize_pitcher_name(row.get(col)) and _is_real_mlb_era_value(era_val)),
             }
 
     team_key = _normalize_team(row.get(f"{side}_team_norm"))
@@ -170,6 +188,7 @@ def _extract_pitcher_stats_from_row(
         "pitcher_era": float(team_defaults.get("era")) if team_defaults.get("era") is not None else float("nan"),
         "pitcher_whip": float(team_defaults.get("whip")) if team_defaults.get("whip") is not None else float("nan"),
         "pitcher_k_rate": float(team_defaults.get("k_rate")) if team_defaults.get("k_rate") is not None else float("nan"),
+        "pitcher_era_is_real": False,
     }
 
 
@@ -1005,22 +1024,32 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             df = _standardize_mlb_pitcher_name_columns(df)
             df["pitcher_era_home"] = pd.to_numeric(home_pitcher_stats.map(lambda v: v.get("pitcher_era")), errors="coerce")
             df["pitcher_era_away"] = pd.to_numeric(away_pitcher_stats.map(lambda v: v.get("pitcher_era")), errors="coerce")
+            df["pitcher_era_home_is_real"] = home_pitcher_stats.map(lambda v: bool(v.get("pitcher_era_is_real", False))) & df["pitcher_name_home"].str.strip().ne("") & df["pitcher_era_home"].map(_is_real_mlb_era_value)
+            df["pitcher_era_away_is_real"] = away_pitcher_stats.map(lambda v: bool(v.get("pitcher_era_is_real", False))) & df["pitcher_name_away"].str.strip().ne("") & df["pitcher_era_away"].map(_is_real_mlb_era_value)
             total_mlb_games = int(len(df))
-            home_era_count = int(df["pitcher_era_home"].notna().sum())
-            away_era_count = int(df["pitcher_era_away"].notna().sum())
-            both_era_count = int((df["pitcher_era_home"].notna() & df["pitcher_era_away"].notna()).sum())
-            pitcher_coverage_pct = (both_era_count / total_mlb_games * 100.0) if total_mlb_games else 0.0
-            df["mlb_pitcher_coverage_pct"] = pitcher_coverage_pct
-            df["pitcher_coverage_pct"] = pitcher_coverage_pct
-            print(f"[MLB PITCHER COVERAGE] both ERAs: {both_era_count}/{total_mlb_games} ({pitcher_coverage_pct:.1f}%)")
-            print(f"[MLB PITCHER COVERAGE] home ERAs: {home_era_count}/{total_mlb_games}; away ERAs: {away_era_count}/{total_mlb_games}")
-            if pitcher_coverage_pct < 50.0:
-                df["data_quality_status"] = "degraded"
-                if "confidence" in df.columns:
-                    df["confidence"] = pd.to_numeric(df["confidence"], errors="coerce").fillna(0.5) * 0.75
-            else:
-                df["data_quality_status"] = "normal"
-            print(f"[MLB DATA QUALITY] {df['data_quality_status'].iloc[0] if len(df) else 'degraded'}")
+            real_home_era_count = int(df["pitcher_era_home_is_real"].sum())
+            real_away_era_count = int(df["pitcher_era_away_is_real"].sum())
+            real_both_era_count = int((df["pitcher_era_home_is_real"] & df["pitcher_era_away_is_real"]).sum())
+            real_pitcher_coverage_pct = (real_both_era_count / total_mlb_games * 100.0) if total_mlb_games else 0.0
+            df["real_home_era_count"] = real_home_era_count
+            df["real_away_era_count"] = real_away_era_count
+            df["real_both_era_count"] = real_both_era_count
+            df["real_pitcher_coverage_pct"] = real_pitcher_coverage_pct
+            df["mlb_pitcher_coverage_pct"] = real_pitcher_coverage_pct
+            df["pitcher_coverage_pct"] = real_pitcher_coverage_pct
+            df["data_quality_status"] = _mlb_quality_from_real_coverage(real_pitcher_coverage_pct)
+            default_era_count = int((~df["pitcher_era_home_is_real"]).sum() + (~df["pitcher_era_away_is_real"]).sum())
+            df["default_era_count"] = default_era_count
+            if real_pitcher_coverage_pct < MLB_REAL_ERA_NORMAL_THRESHOLD and "confidence" in df.columns:
+                df["confidence"] = pd.to_numeric(df["confidence"], errors="coerce").fillna(0.5) * 0.75
+            print("[MLB REAL PITCHER ERA COVERAGE]")
+            print("total_games:", total_mlb_games)
+            print("real both ERAs:", f"{real_both_era_count}/{total_mlb_games}")
+            print("real home ERAs:", f"{real_home_era_count}/{total_mlb_games}")
+            print("real away ERAs:", f"{real_away_era_count}/{total_mlb_games}")
+            print("default ERA count:", default_era_count)
+            print("real coverage pct:", f"{real_pitcher_coverage_pct:.1f}%")
+            print("data quality:", df["data_quality_status"].iloc[0] if len(df) else "severe")
             df["pitcher_whip_home"] = pd.to_numeric(home_pitcher_stats.map(lambda v: v.get("pitcher_whip")), errors="coerce")
             df["pitcher_whip_away"] = pd.to_numeric(away_pitcher_stats.map(lambda v: v.get("pitcher_whip")), errors="coerce")
             df["pitcher_k_rate_home"] = pd.to_numeric(home_pitcher_stats.map(lambda v: v.get("pitcher_k_rate")), errors="coerce")
@@ -1047,8 +1076,8 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                     ].to_string(index=False)
                 )
 
-            df["pitcher_era_home"] = df["pitcher_era_home"].fillna(4.20)
-            df["pitcher_era_away"] = df["pitcher_era_away"].fillna(4.20)
+            df["pitcher_era_home"] = df["pitcher_era_home"].fillna(DEFAULT_MLB_ERA)
+            df["pitcher_era_away"] = df["pitcher_era_away"].fillna(DEFAULT_MLB_ERA)
             df["pitcher_whip_home"] = df["pitcher_whip_home"].fillna((df["pitcher_era_home"] / 4.0).clip(lower=0.9, upper=1.8))
             df["pitcher_whip_away"] = df["pitcher_whip_away"].fillna((df["pitcher_era_away"] / 4.0).clip(lower=0.9, upper=1.8))
             df["pitcher_k_rate_home"] = df["pitcher_k_rate_home"].fillna((0.30 - (df["pitcher_era_home"] - 3.0) * 0.025).clip(lower=0.12, upper=0.35))
@@ -1090,7 +1119,7 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                 reason = f"pitcher_diff signal={pitcher_signal:.3f}, starter_rating_diff signal={starter_signal:.3f}, odds_loaded={odds_loaded}"
                 print(f"[MLB SKIP] Required odds unavailable — {reason}")
                 return pd.DataFrame()
-            if pitcher_signal == 0 and starter_signal == 0 and pitcher_coverage_pct >= 50.0:
+            if pitcher_signal == 0 and starter_signal == 0 and real_pitcher_coverage_pct >= MLB_REAL_ERA_NORMAL_THRESHOLD:
                 reason = f"pitcher_diff signal={pitcher_signal:.3f}, starter_rating_diff signal={starter_signal:.3f}, odds_loaded={odds_loaded}"
                 print(f"[MLB SKIP] Required starter/pitcher signals unavailable — {reason}")
                 return pd.DataFrame()

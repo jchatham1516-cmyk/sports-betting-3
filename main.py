@@ -1623,8 +1623,14 @@ def run_daily_pipeline(
             if sport_clean == "mlb":
                 pitcher_signal = pd.to_numeric(daily.get("pitcher_diff", pd.Series(0.0, index=daily.index)), errors="coerce").fillna(0.0).abs().sum()
                 starter_signal = pd.to_numeric(daily.get("starter_rating_diff", pd.Series(0.0, index=daily.index)), errors="coerce").fillna(0.0).abs().sum()
-                pitcher_coverage = float(pd.to_numeric(daily.get("mlb_pitcher_coverage_pct", daily.get("pitcher_coverage_pct", pd.Series(0.0, index=daily.index))), errors="coerce").fillna(0.0).max()) if len(daily) else 0.0
-                if pitcher_coverage < 50.0:
+                coverage_source = daily.get("real_pitcher_coverage_pct", daily.get("mlb_pitcher_coverage_pct", daily.get("pitcher_coverage_pct", pd.Series(0.0, index=daily.index))))
+                pitcher_coverage = float(pd.to_numeric(coverage_source, errors="coerce").fillna(0.0).max()) if len(daily) else 0.0
+                if pitcher_coverage < 25.0:
+                    daily["data_quality_status"] = "severe"
+                    base_confidence = pd.to_numeric(daily["confidence"], errors="coerce").fillna(0.5) if "confidence" in daily.columns else pd.Series(0.5, index=daily.index, dtype=float)
+                    daily["confidence"] = base_confidence * 0.5
+                    print("[MLB DATA QUALITY] severe")
+                elif pitcher_coverage < 50.0:
                     daily["data_quality_status"] = "degraded"
                     base_confidence = pd.to_numeric(daily["confidence"], errors="coerce").fillna(0.5) if "confidence" in daily.columns else pd.Series(0.5, index=daily.index, dtype=float)
                     daily["confidence"] = base_confidence * 0.75
@@ -2506,28 +2512,40 @@ def run_daily_pipeline(
                 mlb_model_prob = pd.to_numeric(final_bets.loc[mlb_mask, "model_probability"], errors="coerce") if "model_probability" in final_bets.columns else pd.Series(np.nan, index=final_bets.index[mlb_mask])
                 mlb_market_prob = pd.to_numeric(final_bets.loc[mlb_mask, "market_probability"], errors="coerce") if "market_probability" in final_bets.columns else pd.Series(np.nan, index=final_bets.index[mlb_mask])
                 mlb_ev = pd.to_numeric(final_bets.loc[mlb_mask, "expected_value"], errors="coerce") if "expected_value" in final_bets.columns else pd.Series(np.nan, index=final_bets.index[mlb_mask])
-                mlb_coverage = pd.to_numeric(
-                    final_bets.loc[mlb_mask, "mlb_pitcher_coverage_pct"] if "mlb_pitcher_coverage_pct" in final_bets.columns else final_bets.loc[mlb_mask, "pitcher_coverage_pct"] if "pitcher_coverage_pct" in final_bets.columns else pd.Series(0.0, index=final_bets.index[mlb_mask]),
-                    errors="coerce",
-                ).fillna(0.0)
-                mlb_pitcher_signal = pd.to_numeric(final_bets.loc[mlb_mask, "pitcher_diff"] if "pitcher_diff" in final_bets.columns else pd.Series(0.0, index=final_bets.index[mlb_mask]), errors="coerce").fillna(0.0).abs()
-                mlb_starter_signal = pd.to_numeric(final_bets.loc[mlb_mask, "starter_rating_diff"] if "starter_rating_diff" in final_bets.columns else pd.Series(0.0, index=final_bets.index[mlb_mask]), errors="coerce").fillna(0.0).abs()
-                mlb_quality = final_bets.loc[mlb_mask, "data_quality_status"].astype(str).str.lower() if "data_quality_status" in final_bets.columns else pd.Series("normal", index=final_bets.index[mlb_mask])
-                mlb_degraded = mlb_quality.str.contains("degraded", na=False)
-                mlb_valid = (
-                    mlb_odds.notna()
-                    & mlb_odds.ne(0)
-                    & mlb_odds.gt(-300)
-                    & mlb_odds.lt(300)
-                    & mlb_model_prob.notna()
-                    & mlb_market_prob.notna()
-                    & mlb_ev.notna()
-                    & (mlb_coverage.gt(0) | mlb_degraded)
-                    & (mlb_pitcher_signal.gt(0) | mlb_starter_signal.gt(0) | mlb_degraded)
+                coverage_source = (
+                    final_bets.loc[mlb_mask, "real_pitcher_coverage_pct"]
+                    if "real_pitcher_coverage_pct" in final_bets.columns
+                    else final_bets.loc[mlb_mask, "mlb_pitcher_coverage_pct"]
+                    if "mlb_pitcher_coverage_pct" in final_bets.columns
+                    else final_bets.loc[mlb_mask, "pitcher_coverage_pct"]
+                    if "pitcher_coverage_pct" in final_bets.columns
+                    else pd.Series(0.0, index=final_bets.index[mlb_mask])
                 )
+                mlb_coverage = pd.to_numeric(coverage_source, errors="coerce").fillna(0.0)
+                mlb_edge = pd.to_numeric(final_bets.loc[mlb_mask, "edge"], errors="coerce") if "edge" in final_bets.columns else pd.Series(np.nan, index=final_bets.index[mlb_mask])
+                mlb_quality = final_bets.loc[mlb_mask, "data_quality_status"].astype(str).str.lower() if "data_quality_status" in final_bets.columns else pd.Series("normal", index=final_bets.index[mlb_mask])
+                mlb_severe = mlb_quality.str.contains("severe", na=False) | mlb_coverage.lt(25.0)
+                mlb_degraded = mlb_quality.str.contains("degraded", na=False) | (mlb_coverage.lt(50.0) & ~mlb_severe)
+                mlb_odds_real = mlb_odds.notna() & mlb_odds.ne(0) & mlb_odds.gt(-300) & mlb_odds.lt(300)
+                mlb_probabilities_real = mlb_model_prob.notna() & mlb_market_prob.notna()
+                mlb_normal_valid = mlb_odds_real & mlb_probabilities_real & mlb_ev.notna() & mlb_coverage.ge(50.0) & ~mlb_degraded & ~mlb_severe
+                mlb_degraded_valid = (
+                    mlb_degraded
+                    & mlb_odds_real
+                    & mlb_probabilities_real
+                    & mlb_ev.ge(0.06)
+                    & mlb_edge.ge(0.03)
+                )
+                mlb_valid = mlb_normal_valid | mlb_degraded_valid | (mlb_severe & bool(debug))
+                severe_removed = int((mlb_severe & (not debug)).sum())
+                degraded_allowed = int(mlb_degraded_valid.sum())
                 invalid_mlb_count = int((~mlb_valid).sum())
+                if severe_removed:
+                    print(f"[MLB FINAL SAFETY] Removing {severe_removed} severe-quality MLB bets without debug mode")
+                if degraded_allowed:
+                    print(f"[MLB FINAL SAFETY] Allowing {degraded_allowed} degraded MLB bets with strict EV/edge/probability checks")
                 if invalid_mlb_count:
-                    print(f"[MLB FINAL SAFETY] Removing {invalid_mlb_count} MLB bets without real odds/probabilities/EV or non-degraded pitcher signal")
+                    print(f"[MLB FINAL SAFETY] Removing {invalid_mlb_count} MLB bets failing real ERA coverage/odds/probability/EV safeguards")
                     final_bets = final_bets.loc[~mlb_mask | mlb_valid.reindex(final_bets.index, fill_value=False)].copy()
 
         if "sport" in final_bets.columns:
@@ -2561,8 +2579,13 @@ def run_daily_pipeline(
                 units = 1.5
             else:
                 units = 1.0
-        if str(row.get("sport", "")).lower() == "mlb" and "degraded" in str(row.get("data_quality_status", "")).lower():
-            units = min(units * 0.5, 0.25)
+        if str(row.get("sport", "")).lower() == "mlb":
+            mlb_quality = str(row.get("data_quality_status", "")).lower()
+            coverage = pd.to_numeric(pd.Series([row.get("real_pitcher_coverage_pct", row.get("mlb_pitcher_coverage_pct", row.get("pitcher_coverage_pct", 0.0)))]), errors="coerce").fillna(0.0).iloc[0]
+            if "severe" in mlb_quality or coverage < 25.0:
+                units = 0.0 if not debug else min(units, 0.10)
+            elif "degraded" in mlb_quality or coverage < 50.0:
+                units = min(units * 0.25, 0.10)
         return units
 
     if not final_bets.empty and "expected_value" in final_bets.columns:
