@@ -29,8 +29,25 @@ def _series_from_get(df: pd.DataFrame, column: str, default: object = 0.0) -> pd
     return series if default is None else series.fillna(default)
 
 
+MLB_TEAM_ALIASES = {
+    "oakland athletics": "athletics",
+    "sacramento athletics": "athletics",
+    "athletics": "athletics",
+    "oakland a s": "athletics",
+    "oakland as": "athletics",
+    "st louis cardinals": "st louis cardinals",
+}
+
+
 def normalize_team(team: object) -> str:
-    return str(team).lower().strip()
+    cleaned = str(team or "").lower().strip()
+    cleaned = cleaned.replace(".", "").replace("'", "")
+    cleaned = " ".join("".join(ch if ch.isalnum() else " " for ch in cleaned).split())
+    return MLB_TEAM_ALIASES.get(cleaned, cleaned)
+
+
+def normalize_pitcher_name(name: object) -> str:
+    return " ".join(str(name or "").lower().strip().split())
 
 
 def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -45,8 +62,12 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     print("🚨 SAMPLE HOME TEAMS:", out["home_team"].unique()[:5])
     print("🚨 SAMPLE PITCHER KEYS:", list(pitchers_dict.keys())[:5])
 
+    existing_home_pitcher = out.get("pitcher_home", out.get("home_pitcher", out.get("pitcher_name_home", pd.Series("", index=out.index))))
+    existing_away_pitcher = out.get("pitcher_away", out.get("away_pitcher", out.get("pitcher_name_away", pd.Series("", index=out.index))))
     out["pitcher_home"] = out["home_team_norm"].map(pitchers_dict)
     out["pitcher_away"] = out["away_team_norm"].map(pitchers_dict)
+    out["pitcher_home"] = out["pitcher_home"].where(out["pitcher_home"].notna() & out["pitcher_home"].astype(str).str.strip().ne(""), existing_home_pitcher)
+    out["pitcher_away"] = out["pitcher_away"].where(out["pitcher_away"].notna() & out["pitcher_away"].astype(str).str.strip().ne(""), existing_away_pitcher)
 
     print("[PITCHER MATCH CHECK]")
     print(out[["home_team", "pitcher_home"]].head(10))
@@ -60,34 +81,32 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
             continue
         if era_value <= 0 or era_value > 15:
             continue
-        clean_era_map[str(pitcher).lower().strip()] = era_value
+        clean_era_map[normalize_pitcher_name(pitcher)] = era_value
     era_map = clean_era_map
-    era_map.update(
-        {
-            "grant holmes": 4.20,
-            "seth lugo": 3.60,
-            "bailey ober": 3.85,
-            "mackenzie gore": 4.10,
-            "luis morales": 4.30,
-            "connelly early": 4.20,
-            "carmen mlodzinski": 4.15,
-            "jack kochanowicz": 4.35,
-            "anthony kay": 4.50,
-            "steven matz": 4.25,
-            "slade cecconi": 4.40,
-        }
-    )
-    missing_pitchers = set(out["pitcher_home"].str.lower().dropna()) - set(era_map.keys())
+    home_pitcher_keys = out["pitcher_home"].map(normalize_pitcher_name)
+    away_pitcher_keys = out["pitcher_away"].map(normalize_pitcher_name)
+    missing_pitchers = set(home_pitcher_keys[home_pitcher_keys.ne("")].dropna()) - set(era_map.keys())
     print("\n[MISSING PITCHERS]:", missing_pitchers)
 
-    out["pitcher_era_home"] = out["pitcher_home"].str.lower().map(era_map)
-    out["pitcher_era_away"] = out["pitcher_away"].str.lower().map(era_map)
+    existing_home_era = pd.to_numeric(out.get("pitcher_era_home", pd.Series(np.nan, index=out.index)), errors="coerce").replace(0, np.nan)
+    existing_away_era = pd.to_numeric(out.get("pitcher_era_away", pd.Series(np.nan, index=out.index)), errors="coerce").replace(0, np.nan)
+    out["pitcher_era_home"] = home_pitcher_keys.map(era_map)
+    out["pitcher_era_away"] = away_pitcher_keys.map(era_map)
 
-    out["pitcher_era_home"] = pd.to_numeric(out["pitcher_era_home"], errors="coerce")
-    out["pitcher_era_away"] = pd.to_numeric(out["pitcher_era_away"], errors="coerce")
+    out["pitcher_era_home"] = pd.to_numeric(out["pitcher_era_home"], errors="coerce").fillna(existing_home_era)
+    out["pitcher_era_away"] = pd.to_numeric(out["pitcher_era_away"], errors="coerce").fillna(existing_away_era)
 
     out["pitcher_era_home"] = out["pitcher_era_home"].replace([0, np.inf, -np.inf], np.nan)
     out["pitcher_era_away"] = out["pitcher_era_away"].replace([0, np.inf, -np.inf], np.nan)
+
+    total_games = int(len(out))
+    both_era_count = int((out["pitcher_era_home"].notna() & out["pitcher_era_away"].notna()).sum())
+    pitcher_coverage_pct = (both_era_count / total_games * 100.0) if total_games else 0.0
+    out["mlb_pitcher_coverage_pct"] = pitcher_coverage_pct
+    out["pitcher_coverage_pct"] = pitcher_coverage_pct
+    out["data_quality_status"] = "degraded" if pitcher_coverage_pct < 50.0 else "normal"
+    print(f"[MLB PITCHER COVERAGE] both ERAs: {both_era_count}/{total_games} ({pitcher_coverage_pct:.1f}%)")
+    print(f"[MLB DATA QUALITY] {out['data_quality_status'].iloc[0] if len(out) else 'degraded'}")
 
     out["pitcher_era_home"] = out["pitcher_era_home"].fillna(4.20)
     out["pitcher_era_away"] = out["pitcher_era_away"].fillna(4.20)
@@ -95,7 +114,8 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     out["pitcher_era_home"] = out["pitcher_era_home"].clip(lower=1.5, upper=8.0)
     out["pitcher_era_away"] = out["pitcher_era_away"].clip(lower=1.5, upper=8.0)
 
-    out["pitcher_diff"] = out["pitcher_era_away"] - out["pitcher_era_home"]
+    out["pitcher_era_diff"] = out["pitcher_era_away"] - out["pitcher_era_home"]
+    out["pitcher_diff"] = out["pitcher_era_diff"]
     print("\n[ERA MAP SIZE]:", len(era_map))
     print(out[["pitcher_home", "pitcher_era_home"]].head(10))
     print("\n[ERA COVERAGE CHECK]")
@@ -170,7 +190,8 @@ def run_mlb_pipeline(
     ]:
         frame[col] = frame.get(col, pd.Series(index=frame.index, dtype=float)).fillna(4.20)
 
-    frame["pitcher_diff"] = frame["pitcher_era_away"] - frame["pitcher_era_home"]
+    frame["pitcher_era_diff"] = frame["pitcher_era_away"] - frame["pitcher_era_home"]
+    frame["pitcher_diff"] = frame["pitcher_era_diff"]
     frame["edge"] = _series_from_get(frame, "edge", 0.0) + (frame["pitcher_diff"] * 0.015)
     frame = frame.fillna(0)
 
@@ -224,6 +245,11 @@ def run_mlb_pipeline(
             "pitcher_era_home": float(row.get("pitcher_era_home", 4.2)),
             "pitcher_era_away": float(row.get("pitcher_era_away", 4.2)),
             "pitcher_diff": float(row.get("pitcher_diff", 0.0)),
+            "pitcher_era_diff": float(row.get("pitcher_era_diff", row.get("pitcher_diff", 0.0))),
+            "data_quality_status": str(row.get("data_quality_status", "normal")),
+            "mlb_pitcher_coverage_pct": float(row.get("mlb_pitcher_coverage_pct", row.get("pitcher_coverage_pct", 0.0))),
+            "pitcher_coverage_pct": float(row.get("pitcher_coverage_pct", row.get("mlb_pitcher_coverage_pct", 0.0))),
+            "starter_rating_diff": float(row.get("starter_rating_diff", 0.0)),
         }
 
         selections = [
@@ -232,6 +258,9 @@ def run_mlb_pipeline(
         ]
         for selection, odds, model_probability, market_probability in selections:
             edge = (model_probability - market_probability) + float(row.get("pitcher_diff", 0.0)) * 0.015
+            confidence = float(np.clip(0.5 + edge, 0.01, 0.99))
+            if str(row.get("data_quality_status", "normal")).lower() == "degraded":
+                confidence *= 0.75
             candidates.append(
                 {
                     **common,
@@ -244,7 +273,7 @@ def run_mlb_pipeline(
                     "market_probability": market_probability,
                     "edge": edge,
                     "expected_value": expected_value(model_probability, int(odds)),
-                    "confidence": float(np.clip(0.5 + edge, 0.01, 0.99)),
+                    "confidence": confidence,
                 }
             )
 
