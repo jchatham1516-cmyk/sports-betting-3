@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import traceback
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -132,6 +133,61 @@ NHL_TEAM_ABBREVIATIONS = {
 }
 
 NHL_NEUTRAL_GOALIE_SAVE_PCT = 0.905
+NHL_GOALIE_API_DELAY_SECONDS = 0.25
+NHL_GOALIE_API_STATS = {
+    "requests_attempted": 0,
+    "successful": 0,
+    "rate_limited": 0,
+    "cache_hits": 0,
+}
+NHL_GOALIE_TEAM_STATS_CACHE: dict[str, dict[str, object]] = {}
+NHL_GOALIE_RATE_LIMITED = False
+
+
+def _reset_nhl_goalie_api_status() -> None:
+    global NHL_GOALIE_RATE_LIMITED
+    NHL_GOALIE_RATE_LIMITED = False
+    for key in NHL_GOALIE_API_STATS:
+        NHL_GOALIE_API_STATS[key] = 0
+
+
+def _mark_nhl_goalie_rate_limited() -> None:
+    global NHL_GOALIE_RATE_LIMITED
+    NHL_GOALIE_RATE_LIMITED = True
+    NHL_GOALIE_API_STATS["rate_limited"] += 1
+
+
+def _print_nhl_goalie_api_status(coverage_pct: float) -> None:
+    print("[NHL GOALIE API STATUS]")
+    print(f"requests_attempted: {NHL_GOALIE_API_STATS['requests_attempted']}")
+    print(f"successful: {NHL_GOALIE_API_STATS['successful']}")
+    print(f"rate_limited: {NHL_GOALIE_API_STATS['rate_limited']}")
+    print(f"cache_hits: {NHL_GOALIE_API_STATS['cache_hits']}")
+    print(f"coverage_pct: {coverage_pct:.1f}")
+
+
+def _nhl_api_get_json(url: str) -> dict[str, object] | None:
+    if NHL_GOALIE_RATE_LIMITED:
+        return None
+    NHL_GOALIE_API_STATS["requests_attempted"] += 1
+    try:
+        response = requests.get(url, timeout=20)
+    except requests.RequestException as exc:
+        print(f"[NHL GOALIES WARNING] NHL request failed for {url}: {exc}")
+        return None
+    if response.status_code == 429:
+        _mark_nhl_goalie_rate_limited()
+        print("[NHL GOALIES WARNING] NHL API returned 429; disabling live goalie fetches for this run")
+        return None
+    try:
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        print(f"[NHL GOALIES WARNING] NHL request failed for {url}: {exc}")
+        return None
+    NHL_GOALIE_API_STATS["successful"] += 1
+    time.sleep(NHL_GOALIE_API_DELAY_SECONDS)
+    return payload if isinstance(payload, dict) else None
 
 
 def _normalize_goalie_team_key(name: object) -> str:
@@ -661,18 +717,17 @@ def _extract_goalie_name_from_payload(payload: object, side: str) -> str:
 def _fetch_nhl_probable_goalies_from_api() -> dict[str, dict[str, object]]:
     """Fetch confirmed/probable goalie names when the public NHL payload exposes them.
 
-    The NHL API does not always publish starters.  This best-effort layer is used
+    The NHL API does not always publish starters. This best-effort layer is used
     before team season save-percentage fallback and safely returns partial data.
+    Rate limits stop additional live requests for the remainder of the run.
     """
     goalies: dict[str, dict[str, object]] = {}
     game_ids: set[int] = set()
     for game_date in _nhl_schedule_dates():
-        try:
-            response = requests.get(f"https://api-web.nhle.com/v1/schedule/{game_date}", timeout=20)
-            response.raise_for_status()
-            payload = response.json()
-        except (requests.RequestException, ValueError) as exc:
-            print(f"[NHL GOALIES WARNING] NHL schedule request failed for {game_date}: {exc}")
+        payload = _nhl_api_get_json(f"https://api-web.nhle.com/v1/schedule/{game_date}")
+        if payload is None:
+            if NHL_GOALIE_RATE_LIMITED:
+                return goalies
             continue
         for week in payload.get("gameWeek", []):
             for game in week.get("games", []):
@@ -681,12 +736,10 @@ def _fetch_nhl_probable_goalies_from_api() -> dict[str, dict[str, object]]:
                     game_ids.add(int(game_id))
 
     for game_id in sorted(game_ids):
-        try:
-            response = requests.get(f"https://api-web.nhle.com/v1/gamecenter/{game_id}/landing", timeout=20)
-            response.raise_for_status()
-            payload = response.json()
-        except (requests.RequestException, ValueError) as exc:
-            print(f"[NHL GOALIES WARNING] NHL gamecenter request failed for {game_id}: {exc}")
+        payload = _nhl_api_get_json(f"https://api-web.nhle.com/v1/gamecenter/{game_id}/landing")
+        if payload is None:
+            if NHL_GOALIE_RATE_LIMITED:
+                return goalies
             continue
         for side in ("home", "away"):
             team = payload.get(f"{side}Team", {}) if isinstance(payload, dict) else {}
@@ -704,32 +757,44 @@ def _fetch_nhl_probable_goalies_from_api() -> dict[str, dict[str, object]]:
 
 
 def _fetch_nhl_goalies_from_api() -> dict[str, dict[str, float]]:
+    if NHL_GOALIE_RATE_LIMITED:
+        return {}
+    _reset_nhl_goalie_api_status()
     probable_goalies = _fetch_nhl_probable_goalies_from_api()
-    try:
-        standings_response = requests.get("https://api-web.nhle.com/v1/standings/now", timeout=20)
-        standings_response.raise_for_status()
-        standings_payload = standings_response.json()
-    except (requests.RequestException, ValueError) as exc:
-        print(f"[NHL GOALIES WARNING] NHL standings request failed: {exc}")
+    if NHL_GOALIE_RATE_LIMITED:
         return probable_goalies
 
-    teams: list[tuple[str, str]] = [(abbrev, team_key) for abbrev, team_key in NHL_TEAM_ABBREVIATIONS.items()]
+    standings_payload = _nhl_api_get_json("https://api-web.nhle.com/v1/standings/now")
+    if standings_payload is None:
+        return probable_goalies
+
+    teams_by_abbrev: dict[str, str] = {abbrev: team_key for abbrev, team_key in NHL_TEAM_ABBREVIATIONS.items()}
     for row in standings_payload.get("standings", []):
         abbrev_payload = row.get("teamAbbrev") or {}
         name_payload = row.get("teamName") or {}
         abbrev = _extract_nhl_team_display_name(abbrev_payload)
         team_name = _extract_nhl_team_display_name(name_payload)
         if abbrev and team_name:
-            teams.append((abbrev.upper(), _normalize_goalie_team_key(team_name)))
+            teams_by_abbrev[abbrev.upper()] = _normalize_goalie_team_key(team_name)
 
     goalies: dict[str, dict[str, object]] = dict(probable_goalies)
-    for abbrev, team_key in teams:
-        try:
-            response = requests.get(f"https://api-web.nhle.com/v1/club-stats/{abbrev}/now", timeout=20)
-            response.raise_for_status()
-            payload = response.json()
-        except (requests.RequestException, ValueError) as exc:
-            print(f"[NHL GOALIES WARNING] NHL goalie stats request failed for {abbrev}: {exc}")
+    for abbrev, team_key in teams_by_abbrev.items():
+        if NHL_GOALIE_RATE_LIMITED:
+            break
+        cache_key = abbrev.upper()
+        if cache_key in NHL_GOALIE_TEAM_STATS_CACHE:
+            NHL_GOALIE_API_STATS["cache_hits"] += 1
+            cached = NHL_GOALIE_TEAM_STATS_CACHE[cache_key]
+            if cached:
+                goalies.setdefault(team_key, {})
+                goalies[team_key].update(cached)
+            continue
+
+        payload = _nhl_api_get_json(f"https://api-web.nhle.com/v1/club-stats/{cache_key}/now")
+        if payload is None:
+            if NHL_GOALIE_RATE_LIMITED:
+                break
+            NHL_GOALIE_TEAM_STATS_CACHE[cache_key] = {}
             continue
 
         goalie_rows = payload.get("goalies") or []
@@ -740,14 +805,15 @@ def _fetch_nhl_goalies_from_api() -> dict[str, dict[str, float]]:
             if pd.notna(save_pct) and save_pct > 0 and pd.notna(games_played) and games_played > 0:
                 save_pcts.append((float(games_played), float(save_pct)))
         if not save_pcts:
+            NHL_GOALIE_TEAM_STATS_CACHE[cache_key] = {}
             continue
         total_games = sum(games for games, _ in save_pcts)
         weighted_save_pct = sum(games * save_pct for games, save_pct in save_pcts) / total_games
+        team_values = {"save_pct": weighted_save_pct, "team_save_pct": weighted_save_pct, "source": "nhl_api_club_stats"}
+        NHL_GOALIE_TEAM_STATS_CACHE[cache_key] = team_values
         goalies.setdefault(team_key, {})
-        goalies[team_key].update({"save_pct": weighted_save_pct, "team_save_pct": weighted_save_pct})
-        goalies[team_key].setdefault("source", "nhl_api_club_stats")
+        goalies[team_key].update(team_values)
     return goalies
-
 
 def load_nhl_goalies() -> dict[str, dict[str, float]]:
     goalies = _fetch_nhl_goalies_from_api()
@@ -1181,6 +1247,7 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         print(f"neutral_defaults: {neutral_defaults}")
         print(f"coverage_pct: {coverage_pct:.1f}")
         print(f"data_quality: {quality}")
+        _print_nhl_goalie_api_status(coverage_pct)
         print("[NHL GOALIE MATCH SAMPLE]")
         print(df[["home_team", "away_team", "goalie_home", "goalie_away", "goalie_save_home", "goalie_save_away", "goalie_diff"]].head().to_string(index=False))
         return df
