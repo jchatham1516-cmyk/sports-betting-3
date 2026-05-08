@@ -52,3 +52,47 @@ def test_default_era_values_do_not_count_as_real_pitcher_coverage(monkeypatch, c
     assert "[MLB REAL PITCHER ERA COVERAGE]" in logs
     assert "data quality: degraded" in logs
     assert "[MLB PITCHER COVERAGE]" not in logs
+
+
+def test_mlb_dedupe_uses_event_date_market_and_selection():
+    from sports_betting.sports.mlb.pipeline import _dedupe_mlb_odds_rows
+
+    rows = pd.DataFrame(
+        [
+            {
+                "sport": "mlb",
+                "event_date": "2026-05-08T23:00:00Z",
+                "home_team": "A Team",
+                "away_team": "B Team",
+                "market": "moneyline",
+                "selection": "A Team",
+                "home_odds": -110,
+                "away_odds": 100,
+            },
+            {
+                "sport": "mlb",
+                "event_date": "2026-05-08T23:00:00Z",
+                "home_team": "A Team",
+                "away_team": "B Team",
+                "market": "moneyline",
+                "selection": "A Team",
+                "home_odds": -110,
+                "away_odds": 100,
+            },
+            {
+                "sport": "mlb",
+                "event_date": "2026-05-08T23:00:00Z",
+                "home_team": "A Team",
+                "away_team": "B Team",
+                "market": "moneyline",
+                "selection": "B Team",
+                "home_odds": -110,
+                "away_odds": 100,
+            },
+        ]
+    )
+
+    out = _dedupe_mlb_odds_rows(rows)
+
+    assert len(out) == 2
+    assert set(out["selection"]) == {"A Team", "B Team"}
