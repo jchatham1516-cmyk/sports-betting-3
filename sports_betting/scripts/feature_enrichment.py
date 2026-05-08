@@ -9,6 +9,7 @@ import traceback
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
@@ -780,6 +781,10 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             print("[NHL ENRICHMENT WARNING] No team stat source found.")
             if source in {"missing", "historical_empty", "historical_missing_columns"}:
                 raise RuntimeError("[NHL DATA ERROR] No team stat source found after exhausting external and historical fallbacks.")
+        if "home_team_norm" not in df.columns and "home_team" in df.columns:
+            df["home_team_norm"] = df["home_team"].apply(clean_team_name).apply(_normalize_team)
+        if "away_team_norm" not in df.columns and "away_team" in df.columns:
+            df["away_team_norm"] = df["away_team"].apply(clean_team_name).apply(_normalize_team)
         df = enrich_nhl_live_features(df, nhl_team_stats=None)
         df = build_nhl_diff_features(df)
         goalies = load_nhl_goalies()
@@ -831,7 +836,9 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             else:
                 df["home_team_key"] = ""
                 df["away_team_key"] = ""
-            if not pitchers_df.empty:
+            if pitchers_df is None or pitchers_df.empty:
+                pitchers_df = pd.DataFrame(columns=["home_team_key", "away_team_key", "home_pitcher", "away_pitcher"])
+            else:
                 pitchers_df = pitchers_df.rename(columns={"home_team": "home_team_key", "away_team": "away_team_key"})
                 if "home_team_key" not in pitchers_df.columns:
                     pitchers_df["home_team_key"] = ""
@@ -839,6 +846,12 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                     pitchers_df["away_team_key"] = ""
                 pitchers_df["home_team_key"] = pitchers_df["home_team_key"].astype(str).str.lower().str.strip().apply(_normalize_team_key).replace(TEAM_MAP)
                 pitchers_df["away_team_key"] = pitchers_df["away_team_key"].astype(str).str.lower().str.strip().apply(_normalize_team_key).replace(TEAM_MAP)
+            unmatched_home = sorted(set(df["home_team_key"]) - set(pitchers_df["home_team_key"])) if "home_team_key" in df.columns else []
+            unmatched_away = sorted(set(df["away_team_key"]) - set(pitchers_df["away_team_key"])) if "away_team_key" in df.columns else []
+            if unmatched_home:
+                print("[MLB UNMATCHED HOME TEAMS]", unmatched_home[:20])
+            if unmatched_away:
+                print("[MLB UNMATCHED AWAY TEAMS]", unmatched_away[:20])
             df = df.merge(
                 pitchers_df,
                 on=["home_team_key", "away_team_key"],
@@ -880,6 +893,9 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                 df["away_pitcher"].fillna("").astype(str),
             )
 
+            for pitcher_col in ["pitcher_era_home", "pitcher_era_away", "pitcher_diff"]:
+                if pitcher_col not in df.columns:
+                    df[pitcher_col] = np.nan
             print("[MLB DEBUG] Checking pitcher columns...")
             print(df[["home_team", "away_team", "pitcher_era_home", "pitcher_era_away", "pitcher_diff"]].head())
 
@@ -993,6 +1009,13 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                 print("🚨 MLB MERGE FAILED — SKIPPING MLB")
                 return pd.DataFrame()
             df = build_mlb_features(df)
+            pitcher_signal = pd.to_numeric(df.get("pitcher_diff", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0.0).abs().sum()
+            starter_signal = pd.to_numeric(df.get("starter_rating_diff", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0.0).abs().sum()
+            odds_loaded = {"home_odds", "away_odds"}.issubset(df.columns) and (pd.to_numeric(df["home_odds"], errors="coerce").fillna(0).ne(0).any())
+            if pitcher_signal == 0 or starter_signal == 0 or not odds_loaded:
+                reason = f"pitcher_diff signal={pitcher_signal:.3f}, starter_rating_diff signal={starter_signal:.3f}, odds_loaded={odds_loaded}"
+                print(f"[MLB SKIP] Required starter/pitcher signals unavailable — {reason}")
+                return pd.DataFrame()
             return df
         except Exception as exc:
             print(f"[MLB PIPELINE ERROR] {exc}")

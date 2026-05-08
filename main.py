@@ -31,6 +31,7 @@ from sports_betting.data.load_injuries import (
 )
 from sports_betting.models.entities import Prediction
 from sports_betting.scripts.injuries import run_injury_pipeline
+from sports_betting.scripts.nba_backtest import run_nba_backtest
 from sports_betting.scripts.data_io import (
     historical_file_path,
     is_test_mode,
@@ -145,6 +146,76 @@ TOTALS_OPTIONAL_FEATURES = [
     "goalie_save_away",
     "goalie_diff",
 ]
+
+NBA_TIER_RULES = {
+    "Relaxed": {"expected_value": 0.035, "edge": 0.02, "min_prob": 0.53, "max_prob": 0.65, "units": 0.25},
+    "Standard": {"expected_value": 0.055, "edge": 0.035, "min_prob": 0.55, "max_prob": 0.68, "units": 0.5},
+    "Strong": {"expected_value": 0.08, "edge": 0.05, "min_prob": 0.57, "max_prob": 0.70, "units": 1.0},
+}
+
+
+def nba_feature_health_check(df: pd.DataFrame, model=None) -> dict[str, object]:
+    feature_columns = list(getattr(model, "feature_columns", NBA_RUNTIME_FEATURE_COLUMNS)) if model is not None else list(NBA_RUNTIME_FEATURE_COLUMNS)
+    missing = [col for col in feature_columns if col not in df.columns]
+    available = df.reindex(columns=feature_columns, fill_value=np.nan).apply(pd.to_numeric, errors="coerce")
+    all_nan = [col for col in feature_columns if available[col].isna().all()]
+    filled = available.fillna(0.0)
+    all_zero = [col for col in feature_columns if filled[col].eq(0.0).all()]
+    zero_share = (len(all_zero) / len(feature_columns)) if feature_columns else 0.0
+    degraded = zero_share > 0.40
+    print("[NBA FEATURE HEALTH]")
+    print("missing feature columns:", missing)
+    print("all-zero feature columns:", all_zero)
+    print("all-NaN feature columns:", all_nan)
+    if model is not None and hasattr(model, "feature_importances_"):
+        print("top 15 feature importances:")
+        print(model.feature_importances_.head(15).to_string())
+        total = float(model.feature_importances_.sum())
+        if total > 0 and float(model.feature_importances_.head(3).sum() / total) > 0.75:
+            print("⚠️ NBA MODEL RELIANCE WARNING: model is relying too heavily on only 1–3 features")
+    elif model is not None and hasattr(model, "coef_"):
+        importances = pd.Series(np.abs(model.coef_[0]), index=feature_columns).sort_values(ascending=False)
+        print("top 15 feature importances:")
+        print(importances.head(15).to_string())
+    if degraded:
+        print(f"⚠️ NBA DATA QUALITY DEGRADED: {zero_share:.1%} of NBA features are all zero; units will be reduced")
+    return {"missing": missing, "all_zero": all_zero, "all_nan": all_nan, "zero_share": zero_share, "degraded": degraded}
+
+
+def apply_nba_tier_filters(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "sport" not in df.columns:
+        return df
+    out_parts: list[pd.DataFrame] = []
+    nba = df[df["sport"].astype(str).str.lower() == "nba"].copy()
+    other = df[df["sport"].astype(str).str.lower() != "nba"].copy()
+    if not other.empty:
+        out_parts.append(other)
+    if nba.empty:
+        return pd.concat(out_parts, ignore_index=True) if out_parts else df.iloc[0:0].copy()
+    for col in ["expected_value", "edge", "model_probability"]:
+        nba[col] = pd.to_numeric(nba[col], errors="coerce")
+    nba = nba.dropna(subset=["expected_value", "edge", "model_probability"]).copy()
+    degraded = nba.get("data_quality_status", pd.Series("ok", index=nba.index)).astype(str).str.contains("degraded", case=False, na=False)
+    tier = pd.Series("", index=nba.index, dtype=object)
+    for name, rule in NBA_TIER_RULES.items():
+        mask = (
+            (nba["expected_value"] >= rule["expected_value"])
+            & (nba["edge"] >= rule["edge"])
+            & (nba["model_probability"].between(rule["min_prob"], rule["max_prob"]))
+        )
+        if name == "Strong":
+            mask &= ~degraded
+        tier.loc[mask] = name
+    nba = nba[tier.ne("")].copy()
+    if nba.empty:
+        print("No NBA bets passed accuracy filters today")
+    else:
+        nba["bet_tier"] = tier.loc[nba.index]
+        nba["units"] = nba["bet_tier"].map({name: rule["units"] for name, rule in NBA_TIER_RULES.items()}).astype(float)
+        degraded_mask = nba.get("data_quality_status", pd.Series("ok", index=nba.index)).astype(str).str.contains("degraded", case=False, na=False)
+        nba.loc[degraded_mask, "units"] = (nba.loc[degraded_mask, "units"] * 0.5).clip(upper=0.25)
+        out_parts.append(nba)
+    return pd.concat(out_parts, ignore_index=True) if out_parts else df.iloc[0:0].copy()
 
 
 def ensure_required_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -807,7 +878,10 @@ def predict_runtime(model, games_df: pd.DataFrame):
     X_pred = X if hasattr(runtime_model, "feature_columns") and runtime_model.feature_columns is not None else X.values
 
     probs = runtime_model.predict_proba(X_pred)[:, 1]
-    model_probs = probs
+    calibrator = getattr(runtime_model, "probability_calibrator", None)
+    if calibrator is not None:
+        probs = calibrator.transform(probs)
+    model_probs = np.clip(probs, 0.01, 0.99)
     print("Model nulls:", int(pd.Series(model_probs).isnull().sum()))
 
     # Keep full, non-feature columns intact for downstream bet readability/debugging.
@@ -1283,6 +1357,7 @@ def _build_game_candidate_bets(predictions: list[dict], game_row: dict, sport_na
                 "injury_impact_home": float(game_row.get("injury_impact_home", 0.0)),
                 "injury_impact_away": float(game_row.get("injury_impact_away", 0.0)),
                 "injury_impact_diff": float(game_row.get("injury_impact_diff", 0.0)),
+                "data_quality_status": str(game_row.get("data_quality_status", "ok")),
             }
         )
 
@@ -1425,6 +1500,8 @@ def run_daily_pipeline(
     prebuilt_candidates: list[dict] = []
     game_rows_by_id: dict[str, dict] = {}
     sport_run_summaries: list[dict[str, int | str]] = []
+    sport_skip_reasons: dict[str, str] = {}
+    nba_backtest_summary: dict | None = None
 
     configured_sports = [str(s).strip().lower() for s in cfg.get("sports_enabled", ["nba", "nfl", "nhl", "mlb"])]
     if sport:
@@ -1451,6 +1528,12 @@ def run_daily_pipeline(
         logger.info("--date provided: %s (currently informational only)", date)
     if top_n is not None:
         logger.info("--top-n provided: %s (current export cap remains unchanged)", top_n)
+
+    if "nba" in sports_to_run:
+        try:
+            _, nba_backtest_summary = run_nba_backtest()
+        except Exception as exc:
+            print(f"[NBA BACKTEST] unavailable: {exc}")
 
     for idx, sport in enumerate(sports_to_run):
         print(f"🔥 LOOP START sport={sport}")
@@ -1509,6 +1592,7 @@ def run_daily_pipeline(
             daily = enrich_daily_features_by_sport(daily, sport_clean)
             if daily is None or daily.empty:
                 print(f"🚨 {sport_clean.upper()} enrichment returned no usable rows — skipping sport")
+                sport_skip_reasons[sport_clean] = "enrichment returned no usable rows"
                 print(f"✅ LOOP END sport={sport}")
                 continue
             if sport_clean == "mlb":
@@ -1529,10 +1613,27 @@ def run_daily_pipeline(
             if sport_clean == "nba":
                 daily = _boost_nba_signal_features(daily)
             validate_feature_signal(daily, sport_clean)
+            if sport_clean == "nhl":
+                goalie_signal = pd.to_numeric(daily.get("goalie_diff", pd.Series(0.0, index=daily.index)), errors="coerce").fillna(0.0).abs().sum()
+                goalie_nan = pd.to_numeric(daily.get("goalie_diff", pd.Series(np.nan, index=daily.index)), errors="coerce").isna().all()
+                if goalie_signal == 0 or goalie_nan:
+                    print("[NHL SKIP] Goalie data unavailable or all zero — skipping NHL")
+                    sport_skip_reasons["nhl"] = "goalie data unavailable or all zero"
+                    print(f"✅ LOOP END sport={sport}")
+                    continue
+            if sport_clean == "mlb":
+                pitcher_signal = pd.to_numeric(daily.get("pitcher_diff", pd.Series(0.0, index=daily.index)), errors="coerce").fillna(0.0).abs().sum()
+                starter_signal = pd.to_numeric(daily.get("starter_rating_diff", pd.Series(0.0, index=daily.index)), errors="coerce").fillna(0.0).abs().sum()
+                if pitcher_signal == 0 or starter_signal == 0:
+                    print(f"[MLB SKIP] Required starter/pitcher signal unavailable — pitcher_diff={pitcher_signal:.3f}, starter_rating_diff={starter_signal:.3f}")
+                    sport_skip_reasons["mlb"] = "starter/pitcher signal unavailable"
+                    print(f"✅ LOOP END sport={sport}")
+                    continue
             if "starter_rating_diff" in daily.columns:
                 starter_signal = pd.to_numeric(daily["starter_rating_diff"], errors="coerce").fillna(0.0).abs().sum()
                 if starter_signal == 0:
                     print("🚨 NO STARTER SIGNAL — SKIPPING SPORT")
+                    sport_skip_reasons[sport_clean] = "starter signal unavailable"
                     print(f"✅ LOOP END sport={sport}")
                     continue
             print("[DEBUG] Daily columns BEFORE prediction:", list(daily.columns))
@@ -1623,6 +1724,10 @@ def run_daily_pipeline(
                 model.runtime_model = runtime_home_win_model
                 print("🔥 USING RUNTIME TRAINED MODEL")
 
+            if sport_clean == "nba":
+                nba_health = nba_feature_health_check(daily, runtime_home_win_model)
+                daily["data_quality_status"] = "degraded" if nba_health.get("degraded") else "ok"
+
             if hasattr(model, "runtime_model") and model.runtime_model is not None:
                 print(f"[{sport_clean.upper()}] Using runtime model for predictions")
                 if "home_moneyline" not in daily.columns:
@@ -1680,12 +1785,14 @@ def run_daily_pipeline(
                     "injury_impact_home": float(game_row.get("injury_impact_home", 0.0)),
                     "injury_impact_away": float(game_row.get("injury_impact_away", 0.0)),
                     "injury_impact_diff": float(game_row.get("injury_impact_diff", 0.0)),
+                    "data_quality_status": str(game_row.get("data_quality_status", "ok")),
                 }
             sport_run_summaries.append(
                 {
                     "sport": sport_clean,
                     "games_processed": len(daily),
                     "candidates_generated": len(preds),
+                    "data_quality_status": str(daily.get("data_quality_status", pd.Series("ok", index=daily.index)).iloc[0]) if len(daily) else "ok",
                 }
             )
         except Exception as e:
@@ -1709,7 +1816,7 @@ def run_daily_pipeline(
         game_context_df.index.name = "game_id"
         game_context_df = game_context_df.reset_index()
         predictions_df = predictions_df.merge(
-            game_context_df[["game_id", "home_team", "away_team", "home_odds", "away_odds"]],
+            game_context_df[["game_id", "home_team", "away_team", "home_odds", "away_odds", "data_quality_status"]],
             on="game_id",
             how="left",
         )
@@ -2370,6 +2477,8 @@ def run_daily_pipeline(
             by=["expected_value", "edge", confidence_col], ascending=[False, False, False]
         )
 
+        final_bets = apply_nba_tier_filters(final_bets)
+
         if "sport" in final_bets.columns:
             final_bets = (
                 final_bets
@@ -2385,7 +2494,15 @@ def run_daily_pipeline(
         print("No candidates with required columns available for tiered filtering.")
 
     def assign_units(row):
+        if str(row.get("sport", "")).lower() == "nba" and pd.notna(row.get("units")):
+            return float(row.get("units"))
         tier = row.get("bet_tier", "")
+        if tier == "Strong":
+            return 1.0
+        if tier == "Standard":
+            return 0.5
+        if tier == "Relaxed":
+            return 0.25
         if tier == "Tier A":
             return 2.0
         if tier == "Tier B":
@@ -2468,6 +2585,29 @@ Candidates generated: {summary['candidates_generated']}
 Final bets: {int(final_bets_by_sport.get(sport_name, 0))}
 """
         )
+
+    nba_summary = next((s for s in sport_run_summaries if str(s.get("sport", "")).lower() == "nba"), None)
+    nba_status = "not run" if nba_summary is None else str(nba_summary.get("data_quality_status", "ok"))
+    print("\n[FINAL RUN SUMMARY]")
+    print("NBA:")
+    print(f"- games processed: {int(nba_summary.get('games_processed', 0)) if nba_summary else 0}")
+    print(f"- candidates: {int(nba_summary.get('candidates_generated', 0)) if nba_summary else 0}")
+    print(f"- final bets: {int(final_bets_by_sport.get('nba', 0))}")
+    print(f"- data quality status: {nba_status}")
+    if nba_backtest_summary:
+        print(f"- backtest summary: games={nba_backtest_summary.get('total_games_tested')}, win_rate={nba_backtest_summary.get('win_rate'):.3f}, roi={nba_backtest_summary.get('roi'):.3f}, profit_loss={nba_backtest_summary.get('profit_loss'):.3f}")
+    else:
+        print("- backtest summary: unavailable")
+    for league in ["mlb", "nhl"]:
+        league_summary = next((s for s in sport_run_summaries if str(s.get("sport", "")).lower() == league), None)
+        if league_summary is None:
+            print(f"{league.upper()}: skipped")
+            print(f"- reason: {sport_skip_reasons.get(league, 'not selected or no usable games/signals')}")
+        else:
+            print(f"{league.upper()}: ran")
+            print(f"- games processed: {league_summary.get('games_processed')}")
+            print(f"- candidates: {league_summary.get('candidates_generated')}")
+    print("NFL: skipped because out of season / no games")
 
     recommendations_df = pd.DataFrame(final_bets_records)
     recommendations_df = recommendations_df.reindex(columns=RECOMMENDATION_COLUMNS)

@@ -58,6 +58,12 @@ def _merge_nhl_team_stats(df: pd.DataFrame, nhl_team_stats: pd.DataFrame) -> pd.
     away_matches = out["away_team_norm"].isin(stats["team_norm"]).sum()
     print(f"[MERGE DEBUG] Home matches: {home_matches}/{len(out)}")
     print(f"[MERGE DEBUG] Away matches: {away_matches}/{len(out)}")
+    unmatched_home = sorted(set(out["home_team_norm"]) - set(stats["team_norm"]))
+    unmatched_away = sorted(set(out["away_team_norm"]) - set(stats["team_norm"]))
+    if unmatched_home:
+        print("[NHL UNMATCHED HOME TEAMS]", unmatched_home[:20])
+    if unmatched_away:
+        print("[NHL UNMATCHED AWAY TEAMS]", unmatched_away[:20])
 
     out = out.merge(
         stats.add_suffix("_home"),
@@ -123,25 +129,37 @@ def build_nhl_diff_features(df: pd.DataFrame) -> pd.DataFrame:
         out["xgf_home"].notna().any() or out["xgf_away"].notna().any()
     )
 
-    out["goalie_save_home"] = pd.to_numeric(
-        out.get("goalie_save_home", out.get("goalie_save_strength_home", 0.905)),
-        errors="coerce",
-    )
-    out["goalie_save_away"] = pd.to_numeric(
-        out.get("goalie_save_away", out.get("goalie_save_strength_away", 0.905)),
-        errors="coerce",
-    )
+    goalie_home_source = out.get("goalie_save_home", out.get("goalie_save_strength_home", pd.Series(0.905, index=out.index, dtype=float)))
+    goalie_away_source = out.get("goalie_save_away", out.get("goalie_save_strength_away", pd.Series(0.905, index=out.index, dtype=float)))
+    if not isinstance(goalie_home_source, pd.Series):
+        goalie_home_source = pd.Series(goalie_home_source, index=out.index, dtype=float)
+    if not isinstance(goalie_away_source, pd.Series):
+        goalie_away_source = pd.Series(goalie_away_source, index=out.index, dtype=float)
+    out["goalie_save_home"] = pd.to_numeric(goalie_home_source, errors="coerce").fillna(0.905)
+    out["goalie_save_away"] = pd.to_numeric(goalie_away_source, errors="coerce").fillna(0.905)
     out["goalie_save_strength_diff"] = out["goalie_save_home"].fillna(0) - out["goalie_save_away"].fillna(0)
     out["goalie_diff"] = out["goalie_save_strength_diff"] if goalie_has_data else out["goalie_save_strength_diff"]
 
-    out["special_teams_diff"] = pd.to_numeric(out.get("special_teams_efficiency_home", 0), errors="coerce").fillna(0) - pd.to_numeric(
-        out.get("special_teams_efficiency_away", 0), errors="coerce"
+    special_home = out.get("special_teams_efficiency_home", pd.Series(0.0, index=out.index, dtype=float))
+    special_away = out.get("special_teams_efficiency_away", pd.Series(0.0, index=out.index, dtype=float))
+    if not isinstance(special_home, pd.Series):
+        special_home = pd.Series(special_home, index=out.index, dtype=float)
+    if not isinstance(special_away, pd.Series):
+        special_away = pd.Series(special_away, index=out.index, dtype=float)
+    out["special_teams_diff"] = pd.to_numeric(special_home, errors="coerce").fillna(0) - pd.to_numeric(
+        special_away, errors="coerce"
     ).fillna(0)
     if not special_teams_has_data:
         out["special_teams_diff"] = out["special_teams_diff"].fillna(0)
 
-    out["xgf_diff"] = pd.to_numeric(out.get("xgf_home", 0), errors="coerce").fillna(0) - pd.to_numeric(
-        out.get("xgf_away", 0), errors="coerce"
+    xgf_home = out.get("xgf_home", pd.Series(0.0, index=out.index, dtype=float))
+    xgf_away = out.get("xgf_away", pd.Series(0.0, index=out.index, dtype=float))
+    if not isinstance(xgf_home, pd.Series):
+        xgf_home = pd.Series(xgf_home, index=out.index, dtype=float)
+    if not isinstance(xgf_away, pd.Series):
+        xgf_away = pd.Series(xgf_away, index=out.index, dtype=float)
+    out["xgf_diff"] = pd.to_numeric(xgf_home, errors="coerce").fillna(0) - pd.to_numeric(
+        xgf_away, errors="coerce"
     ).fillna(0)
     if not xgf_has_data:
         out["xgf_diff"] = out["xgf_diff"].fillna(0)
