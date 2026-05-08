@@ -27,6 +27,18 @@ ROOT = Path(__file__).resolve().parents[1] / "data"
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_SPORTS = ("nba", "nfl", "nhl", "mlb", "soccer")
 OPTIONAL_SPORTS = {"mlb", "soccer"}
+_PRINTED_MISSING_COLUMN_WARNINGS: set[tuple[str, tuple[str, ...]]] = set()
+
+
+def _print_missing_columns_once(sport: str, missing: list[str]) -> None:
+    if not missing:
+        return
+    key = (sport.upper(), tuple(sorted(missing)))
+    debug_enabled = os.getenv("SPORTS_BETTING_DEBUG", "").lower() in {"1", "true", "yes", "debug"}
+    if key in _PRINTED_MISSING_COLUMN_WARNINGS and not debug_enabled:
+        return
+    _PRINTED_MISSING_COLUMN_WARNINGS.add(key)
+    print(f"[{sport.upper()}] ⚠️ Missing columns: {missing}")
 ALLOW_MINIMAL_DATASET = True
 REQUIRED_DEFAULT_COLUMNS = [
     "home_cover",
@@ -368,8 +380,7 @@ def load_historical_dataset(sport: str) -> pd.DataFrame:
     df = pd.read_csv(hist_path)
     required_columns = required_historical_columns(sport)
     missing = [col for col in required_columns if col not in df.columns]
-    if missing:
-        print(f"[{sport.upper()}] ⚠️ Missing columns: {missing}")
+    _print_missing_columns_once(sport, missing)
     if missing:
         filler_df = pd.DataFrame(0, index=df.index, columns=missing)
         df = pd.concat([df, filler_df], axis=1)
@@ -386,8 +397,8 @@ def load_nba_historical_dataset() -> pd.DataFrame:
     df = pd.read_csv(hist_path)
     required_columns = required_historical_columns("nba")
     missing = [col for col in required_columns if col not in df.columns]
+    _print_missing_columns_once("nba", missing)
     if missing:
-        print(f"[NBA] ⚠️ Missing columns: {missing}")
         filler_df = pd.DataFrame(0, index=df.index, columns=missing)
         df = pd.concat([df, filler_df], axis=1)
     df = ensure_required_columns(df)
@@ -464,7 +475,7 @@ def validate_historical_requirements(
             missing_cols = [col for col in required_cols if col not in raw_df.columns]
             missing_columns = sorted(set(missing_cols))
             if missing_columns:
-                print(f"[{sport.upper()}] ⚠️ Missing columns: {missing_columns}")
+                _print_missing_columns_once(sport, missing_columns)
 
     if warnings:
         for warning in warnings:
@@ -765,8 +776,7 @@ def load_historical_and_daily(sport: str, today_only: bool = True) -> tuple[pd.D
     if not historical.empty:
         required_columns = required_historical_columns(sport)
         missing = [col for col in required_columns if col not in historical.columns]
-        if missing:
-            print(f"[{sport.upper()}] ⚠️ Missing columns: {missing}")
+        _print_missing_columns_once(sport, missing)
         missing_cols = [col for col in required_columns if col not in historical.columns]
         if missing_cols:
             filler = pd.DataFrame(0, index=historical.index, columns=missing_cols)
