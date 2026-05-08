@@ -795,9 +795,31 @@ def _nhl_schedule_dates() -> list[str]:
 
 
 def _extract_goalie_name_from_payload(payload: object, side: str) -> str:
-    """Best-effort extraction for NHL API goalie fields across schema variants."""
-    wanted_side = str(side or "").lower()
+    """Best-effort extraction for NHL API goalie fields scoped to one team side.
+
+    Some NHL payload variants expose goalie fields in nested home/away branches,
+    while others may expose them under keys such as ``homeGoalie``.  The parser
+    must never use an unscoped goalie candidate from the full game payload,
+    because that can assign the first parsed goalie to both teams in a matchup.
+    """
+    wanted_side = str(side or "").lower().strip()
+    if wanted_side not in {"home", "away"}:
+        return ""
+    opposite_side = "away" if wanted_side == "home" else "home"
     candidates: list[str] = []
+
+    def path_matches_side(path: tuple[str, ...]) -> bool:
+        path_parts = [str(part).lower() for part in path]
+        has_wanted = any(wanted_side in part for part in path_parts)
+        has_opposite = any(opposite_side in part for part in path_parts)
+        return has_wanted and not has_opposite
+
+    def append_candidate(display: str, path: tuple[str, ...]) -> None:
+        if not path_matches_side(path):
+            return
+        cleaned = str(display or "").strip()
+        if cleaned and cleaned.lower() not in {"home", "away"}:
+            candidates.append(cleaned)
 
     def walk(value: object, path: tuple[str, ...] = ()) -> None:
         if isinstance(value, dict):
@@ -805,24 +827,21 @@ def _extract_goalie_name_from_payload(payload: object, side: str) -> str:
             path_text = " ".join(path).lower()
             if "goalie" in path_text or "startinggoalie" in path_text or "probablegoalie" in path_text:
                 display = _extract_nhl_display_value(value.get("name") or value.get("fullName") or value.get("displayName"))
-                if display:
-                    candidates.append(display)
+                append_candidate(display, path)
             for goalie_key in ("startingGoalie", "probableGoalie", "confirmedGoalie", "goalie"):
                 actual = lower_keys.get(goalie_key.lower())
                 if actual is not None:
+                    child_path = path + (goalie_key,)
                     display = _extract_nhl_display_value(value.get(actual))
                     if display and not isinstance(value.get(actual), (dict, list)):
-                        candidates.append(display)
-                    walk(value.get(actual), path + (goalie_key,))
+                        append_candidate(display, child_path)
+                    walk(value.get(actual), child_path)
             for key, child in value.items():
                 walk(child, path + (str(key),))
         elif isinstance(value, list):
             for child in value:
                 walk(child, path)
 
-    team_payload = payload.get(f"{wanted_side}Team") if isinstance(payload, dict) else None
-    if team_payload:
-        walk(team_payload, (wanted_side, "team"))
     walk(payload, ())
     return next((name for name in candidates if name and name.lower() not in {"home", "away"}), "")
 
@@ -1402,6 +1421,8 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
 
         home_rows = df["home_team_norm"].map(_side_goalie_value)
         away_rows = df["away_team_norm"].map(_side_goalie_value)
+        df["home_team_key"] = df["home_team_norm"]
+        df["away_team_key"] = df["away_team_norm"]
         df["goalie_save_home"] = home_rows.map(lambda item: item["save_pct"]).astype(float)
         df["goalie_save_away"] = away_rows.map(lambda item: item["save_pct"]).astype(float)
         df["goalie_home"] = home_rows.map(lambda item: item["goalie"])
@@ -1425,16 +1446,17 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         df["goalie_match_source_home"] = home_rows.map(lambda item: item["match_source"])
         df["goalie_match_source_away"] = away_rows.map(lambda item: item["match_source"])
 
-        different_teams = df["home_team"].astype(str).ne(df["away_team"].astype(str))
+        different_team_keys = df["home_team_key"].astype(str).ne(df["away_team_key"].astype(str))
         same_goalie_mask = (
             df["goalie_home"].astype(str).str.strip().ne("")
             & df["goalie_home"].astype(str).str.strip().eq(df["goalie_away"].astype(str).str.strip())
-            & different_teams
+            & different_team_keys
         )
+        df["same_goalie_flag"] = same_goalie_mask
         same_key_mask = (
             df["goalie_home_team_key_used"].astype(str).str.strip().ne("")
             & df["goalie_home_team_key_used"].astype(str).str.strip().eq(df["goalie_away_team_key_used"].astype(str).str.strip())
-            & different_teams
+            & different_team_keys
         )
         invalid_goalie_mask = same_goalie_mask | same_key_mask
         invalid_goalie_assignments = int(invalid_goalie_mask.sum())
@@ -1443,6 +1465,19 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                 f"[NHL GOALIE WARNING] {invalid_goalie_assignments} games had invalid same-goalie "
                 "or same-team-key assignments; using neutral goalie defaults for those games"
             )
+            invalid_columns = [
+                "home_team",
+                "away_team",
+                "home_team_key",
+                "away_team_key",
+                "goalie_home",
+                "goalie_away",
+                "goalie_home_source",
+                "goalie_away_source",
+                "same_goalie_flag",
+            ]
+            print("[NHL GOALIE INVALID ASSIGNMENTS]")
+            print(df.loc[invalid_goalie_mask, invalid_columns].to_string(index=False))
             df.loc[invalid_goalie_mask, ["goalie_save_home", "goalie_save_away"]] = NHL_NEUTRAL_GOALIE_SAVE_PCT
             df.loc[invalid_goalie_mask, ["goalie_home", "goalie_away"]] = ""
             df.loc[
@@ -1504,10 +1539,13 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
         goalie_sample_columns = [
             "home_team",
             "away_team",
+            "home_team_key",
+            "away_team_key",
             "goalie_home",
             "goalie_away",
             "goalie_home_source",
             "goalie_away_source",
+            "same_goalie_flag",
             "goalie_home_team_key_used",
             "goalie_away_team_key_used",
             "parsed_goalie_name_home",

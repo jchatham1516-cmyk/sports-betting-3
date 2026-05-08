@@ -131,3 +131,28 @@ def test_nhl_duplicate_goalie_assignment_is_invalidated(monkeypatch):
     assert out.loc[0, "goalie_away_source"] == "neutral_invalid"
     assert out.loc[0, "goalie_coverage_pct"] == pytest.approx(0.0)
     assert out.loc[0, "goalie_data_quality_status"] == "severe"
+
+
+def test_nhl_goalie_payload_extractor_keeps_home_and_away_separate():
+    payload = {
+        "homeTeam": {"name": {"default": "Buffalo Sabres"}},
+        "awayTeam": {"name": {"default": "Montreal Canadiens"}},
+        "matchup": {
+            "homeGoalie": {"name": {"default": "Alex Lyon"}},
+            "awayGoalie": {"name": {"default": "Sam Montembeault"}},
+        },
+    }
+
+    assert feature_enrichment._extract_goalie_name_from_payload(payload, "home") == "Alex Lyon"
+    assert feature_enrichment._extract_goalie_name_from_payload(payload, "away") == "Sam Montembeault"
+
+
+def test_nhl_goalie_payload_extractor_ignores_unscoped_goalie_candidate():
+    payload = {
+        "homeTeam": {"name": {"default": "Buffalo Sabres"}},
+        "awayTeam": {"name": {"default": "Montreal Canadiens"}},
+        "goalie": {"name": {"default": "Alex Lyon"}},
+    }
+
+    assert feature_enrichment._extract_goalie_name_from_payload(payload, "home") == ""
+    assert feature_enrichment._extract_goalie_name_from_payload(payload, "away") == ""
