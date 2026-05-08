@@ -35,6 +35,13 @@ def _mlb_quality_from_real_coverage(real_coverage_pct: float) -> str:
     return "normal"
 
 
+def safe_date(value):
+    """Return a date for datetime-like values without calling .date() on date objects."""
+    if hasattr(value, "date") and not isinstance(value, date):
+        return value.date()
+    return value
+
+
 def _safe_read_csv(path: Path) -> pd.DataFrame | None:
     return pd.read_csv(path) if path.exists() else None
 
@@ -551,12 +558,10 @@ def fetch_mlb_probable_pitchers(target_date: date | datetime | str | None = None
 
     if target_date is None:
         game_date = datetime.now(UTC).date()
-    elif isinstance(target_date, datetime):
-        game_date = target_date.date()
-    elif isinstance(target_date, date):
-        game_date = target_date
+    elif isinstance(target_date, (datetime, date)):
+        game_date = safe_date(target_date)
     else:
-        game_date = datetime.fromisoformat(str(target_date)).date()
+        game_date = safe_date(datetime.fromisoformat(str(target_date)))
 
     rows: list[dict[str, str]] = []
     date_token = game_date.strftime("%Y/%m/%d")
@@ -614,9 +619,9 @@ def _extract_nhl_team_display_name(team_payload: dict) -> str:
 def _nhl_schedule_dates() -> list[str]:
     today = date.today()
     return [
-        today.isoformat(),
-        (today + pd.Timedelta(days=1)).date().isoformat(),
-        (today - pd.Timedelta(days=1)).date().isoformat(),
+        safe_date(today).isoformat(),
+        safe_date(today + pd.Timedelta(days=1)).isoformat(),
+        safe_date(today - pd.Timedelta(days=1)).isoformat(),
     ]
 
 

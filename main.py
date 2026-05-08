@@ -749,7 +749,9 @@ def choose_model(sport: str):
 
 
 def run_mlb(historical: pd.DataFrame, daily: pd.DataFrame) -> list[dict]:
-    return run_mlb_pipeline(historical_df=historical, daily_df=daily)
+    candidates = run_mlb_pipeline(historical_df=historical, daily_df=daily)
+    run_mlb.last_quality = getattr(run_mlb_pipeline, "last_quality", {})
+    return candidates
 
 
 def _american_to_decimal(odds: int) -> float:
@@ -780,6 +782,34 @@ def _first_existing_column(frame: pd.DataFrame, columns: list[str], default: flo
         if column in frame.columns:
             return pd.to_numeric(frame[column], errors="coerce")
     return pd.Series(np.full(len(frame), default), index=frame.index, dtype=float)
+
+
+def _first_valid_pitcher_coverage(source: pd.DataFrame | list[dict] | dict | None) -> float:
+    """Read MLB pitcher coverage using the canonical priority order."""
+    columns = ("real_pitcher_coverage_pct", "mlb_pitcher_coverage_pct", "pitcher_coverage_pct")
+    if source is None:
+        return 0.0
+    if isinstance(source, dict):
+        for column in columns:
+            if column not in source:
+                continue
+            value = pd.to_numeric(pd.Series([source.get(column)]), errors="coerce").dropna()
+            if not value.empty and float(value.iloc[0]) > 0:
+                return float(value.iloc[0])
+        return 0.0
+    frame = pd.DataFrame(source) if isinstance(source, list) else source
+    if frame is None or frame.empty:
+        return 0.0
+    for column in columns:
+        if column not in frame.columns:
+            continue
+        values = pd.to_numeric(frame[column], errors="coerce").dropna()
+        positive_values = values[values.gt(0)]
+        if not positive_values.empty:
+            return float(positive_values.max())
+        if not values.empty:
+            return float(values.max())
+    return 0.0
 
 
 def train_runtime_home_win_model(historical_df: pd.DataFrame, sport_name: str):
@@ -1673,12 +1703,21 @@ def run_daily_pipeline(
             if sport_clean == "mlb":
                 sport_candidates = run_mlb(historical=historical, daily=daily)
                 prebuilt_candidates.extend(sport_candidates)
+                mlb_quality = getattr(run_mlb, "last_quality", {}) or {}
+                mlb_pitcher_coverage = (
+                    float(mlb_quality.get("real_pitcher_coverage_pct", 0.0))
+                    or _first_valid_pitcher_coverage(sport_candidates)
+                    or _first_valid_pitcher_coverage(daily)
+                )
                 sport_run_summaries.append(
                     {
                         "sport": sport_clean,
-                        "games_processed": len(daily),
-                        "candidates_generated": len(sport_candidates),
-                        "pitcher_coverage_pct": float(pd.to_numeric(daily.get("real_pitcher_coverage_pct", daily.get("mlb_pitcher_coverage_pct", pd.Series(0.0, index=daily.index))), errors="coerce").fillna(0.0).max()) if len(daily) else 0.0,
+                        "games_processed": int(mlb_quality.get("unique_games", len(daily))),
+                        "candidates_generated": int(mlb_quality.get("candidates", len(sport_candidates))),
+                        "real_pitcher_coverage_pct": mlb_pitcher_coverage,
+                        "mlb_pitcher_coverage_pct": mlb_pitcher_coverage,
+                        "pitcher_coverage_pct": mlb_pitcher_coverage,
+                        "data_quality_status": str(mlb_quality.get("data_quality_status", daily.get("data_quality_status", pd.Series("normal", index=daily.index)).iloc[0] if len(daily) and "data_quality_status" in daily.columns else "normal")),
                     }
                 )
                 print(f"✅ LOOP END sport={sport}")
@@ -2719,8 +2758,15 @@ Final bets: {int(final_bets_by_sport.get(sport_name, 0))}
         print("MLB: ran")
         print(f"- games processed: {mlb_summary.get('games_processed')}")
         print(f"- candidates: {mlb_summary.get('candidates_generated')}")
-        print(f"- pitcher coverage pct: {float(mlb_summary.get('pitcher_coverage_pct', 0.0)):.1f}")
+        mlb_final_coverage = _first_valid_pitcher_coverage(mlb_summary)
+        print(f"- pitcher coverage pct: {mlb_final_coverage:.1f}")
         print(f"- final bets: {int(final_bets_by_sport.get('mlb', 0))}")
+        print("[MLB FINAL QUALITY]")
+        print(f"unique_games: {mlb_summary.get('games_processed')}")
+        print(f"candidates: {mlb_summary.get('candidates_generated')}")
+        print(f"real_pitcher_coverage_pct: {mlb_final_coverage:.1f}")
+        print(f"data_quality_status: {mlb_summary.get('data_quality_status', 'normal')}")
+        print(f"final_bets: {int(final_bets_by_sport.get('mlb', 0))}")
     print("NFL: skipped because out of season / no games")
 
     recommendations_df = pd.DataFrame(final_bets_records)

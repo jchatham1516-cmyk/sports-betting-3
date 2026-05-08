@@ -48,6 +48,71 @@ def _series_from_get(df: pd.DataFrame, column: str, default: object = 0.0) -> pd
     return series if default is None else series.fillna(default)
 
 
+def _first_valid_pct_from_frame(df: pd.DataFrame, columns: tuple[str, ...]) -> float:
+    for column in columns:
+        if column not in df.columns:
+            continue
+        values = pd.to_numeric(df[column], errors="coerce").dropna()
+        positive_values = values[values.gt(0)]
+        if not positive_values.empty:
+            return float(positive_values.max())
+        if not values.empty:
+            return float(values.max())
+    return 0.0
+
+
+def _dedupe_mlb_odds_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse duplicate MLB odds events while keeping the most complete odds row."""
+    if df.empty:
+        print("[MLB DEDUPE] before: 0 after: 0 removed: 0")
+        return df.copy()
+
+    out = df.copy()
+    before = len(out)
+    key_cols = ["home_team", "away_team", "commence_time"]
+    if "market" in out.columns:
+        key_cols.append("market")
+
+    missing = [col for col in key_cols if col not in out.columns]
+    if missing:
+        print(f"[MLB DEDUPE] before: {before} after: {before} removed: 0")
+        return out
+
+    odds_cols = [
+        col
+        for col in (
+            "home_odds",
+            "away_odds",
+            "home_moneyline",
+            "away_moneyline",
+            "home_spread_odds",
+            "away_spread_odds",
+            "over_odds",
+            "under_odds",
+            "total_line",
+            "spread",
+            "spread_line",
+        )
+        if col in out.columns
+    ]
+    if odds_cols:
+        odds_numeric = out[odds_cols].apply(pd.to_numeric, errors="coerce")
+        usable_odds = odds_numeric.notna() & odds_numeric.ne(0)
+        out["_mlb_market_completeness"] = usable_odds.sum(axis=1)
+        out["_mlb_odds_strength"] = odds_numeric.where(usable_odds).abs().sum(axis=1).fillna(0.0)
+    else:
+        out["_mlb_market_completeness"] = 0
+        out["_mlb_odds_strength"] = 0.0
+
+    sort_cols = key_cols + ["_mlb_market_completeness", "_mlb_odds_strength"]
+    out = out.sort_values(sort_cols, ascending=[True] * len(key_cols) + [False, False], kind="mergesort")
+    out = out.drop_duplicates(subset=key_cols, keep="first").drop(columns=["_mlb_market_completeness", "_mlb_odds_strength"])
+    out = out.reset_index(drop=True)
+    after = len(out)
+    print(f"[MLB DEDUPE] before: {before} after: {after} removed: {before - after}")
+    return out
+
+
 MLB_TEAM_ALIASES = {
     "oakland athletics": "athletics",
     "sacramento athletics": "athletics",
@@ -238,6 +303,7 @@ def run_mlb_pipeline(
         LOGGER.info("[MLB] Runtime model training completed from historical CSV.")
 
     frame = _ensure_daily_mlb_columns(daily_df)
+    frame = _dedupe_mlb_odds_rows(frame)
     frame = _attach_pitcher_data(frame)
 
     for col in [
@@ -350,4 +416,23 @@ def run_mlb_pipeline(
                 }
             )
 
+    unique_games = int(len(frame))
+    real_pitcher_coverage_pct = _first_valid_pct_from_frame(
+        frame,
+        ("real_pitcher_coverage_pct", "mlb_pitcher_coverage_pct", "pitcher_coverage_pct"),
+    )
+    data_quality_status = str(frame.get("data_quality_status", pd.Series("normal", index=frame.index)).iloc[0]) if len(frame) else "normal"
+    run_mlb_pipeline.last_quality = {
+        "unique_games": unique_games,
+        "candidates": len(candidates),
+        "real_pitcher_coverage_pct": real_pitcher_coverage_pct,
+        "data_quality_status": data_quality_status,
+        "final_bets": len(candidates),
+    }
+    print("[MLB FINAL QUALITY]")
+    print(f"unique_games: {unique_games}")
+    print(f"candidates: {len(candidates)}")
+    print(f"real_pitcher_coverage_pct: {real_pitcher_coverage_pct:.1f}")
+    print(f"data_quality_status: {data_quality_status}")
+    print(f"final_bets: {len(candidates)}")
     return candidates
