@@ -1717,10 +1717,9 @@ def run_daily_pipeline(
             validate_feature_signal(daily, sport_clean)
             if sport_clean == "nhl":
                 goalie_coverage = float(pd.to_numeric(daily.get("nhl_goalie_coverage_pct", pd.Series(0.0, index=daily.index)), errors="coerce").fillna(0.0).max()) if len(daily) else 0.0
-                goalie_quality = str(daily.get("goalie_data_quality_status", pd.Series("severe", index=daily.index)).astype(str).mode().iloc[0]) if len(daily) else "severe"
-                if goalie_coverage < 50.0 and goalie_quality == "severe":
-                    print("[NHL SKIP] Goalie data severe and below 50% coverage — skipping NHL")
-                    sport_skip_reasons["nhl"] = "severe goalie coverage below 50%"
+                if goalie_coverage < 50.0:
+                    print("[NHL SKIP] Real goalie coverage below 50% — skipping NHL")
+                    sport_skip_reasons["nhl"] = "real goalie coverage below 50%"
                     print(f"✅ LOOP END sport={sport}")
                     continue
             if sport_clean == "mlb":

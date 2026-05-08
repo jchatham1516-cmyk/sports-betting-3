@@ -82,6 +82,30 @@ def test_nhl_goalie_initial_last_matches_unique_stat_record(monkeypatch):
     assert out.loc[0, "real_goalie_coverage_pct"] == pytest.approx(100.0)
 
 
+def test_nhl_goalie_initial_last_matches_required_examples():
+    records = [
+        {"goalie": "Alex Lyon", "save_pct": 0.913},
+        {"goalie": "Frederik Andersen", "save_pct": 0.907},
+        {"goalie": "Filip Gustavsson", "save_pct": 0.914},
+        {"goalie": "Lukas Dostal", "save_pct": 0.902},
+    ]
+
+    examples = {
+        "A. Lyon": ("Alex Lyon", 0.913),
+        "F. Andersen": ("Frederik Andersen", 0.907),
+        "F. Gustavsson": ("Filip Gustavsson", 0.914),
+        "L. Dostál": ("Lukas Dostal", 0.902),
+    }
+
+    for parsed_name, (expected_name, expected_save_pct) in examples.items():
+        match = feature_enrichment._match_goalie_stat(parsed_name, records, records)
+
+        assert match is not None
+        assert match["goalie"] == expected_name
+        assert match["save_pct"] == pytest.approx(expected_save_pct)
+        assert match["match_source"].endswith("initial_last")
+
+
 def test_nhl_diff_features_add_required_goalie_columns_for_neutral_fallback():
     out = build_nhl_diff_features(pd.DataFrame([{"home_team": "A", "away_team": "B"}]))
 
