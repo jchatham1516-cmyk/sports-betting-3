@@ -26,3 +26,31 @@ def test_build_mlb_features_computes_pitcher_diff():
 
 def test_pitcher_diff_is_in_required_runtime_features():
     assert "pitcher_diff" in MLB_REQUIRED_FEATURES
+
+
+def test_starter_ratings_are_created_from_pitcher_era():
+    frame = pd.DataFrame(
+        [
+            {
+                "pitcher_era_home": 2.95,
+                "pitcher_era_away": 3.61,
+                "starter_rating_home": None,
+                "starter_rating_away": 0,
+            }
+        ]
+    )
+    out = build_mlb_features(frame)
+    assert out.loc[0, "starter_rating_home"] == pytest.approx(70.5)
+    assert out.loc[0, "starter_rating_away"] == pytest.approx(63.9)
+    assert out.loc[0, "starter_rating_diff"] == pytest.approx(6.6)
+
+
+def test_pitcher_era_rating_is_clamped():
+    frame = pd.DataFrame(
+        [
+            {"pitcher_era_home": 0.50, "pitcher_era_away": 8.00},
+        ]
+    )
+    out = build_mlb_features(frame)
+    assert out.loc[0, "starter_rating_home"] == pytest.approx(90.0)
+    assert out.loc[0, "starter_rating_away"] == pytest.approx(40.0)

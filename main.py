@@ -1624,14 +1624,20 @@ def run_daily_pipeline(
             if sport_clean == "mlb":
                 pitcher_signal = pd.to_numeric(daily.get("pitcher_diff", pd.Series(0.0, index=daily.index)), errors="coerce").fillna(0.0).abs().sum()
                 starter_signal = pd.to_numeric(daily.get("starter_rating_diff", pd.Series(0.0, index=daily.index)), errors="coerce").fillna(0.0).abs().sum()
-                if pitcher_signal == 0 or starter_signal == 0:
+                pitcher_coverage = float(pd.to_numeric(daily.get("mlb_pitcher_coverage_pct", daily.get("pitcher_coverage_pct", pd.Series(0.0, index=daily.index))), errors="coerce").fillna(0.0).max()) if len(daily) else 0.0
+                if pitcher_coverage <= 0.0:
+                    print("[MLB SKIP] Pitcher coverage is 0%; no usable ERA signal")
+                    sport_skip_reasons["mlb"] = "pitcher coverage is 0%"
+                    print(f"✅ LOOP END sport={sport}")
+                    continue
+                if pitcher_signal == 0 and starter_signal == 0:
                     print(f"[MLB SKIP] Required starter/pitcher signal unavailable — pitcher_diff={pitcher_signal:.3f}, starter_rating_diff={starter_signal:.3f}")
                     sport_skip_reasons["mlb"] = "starter/pitcher signal unavailable"
                     print(f"✅ LOOP END sport={sport}")
                     continue
             if "starter_rating_diff" in daily.columns:
                 starter_signal = pd.to_numeric(daily["starter_rating_diff"], errors="coerce").fillna(0.0).abs().sum()
-                if starter_signal == 0:
+                if starter_signal == 0 and sport_clean != "mlb":
                     print("🚨 NO STARTER SIGNAL — SKIPPING SPORT")
                     sport_skip_reasons[sport_clean] = "starter signal unavailable"
                     print(f"✅ LOOP END sport={sport}")
@@ -2479,6 +2485,35 @@ def run_daily_pipeline(
 
         final_bets = apply_nba_tier_filters(final_bets)
 
+        if "sport" in final_bets.columns and not final_bets.empty:
+            mlb_mask = final_bets["sport"].astype(str).str.lower() == "mlb"
+            if mlb_mask.any():
+                mlb_odds = pd.to_numeric(final_bets.loc[mlb_mask, "odds"], errors="coerce") if "odds" in final_bets.columns else pd.Series(np.nan, index=final_bets.index[mlb_mask])
+                mlb_model_prob = pd.to_numeric(final_bets.loc[mlb_mask, "model_probability"], errors="coerce") if "model_probability" in final_bets.columns else pd.Series(np.nan, index=final_bets.index[mlb_mask])
+                mlb_market_prob = pd.to_numeric(final_bets.loc[mlb_mask, "market_probability"], errors="coerce") if "market_probability" in final_bets.columns else pd.Series(np.nan, index=final_bets.index[mlb_mask])
+                mlb_ev = pd.to_numeric(final_bets.loc[mlb_mask, "expected_value"], errors="coerce") if "expected_value" in final_bets.columns else pd.Series(np.nan, index=final_bets.index[mlb_mask])
+                mlb_coverage = pd.to_numeric(
+                    final_bets.loc[mlb_mask, "mlb_pitcher_coverage_pct"] if "mlb_pitcher_coverage_pct" in final_bets.columns else final_bets.loc[mlb_mask, "pitcher_coverage_pct"] if "pitcher_coverage_pct" in final_bets.columns else pd.Series(0.0, index=final_bets.index[mlb_mask]),
+                    errors="coerce",
+                ).fillna(0.0)
+                mlb_pitcher_signal = pd.to_numeric(final_bets.loc[mlb_mask, "pitcher_diff"] if "pitcher_diff" in final_bets.columns else pd.Series(0.0, index=final_bets.index[mlb_mask]), errors="coerce").fillna(0.0).abs()
+                mlb_starter_signal = pd.to_numeric(final_bets.loc[mlb_mask, "starter_rating_diff"] if "starter_rating_diff" in final_bets.columns else pd.Series(0.0, index=final_bets.index[mlb_mask]), errors="coerce").fillna(0.0).abs()
+                mlb_valid = (
+                    mlb_odds.notna()
+                    & mlb_odds.ne(0)
+                    & mlb_odds.gt(-300)
+                    & mlb_odds.lt(300)
+                    & mlb_model_prob.notna()
+                    & mlb_market_prob.notna()
+                    & mlb_ev.notna()
+                    & mlb_coverage.gt(0)
+                    & (mlb_pitcher_signal.gt(0) | mlb_starter_signal.gt(0))
+                )
+                invalid_mlb_count = int((~mlb_valid).sum())
+                if invalid_mlb_count:
+                    print(f"[MLB FINAL SAFETY] Removing {invalid_mlb_count} MLB bets without real odds/probabilities/EV/pitcher coverage/signal")
+                    final_bets = final_bets.loc[~mlb_mask | mlb_valid.reindex(final_bets.index, fill_value=False)].copy()
+
         if "sport" in final_bets.columns:
             final_bets = (
                 final_bets
@@ -2495,19 +2530,24 @@ def run_daily_pipeline(
 
     def assign_units(row):
         if str(row.get("sport", "")).lower() == "nba" and pd.notna(row.get("units")):
-            return float(row.get("units"))
-        tier = row.get("bet_tier", "")
-        if tier == "Strong":
-            return 1.0
-        if tier == "Standard":
-            return 0.5
-        if tier == "Relaxed":
-            return 0.25
-        if tier == "Tier A":
-            return 2.0
-        if tier == "Tier B":
-            return 1.5
-        return 1.0
+            units = float(row.get("units"))
+        else:
+            tier = row.get("bet_tier", "")
+            if tier == "Strong":
+                units = 1.0
+            elif tier == "Standard":
+                units = 0.5
+            elif tier == "Relaxed":
+                units = 0.25
+            elif tier == "Tier A":
+                units = 2.0
+            elif tier == "Tier B":
+                units = 1.5
+            else:
+                units = 1.0
+        if str(row.get("sport", "")).lower() == "mlb" and "degraded" in str(row.get("data_quality_status", "")).lower():
+            units = min(units * 0.5, 0.25)
+        return units
 
     if not final_bets.empty and "expected_value" in final_bets.columns:
         final_bets["units"] = final_bets.apply(assign_units, axis=1)
