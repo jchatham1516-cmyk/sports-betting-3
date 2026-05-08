@@ -17,6 +17,24 @@ from .model import MLBModelBundle, predict_mlb_model, save_mlb_model_bundle, tra
 
 LOGGER = logging.getLogger(__name__)
 
+DEFAULT_MLB_ERA = 4.20
+MLB_REAL_ERA_NORMAL_THRESHOLD = 50.0
+MLB_REAL_ERA_SEVERE_THRESHOLD = 25.0
+
+
+def _is_non_default_era(series: pd.Series) -> pd.Series:
+    era = pd.to_numeric(series, errors="coerce")
+    return era.notna() & ~np.isclose(era, DEFAULT_MLB_ERA)
+
+
+def _mlb_quality_from_real_coverage(real_coverage_pct: float) -> str:
+    if real_coverage_pct < MLB_REAL_ERA_SEVERE_THRESHOLD:
+        return "severe"
+    if real_coverage_pct < MLB_REAL_ERA_NORMAL_THRESHOLD:
+        return "degraded"
+    return "normal"
+
+
 
 def _safe_fillna(value: object, default: float) -> object:
     if isinstance(value, pd.Series):
@@ -90,29 +108,48 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
 
     existing_home_era = pd.to_numeric(out.get("pitcher_era_home", pd.Series(np.nan, index=out.index)), errors="coerce").replace(0, np.nan)
     existing_away_era = pd.to_numeric(out.get("pitcher_era_away", pd.Series(np.nan, index=out.index)), errors="coerce").replace(0, np.nan)
-    out["pitcher_era_home"] = home_pitcher_keys.map(era_map)
-    out["pitcher_era_away"] = away_pitcher_keys.map(era_map)
+    mapped_home_era = pd.to_numeric(home_pitcher_keys.map(era_map), errors="coerce")
+    mapped_away_era = pd.to_numeric(away_pitcher_keys.map(era_map), errors="coerce")
+    real_home_from_map = home_pitcher_keys.ne("") & mapped_home_era.notna() & _is_non_default_era(mapped_home_era)
+    real_away_from_map = away_pitcher_keys.ne("") & mapped_away_era.notna() & _is_non_default_era(mapped_away_era)
 
-    out["pitcher_era_home"] = pd.to_numeric(out["pitcher_era_home"], errors="coerce").fillna(existing_home_era)
-    out["pitcher_era_away"] = pd.to_numeric(out["pitcher_era_away"], errors="coerce").fillna(existing_away_era)
+    out["pitcher_era_home"] = mapped_home_era.fillna(existing_home_era)
+    out["pitcher_era_away"] = mapped_away_era.fillna(existing_away_era)
 
     out["pitcher_era_home"] = out["pitcher_era_home"].replace([0, np.inf, -np.inf], np.nan)
     out["pitcher_era_away"] = out["pitcher_era_away"].replace([0, np.inf, -np.inf], np.nan)
 
-    total_games = int(len(out))
-    both_era_count = int((out["pitcher_era_home"].notna() & out["pitcher_era_away"].notna()).sum())
-    pitcher_coverage_pct = (both_era_count / total_games * 100.0) if total_games else 0.0
-    out["mlb_pitcher_coverage_pct"] = pitcher_coverage_pct
-    out["pitcher_coverage_pct"] = pitcher_coverage_pct
-    out["data_quality_status"] = "degraded" if pitcher_coverage_pct < 50.0 else "normal"
-    print(f"[MLB PITCHER COVERAGE] both ERAs: {both_era_count}/{total_games} ({pitcher_coverage_pct:.1f}%)")
-    print(f"[MLB DATA QUALITY] {out['data_quality_status'].iloc[0] if len(out) else 'degraded'}")
+    out["pitcher_era_home_is_real"] = real_home_from_map & out["pitcher_era_home"].notna() & _is_non_default_era(out["pitcher_era_home"])
+    out["pitcher_era_away_is_real"] = real_away_from_map & out["pitcher_era_away"].notna() & _is_non_default_era(out["pitcher_era_away"])
 
-    out["pitcher_era_home"] = out["pitcher_era_home"].fillna(4.20)
-    out["pitcher_era_away"] = out["pitcher_era_away"].fillna(4.20)
+    total_games = int(len(out))
+    real_home_era_count = int(out["pitcher_era_home_is_real"].sum())
+    real_away_era_count = int(out["pitcher_era_away_is_real"].sum())
+    real_both_era_count = int((out["pitcher_era_home_is_real"] & out["pitcher_era_away_is_real"]).sum())
+    real_pitcher_coverage_pct = (real_both_era_count / total_games * 100.0) if total_games else 0.0
+    out["real_home_era_count"] = real_home_era_count
+    out["real_away_era_count"] = real_away_era_count
+    out["real_both_era_count"] = real_both_era_count
+    out["real_pitcher_coverage_pct"] = real_pitcher_coverage_pct
+    out["mlb_pitcher_coverage_pct"] = real_pitcher_coverage_pct
+    out["pitcher_coverage_pct"] = real_pitcher_coverage_pct
+    out["data_quality_status"] = _mlb_quality_from_real_coverage(real_pitcher_coverage_pct)
+
+    out["pitcher_era_home"] = out["pitcher_era_home"].fillna(DEFAULT_MLB_ERA)
+    out["pitcher_era_away"] = out["pitcher_era_away"].fillna(DEFAULT_MLB_ERA)
 
     out["pitcher_era_home"] = out["pitcher_era_home"].clip(lower=1.5, upper=8.0)
     out["pitcher_era_away"] = out["pitcher_era_away"].clip(lower=1.5, upper=8.0)
+    default_era_count = int((~out["pitcher_era_home_is_real"]).sum() + (~out["pitcher_era_away_is_real"]).sum())
+    out["default_era_count"] = default_era_count
+    print("[MLB REAL PITCHER ERA COVERAGE]")
+    print("total_games:", total_games)
+    print("real both ERAs:", f"{real_both_era_count}/{total_games}")
+    print("real home ERAs:", f"{real_home_era_count}/{total_games}")
+    print("real away ERAs:", f"{real_away_era_count}/{total_games}")
+    print("default ERA count:", default_era_count)
+    print("real coverage pct:", f"{real_pitcher_coverage_pct:.1f}%")
+    print("data quality:", out["data_quality_status"].iloc[0] if len(out) else "severe")
 
     out["pitcher_era_diff"] = out["pitcher_era_away"] - out["pitcher_era_home"]
     out["pitcher_diff"] = out["pitcher_era_diff"]
@@ -120,7 +157,7 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     print(out[["pitcher_home", "pitcher_era_home"]].head(10))
     print("\n[ERA COVERAGE CHECK]")
     print("Total pitchers:", len(out))
-    print("Non-default ERA count:", (out["pitcher_era_home"] != 4.2).sum())
+    print("Non-default ERA count:", (out["pitcher_era_home"] != DEFAULT_MLB_ERA).sum())
     print(out["pitcher_diff"].describe())
     return out
 
@@ -188,7 +225,7 @@ def run_mlb_pipeline(
         "pitcher_era_home",
         "pitcher_era_away",
     ]:
-        frame[col] = frame.get(col, pd.Series(index=frame.index, dtype=float)).fillna(4.20)
+        frame[col] = frame.get(col, pd.Series(index=frame.index, dtype=float)).fillna(DEFAULT_MLB_ERA)
 
     frame["pitcher_era_diff"] = frame["pitcher_era_away"] - frame["pitcher_era_home"]
     frame["pitcher_diff"] = frame["pitcher_era_diff"]
@@ -242,8 +279,15 @@ def run_mlb_pipeline(
             "injury_impact_diff": float(row.get("injury_impact_diff", 0.0)),
             "pitcher_home": str(row.get("pitcher_home", "")),
             "pitcher_away": str(row.get("pitcher_away", "")),
-            "pitcher_era_home": float(row.get("pitcher_era_home", 4.2)),
-            "pitcher_era_away": float(row.get("pitcher_era_away", 4.2)),
+            "pitcher_era_home": float(row.get("pitcher_era_home", DEFAULT_MLB_ERA)),
+            "pitcher_era_away": float(row.get("pitcher_era_away", DEFAULT_MLB_ERA)),
+            "pitcher_era_home_is_real": bool(row.get("pitcher_era_home_is_real", False)),
+            "pitcher_era_away_is_real": bool(row.get("pitcher_era_away_is_real", False)),
+            "real_pitcher_coverage_pct": float(row.get("real_pitcher_coverage_pct", row.get("mlb_pitcher_coverage_pct", 0.0))),
+            "real_both_era_count": int(row.get("real_both_era_count", 0)),
+            "real_home_era_count": int(row.get("real_home_era_count", 0)),
+            "real_away_era_count": int(row.get("real_away_era_count", 0)),
+            "default_era_count": int(row.get("default_era_count", 0)),
             "pitcher_diff": float(row.get("pitcher_diff", 0.0)),
             "pitcher_era_diff": float(row.get("pitcher_era_diff", row.get("pitcher_diff", 0.0))),
             "data_quality_status": str(row.get("data_quality_status", "normal")),
