@@ -39,6 +39,29 @@ def _num(df: pd.DataFrame, col: str, default: float = float("nan")) -> pd.Series
     return pd.Series(default, index=df.index, dtype=float)
 
 
+def convert_pitcher_era_to_rating(era: pd.Series | float) -> pd.Series | float:
+    """Convert MLB starter ERA into a bounded starter rating."""
+    rating = 100 - (pd.to_numeric(era, errors="coerce") * 10)
+    return rating.clip(lower=40, upper=90)
+
+
+def _fill_starter_ratings_from_era(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for side in ("home", "away"):
+        rating_col = f"starter_rating_{side}"
+        era_col = f"pitcher_era_{side}"
+        if rating_col not in out.columns:
+            out[rating_col] = pd.Series(float("nan"), index=out.index, dtype=float)
+        if era_col not in out.columns:
+            continue
+        rating = pd.to_numeric(out[rating_col], errors="coerce")
+        era = pd.to_numeric(out[era_col], errors="coerce")
+        era_rating = convert_pitcher_era_to_rating(era)
+        missing_rating = rating.isna() | rating.eq(0)
+        out[rating_col] = rating.where(~(missing_rating & era.notna()), era_rating)
+    return out
+
+
 def enrich_mlb_live_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
@@ -61,6 +84,10 @@ def enrich_mlb_live_features(df: pd.DataFrame) -> pd.DataFrame:
             out.get(col, pd.Series(index=out.index, dtype=float)),
             errors="coerce",
         ).fillna(0.0)
+
+    out = _fill_starter_ratings_from_era(out)
+    if {"starter_rating_home", "starter_rating_away"}.issubset(out.columns):
+        out["starter_rating_diff"] = _num(out, "starter_rating_home", default=0.0).fillna(0.0) - _num(out, "starter_rating_away", default=0.0).fillna(0.0)
 
     print(
         "[MLB SOURCE DEBUG]",
@@ -131,8 +158,9 @@ def build_mlb_features(df: pd.DataFrame) -> pd.DataFrame:
     df["pitcher_whip_diff"] = df["pitcher_whip_away"] - df["pitcher_whip_home"]
     df["pitcher_k_rate_diff"] = df["pitcher_k_rate_home"] - df["pitcher_k_rate_away"]
 
+    df = _fill_starter_ratings_from_era(df)
     if {"starter_rating_home", "starter_rating_away"}.issubset(df.columns):
-        df["starter_rating_diff"] = _num(df, "starter_rating_home") - _num(df, "starter_rating_away")
+        df["starter_rating_diff"] = _num(df, "starter_rating_home", default=0.0).fillna(0.0) - _num(df, "starter_rating_away", default=0.0).fillna(0.0)
     else:
         df["starter_rating_diff"] = _num(df, "elo_diff")
 
