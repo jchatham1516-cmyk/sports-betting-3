@@ -48,7 +48,12 @@ from sports_betting.sports.common.team_names import normalize_team_name as share
 from sports_betting.sports.nba.model import NBAModel
 from sports_betting.sports.nba.simple_model import american_to_implied_prob
 from sports_betting.sports.nba.simple_model import FEATURE_COLUMNS as NBA_RUNTIME_FEATURE_COLUMNS
-from sports_betting.sports.nba.simple_model import train_runtime_model
+from sports_betting.sports.nba.simple_model import (
+    apply_nba_team_history_profiles,
+    get_feature_matrix,
+    print_nba_rolling_form_check,
+    train_runtime_model,
+)
 from sports_betting.sports.mlb.model import MLBModel, load_mlb_model_bundle, train_mlb_model
 from sports_betting.sports.mlb.pipeline import run_mlb_pipeline
 from sports_betting.sports.nfl.model import NFLModel
@@ -196,6 +201,29 @@ def nba_feature_health_check(df: pd.DataFrame, model=None) -> dict[str, object]:
     if degraded:
         print(f"⚠️ NBA DATA QUALITY DEGRADED: {zero_pct:.1f}% of NBA features are all zero; units will be reduced")
     return {"missing": missing, "all_zero": all_zero, "all_nan": all_nan, "zero_share": zero_share, "zero_pct": zero_pct, "degraded": degraded}
+
+
+
+def print_nba_feature_recovery_check(df: pd.DataFrame, health: dict[str, object] | None = None) -> None:
+    feature_columns = list(NBA_RUNTIME_FEATURE_COLUMNS)
+    numeric = df.reindex(columns=feature_columns, fill_value=0.0).apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    zero_pct = float(health.get("zero_pct", 0.0)) if health else (float(numeric.eq(0.0).all().mean() * 100.0) if len(feature_columns) else 0.0)
+    rest_features = ["rest_days_home", "rest_days_away", "rest_diff", "back_to_back_home", "back_to_back_away", "back_to_back_diff", "three_in_four_home", "three_in_four_away", "three_in_four_diff", "travel_fatigue_diff"]
+    form_features = ["recent_form_last5_diff", "recent_form_last10_diff", "last5_net_rating_diff", "last10_net_rating_diff", "rolling_off_rating_diff_last5", "rolling_def_rating_diff_last5"]
+    market_features = ["implied_home_prob", "market_implied_probability", "spread", "spread_abs", "spread_value_signal", "line_movement"]
+    def nonzero_count(cols: list[str]) -> int:
+        available = [col for col in cols if col in df.columns]
+        if not available:
+            return 0
+        frame = df[available].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+        return int(frame.ne(0.0).any(axis=0).sum())
+    status = "degraded" if zero_pct > 40.0 else "ok"
+    print("[NBA FEATURE RECOVERY CHECK]")
+    print(f"feature_zero_pct: {zero_pct:.1f}")
+    print(f"nonzero_rest_features: {nonzero_count(rest_features)}")
+    print(f"nonzero_form_features: {nonzero_count(form_features)}")
+    print(f"nonzero_market_features: {nonzero_count(market_features)}")
+    print(f"data_quality_status: {status}")
 
 def apply_nba_tier_filters(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "sport" not in df.columns:
@@ -948,16 +976,22 @@ def predict_runtime(model, games_df: pd.DataFrame, sport_name: str = "nba"):
     if isinstance(model, tuple) and len(model) >= 2:
         runtime_model, scaler = model
 
+    if str(sport_name or "nba").lower() == "nba":
+        df = apply_nba_team_history_profiles(df, getattr(runtime_model, "nba_team_history_profiles", {}))
+        print_nba_rolling_form_check(df)
+
     FEATURE_COLUMNS = list(getattr(runtime_model, "feature_columns", NBA_RUNTIME_FEATURE_COLUMNS))
-    X = df.copy()
-    # Keep only training features in the same order.
-    X = X.reindex(columns=FEATURE_COLUMNS, fill_value=0.0)
-    # Force numeric values to avoid strings reaching the scaler/model.
-    X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
-    X = X.select_dtypes(include=["number"])
+    X = get_feature_matrix(df, FEATURE_COLUMNS)
 
     if "implied_home_prob" in X.columns:
         X["implied_home_prob"] = X["implied_home_prob"].replace(0.0, 0.5)
+
+    print("[FEATURE ALIGNMENT]")
+    print(f"sport: {sport_label.lower()}")
+    print(f"training_features: {FEATURE_COLUMNS}")
+    print(f"prediction_features: {list(X.columns)}")
+    print(f"missing_prediction_features: {[col for col in FEATURE_COLUMNS if col not in X.columns]}")
+    print(f"extra_prediction_features: {[col for col in X.columns if col not in FEATURE_COLUMNS]}")
 
     if os.getenv("DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
         print(f"[{sport_label}] Prediction columns: {list(X.columns)}")
@@ -970,8 +1004,7 @@ def predict_runtime(model, games_df: pd.DataFrame, sport_name: str = "nba"):
         X = pd.DataFrame(scaler.transform(X), columns=FEATURE_COLUMNS, index=X.index)
 
     # Final guard: enforce exact training feature order and fill any gaps.
-    X = X.reindex(columns=FEATURE_COLUMNS, fill_value=0.0)
-    X_pred = X if hasattr(runtime_model, "feature_columns") and runtime_model.feature_columns is not None else X.values
+    X_pred = get_feature_matrix(X, FEATURE_COLUMNS)
 
     probs = runtime_model.predict_proba(X_pred)[:, 1]
     calibrator = getattr(runtime_model, "probability_calibrator", None)
@@ -1924,9 +1957,12 @@ def run_daily_pipeline(
                 print("🔥 USING RUNTIME TRAINED MODEL")
 
             if sport_clean == "nba":
+                daily = apply_nba_team_history_profiles(daily, getattr(runtime_home_win_model, "nba_team_history_profiles", {}))
+                print_nba_rolling_form_check(daily)
                 nba_health = nba_feature_health_check(daily, runtime_home_win_model)
                 injury_degraded = daily.get("injury_data_quality_status", pd.Series("normal", index=daily.index)).astype(str).str.contains("degraded", case=False, na=False).any() if len(daily) else False
                 daily["data_quality_status"] = "degraded" if (nba_health.get("degraded") or injury_degraded) else "ok"
+                print_nba_feature_recovery_check(daily, nba_health)
 
             if hasattr(model, "runtime_model") and model.runtime_model is not None:
                 print(f"[{sport_clean.upper()}] Using runtime model for predictions")
