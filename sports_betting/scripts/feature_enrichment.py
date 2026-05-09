@@ -48,6 +48,12 @@ def _safe_read_csv(path: Path) -> pd.DataFrame | None:
     return pd.read_csv(path) if path.exists() else None
 
 
+def _coalesce_numeric(df: pd.DataFrame, columns: list[str], default: float = 0.0) -> pd.Series:
+    for column in columns:
+        if column in df.columns:
+            return pd.to_numeric(df[column], errors="coerce")
+    return pd.Series(default, index=df.index, dtype="float64")
+
 def _load_historical_csv(sport_name: str) -> pd.DataFrame | None:
     return _safe_read_csv(Path(f"sports_betting/data/historical/{sport_name}_historical.csv"))
 
@@ -1026,7 +1032,31 @@ def load_nhl_goalies() -> dict[str, dict[str, float]]:
             break
     return goalies
 
+
+def _american_moneyline_to_probability_series(odds: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(odds, errors="coerce")
+    return pd.Series(
+        np.where(
+            numeric < 0,
+            (-numeric) / ((-numeric) + 100.0),
+            np.where(numeric > 0, 100.0 / (numeric + 100.0), np.nan),
+        ),
+        index=odds.index,
+        dtype="float64",
+    )
+
+
 def build_nba_team_stats(historical: pd.DataFrame) -> pd.DataFrame:
+    """Build team-level NBA inputs from the best available historical signal.
+
+    Full box-score/advanced-stat histories are preferred.  Some deployed datasets only
+    contain teams, moneylines, spreads, dates, and outcomes; in that case we derive
+    deterministic team-strength proxies from win rate, market expectation, and spread
+    rather than leaving every daily NBA stat at zero.
+    """
+    if historical is None or historical.empty or not {"home_team", "away_team"}.issubset(historical.columns):
+        return pd.DataFrame()
+
     frame = historical.copy()
 
     def norm(x: object) -> str:
@@ -1035,61 +1065,114 @@ def build_nba_team_stats(historical: pd.DataFrame) -> pd.DataFrame:
     frame["home_team_norm"] = frame["home_team"].apply(norm)
     frame["away_team_norm"] = frame["away_team"].apply(norm)
 
-    # Ensure we always derive score-based stats even when advanced columns are absent.
     score_aliases = {
         "home": ["home_score", "home_points", "pts_home", "home_pts"],
         "away": ["away_score", "away_points", "pts_away", "away_pts"],
     }
+    home_score_col = next((col for col in score_aliases["home"] if col in frame.columns), None)
+    away_score_col = next((col for col in score_aliases["away"] if col in frame.columns), None)
+    has_score_signal = home_score_col is not None and away_score_col is not None
 
-    home_col = next((col for col in score_aliases["home"] if col in frame.columns), None)
-    away_col = next((col for col in score_aliases["away"] if col in frame.columns), None)
+    if has_score_signal:
+        frame["home_score"] = pd.to_numeric(frame[home_score_col], errors="coerce")
+        frame["away_score"] = pd.to_numeric(frame[away_score_col], errors="coerce")
+    else:
+        frame["home_score"] = np.nan
+        frame["away_score"] = np.nan
 
-    home_scores = frame[home_col] if home_col else pd.Series(0.0, index=frame.index)
-    away_scores = frame[away_col] if away_col else pd.Series(0.0, index=frame.index)
-    frame["home_score"] = pd.to_numeric(home_scores, errors="coerce").fillna(0.0)
-    frame["away_score"] = pd.to_numeric(away_scores, errors="coerce").fillna(0.0)
-    frame["point_diff"] = frame["home_score"] - frame["away_score"]
+    home_moneyline = _coalesce_numeric(frame, ["home_moneyline", "closing_moneyline_home", "home_odds"], default=np.nan)
+    away_moneyline = _coalesce_numeric(frame, ["away_moneyline", "closing_moneyline_away", "away_odds"], default=np.nan)
+    spread = _coalesce_numeric(frame, ["spread", "closing_spread_home", "spread_line", "home_spread"], default=0.0)
+    home_market_prob = _american_moneyline_to_probability_series(home_moneyline).fillna(0.5)
+    away_market_prob = _american_moneyline_to_probability_series(away_moneyline).fillna(1.0 - home_market_prob)
+    home_win = _coalesce_numeric(frame, ["home_win"], default=np.nan)
+    if home_win.isna().all() and has_score_signal:
+        home_win = (frame["home_score"] > frame["away_score"]).astype(float)
+    home_win = home_win.fillna(home_market_prob)
+    away_win = 1.0 - home_win
 
-    home = (
-        frame.groupby("home_team_norm")
-        .agg(
+    # Negative home spread means the home team is favored; convert that to a
+    # home-minus-away strength proxy in points.  When scores exist, real margin wins.
+    margin_proxy = (-spread).fillna(0.0)
+    if has_score_signal:
+        score_margin = frame["home_score"] - frame["away_score"]
+        margin_proxy = score_margin.fillna(margin_proxy)
+    frame["point_diff"] = margin_proxy
+
+    # Convert market/outcome strength into NBA-scale advanced-stat proxies.  These are
+    # deterministic, bounded estimates used only when richer source columns are absent.
+    home_strength = ((home_win - 0.5) * 12.0) + ((home_market_prob - 0.5) * 8.0) + (margin_proxy * 0.25)
+    away_strength = ((away_win - 0.5) * 12.0) + ((away_market_prob - 0.5) * 8.0) - (margin_proxy * 0.25)
+    frame["derived_net_rating_home"] = home_strength.clip(-18.0, 18.0)
+    frame["derived_net_rating_away"] = away_strength.clip(-18.0, 18.0)
+    frame["derived_offensive_rating_home"] = (113.0 + frame["derived_net_rating_home"] * 0.55 + home_market_prob.sub(0.5).mul(3.0)).clip(100.0, 125.0)
+    frame["derived_offensive_rating_away"] = (113.0 + frame["derived_net_rating_away"] * 0.55 + away_market_prob.sub(0.5).mul(3.0)).clip(100.0, 125.0)
+    frame["derived_defensive_rating_home"] = (113.0 - frame["derived_net_rating_home"] * 0.45).clip(100.0, 125.0)
+    frame["derived_defensive_rating_away"] = (113.0 - frame["derived_net_rating_away"] * 0.45).clip(100.0, 125.0)
+    frame["derived_pace_home"] = (99.5 + spread.abs().fillna(0.0).clip(0, 12) * 0.08 + home_market_prob.sub(0.5).abs().mul(1.2)).clip(96.0, 103.5)
+    frame["derived_pace_away"] = (99.5 + spread.abs().fillna(0.0).clip(0, 12) * 0.08 + away_market_prob.sub(0.5).abs().mul(1.2)).clip(96.0, 103.5)
+
+    if "date" in frame.columns:
+        frame["_game_date"] = pd.to_datetime(frame["date"], errors="coerce")
+    elif "commence_time" in frame.columns:
+        frame["_game_date"] = pd.to_datetime(frame["commence_time"], errors="coerce")
+    else:
+        frame["_game_date"] = pd.NaT
+
+    records: list[pd.DataFrame] = []
+    for side, opp_side in [("home", "away"), ("away", "home")]:
+        is_home = side == "home"
+        team_records = pd.DataFrame(
             {
-                "home_score": "mean",
-                "away_score": "mean",
-                "point_diff": "mean",
+                "team_norm": frame[f"{side}_team_norm"],
+                "game_date": frame["_game_date"],
+                "points_for": frame[f"{side}_score"] if has_score_signal else np.nan,
+                "points_against": frame[f"{opp_side}_score"] if has_score_signal else np.nan,
+                "point_diff": frame["point_diff"] if is_home else -frame["point_diff"],
+                "win": home_win if is_home else away_win,
+                "market_prob": home_market_prob if is_home else away_market_prob,
+                "offensive_rating": frame[f"derived_offensive_rating_{side}"],
+                "defensive_rating": frame[f"derived_defensive_rating_{side}"],
+                "net_rating": frame[f"derived_net_rating_{side}"],
+                "pace": frame[f"derived_pace_{side}"],
             }
         )
-        .reset_index()
-        .rename(
-            columns={
-                "home_team_norm": "team_norm",
-                "home_score": "points_for",
-                "away_score": "points_against",
-            }
-        )
-    )
+        records.append(team_records)
 
-    away = (
-        frame.groupby("away_team_norm")
-        .agg(
-            {
-                "away_score": "mean",
-                "home_score": "mean",
-                "point_diff": "mean",
-            }
-        )
-        .reset_index()
-        .rename(
-            columns={
-                "away_team_norm": "team_norm",
-                "away_score": "points_for",
-                "home_score": "points_against",
-            }
-        )
-    )
+    team_games = pd.concat(records, ignore_index=True).dropna(subset=["team_norm"])
+    team_games = team_games[team_games["team_norm"].astype(str).str.len() > 0]
+    if team_games.empty:
+        return pd.DataFrame()
+    team_games = team_games.sort_values(["team_norm", "game_date"], na_position="last")
+    grouped = team_games.groupby("team_norm", group_keys=False)
+    team_games["recent_form_last5"] = grouped["win"].transform(lambda s: s.tail(5).mean())
+    team_games["recent_form_last10"] = grouped["win"].transform(lambda s: s.tail(10).mean())
+    team_games["last5_net_rating"] = grouped["net_rating"].transform(lambda s: s.tail(5).mean())
+    team_games["last10_net_rating"] = grouped["net_rating"].transform(lambda s: s.tail(10).mean())
 
-    team_stats = pd.concat([home, away], ignore_index=True)
-    team_stats = team_stats.groupby("team_norm", as_index=False).mean(numeric_only=True)
+    team_stats = team_games.groupby("team_norm", as_index=False).agg(
+        points_for=("points_for", "mean"),
+        points_against=("points_against", "mean"),
+        point_diff=("point_diff", "mean"),
+        offensive_rating=("offensive_rating", "mean"),
+        defensive_rating=("defensive_rating", "mean"),
+        net_rating=("net_rating", "mean"),
+        pace=("pace", "mean"),
+        true_shooting=("market_prob", lambda s: float(0.54 + (pd.to_numeric(s, errors="coerce").mean() - 0.5) * 0.08)),
+        effective_fg=("market_prob", lambda s: float(0.52 + (pd.to_numeric(s, errors="coerce").mean() - 0.5) * 0.07)),
+        turnover_rate=("market_prob", lambda s: float(13.5 - (pd.to_numeric(s, errors="coerce").mean() - 0.5) * 2.0)),
+        rebound_rate=("market_prob", lambda s: float(50.0 + (pd.to_numeric(s, errors="coerce").mean() - 0.5) * 4.0)),
+        free_throw_rate=("market_prob", lambda s: float(0.205 + (pd.to_numeric(s, errors="coerce").mean() - 0.5) * 0.03)),
+        recent_form=("win", "mean"),
+        recent_form_last5=("recent_form_last5", "last"),
+        recent_form_last10=("recent_form_last10", "last"),
+        last5_net_rating=("last5_net_rating", "last"),
+        last10_net_rating=("last10_net_rating", "last"),
+    )
+    if not has_score_signal:
+        # Keep points fields useful for point_diff fallback without pretending true scores exist.
+        team_stats["points_for"] = 113.0 + pd.to_numeric(team_stats["net_rating"], errors="coerce").fillna(0.0) / 2.0
+        team_stats["points_against"] = 113.0 - pd.to_numeric(team_stats["net_rating"], errors="coerce").fillna(0.0) / 2.0
     return team_stats
 
 
@@ -1152,7 +1235,7 @@ def _resolve_nba_team_stats() -> tuple[pd.DataFrame | None, str]:
     if historical_df is None:
         return None, "missing"
     derived = build_nba_team_stats(historical_df)
-    if derived is None:
+    if derived is None or derived.empty:
         return None, "historical_empty"
     return derived, "historical_derived"
 
@@ -1287,7 +1370,7 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
     sport = str(sport_name).lower()
 
     if sport == "nba":
-        from sports_betting.sports.nba.features import enrich_nba_live_features, build_nba_diff_features
+        from sports_betting.sports.nba.features import enrich_nba_live_features, build_nba_diff_features, build_nba_features
 
         fallback_point_diff = None
         if {"points_for_home", "points_against_home", "points_for_away", "points_against_away"}.issubset(df.columns):
@@ -1320,6 +1403,11 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
                 "points_for": "points_for_home",
                 "points_against": "points_against_home",
                 "point_diff": "point_diff_home",
+                "recent_form": "recent_form_home",
+                "recent_form_last5": "recent_form_last5_home",
+                "recent_form_last10": "recent_form_last10_home",
+                "last5_net_rating": "last5_net_rating_home",
+                "last10_net_rating": "last10_net_rating_home",
             }
             df = _merge_home_away_team_stats(df, team_df, mapping)
         else:
@@ -1336,6 +1424,7 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             df["defensive_rating_diff"] = -df["point_diff_diff"]
         df = enrich_nba_live_features(df, nba_team_stats=None)
         df = build_nba_diff_features(df)
+        df = build_nba_features(df)
         if fallback_point_diff is not None:
             df["point_diff_diff"] = fallback_point_diff
         elif {"points_for_home", "points_against_home", "points_for_away", "points_against_away"}.issubset(df.columns):
