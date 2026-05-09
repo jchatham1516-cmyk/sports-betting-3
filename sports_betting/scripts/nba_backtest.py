@@ -62,6 +62,18 @@ def run_nba_backtest(
     if "home_moneyline" not in df.columns:
         raise ValueError("NBA backtest requires home_moneyline or closing_moneyline_home")
 
+    df["home_moneyline"] = pd.to_numeric(df["home_moneyline"], errors="coerce")
+    df["home_win"] = pd.to_numeric(df["home_win"], errors="coerce")
+    before_clean = len(df)
+    df = df.dropna(subset=["home_moneyline", "home_win"]).copy()
+    df = df[df["home_moneyline"].ne(0)].copy()
+    skipped_rows = before_clean - len(df)
+    if skipped_rows:
+        print(f"[NBA BACKTEST] skipped {skipped_rows} rows with missing/invalid moneyline or result")
+    if df.empty:
+        raise ValueError("NBA backtest has no valid rows after dropping missing moneyline/result values")
+    df["home_win"] = df["home_win"].astype(int)
+
     if "date" in df.columns:
         df = df.assign(_date=pd.to_datetime(df["date"], errors="coerce")).sort_values(["_date"]).drop(columns=["_date"])
     split_idx = max(min_train_rows, int(len(df) * 0.8))
@@ -81,9 +93,10 @@ def run_nba_backtest(
     test_df["model_probability"] = probs
     test_df["market_probability"] = pd.to_numeric(test_df["home_moneyline"], errors="coerce").apply(american_to_implied_probability).fillna(0.5)
     test_df["edge"] = test_df["model_probability"] - test_df["market_probability"]
-    test_df["expected_value"] = [expected_value(p, int(o)) for p, o in zip(test_df["model_probability"], test_df["home_moneyline"])]
+    valid_odds = pd.to_numeric(test_df["home_moneyline"], errors="coerce").fillna(0.0)
+    test_df["expected_value"] = [expected_value(float(p), int(o)) if float(o) != 0.0 else 0.0 for p, o in zip(test_df["model_probability"], valid_odds)]
     test_df["home_win"] = pd.to_numeric(test_df["home_win"], errors="coerce").fillna(0).astype(int)
-    test_df["bet_result_units"] = [_profit(int(w), float(o)) for w, o in zip(test_df["home_win"], test_df["home_moneyline"])]
+    test_df["bet_result_units"] = [_profit(int(w), float(o)) if float(o) != 0.0 else 0.0 for w, o in zip(test_df["home_win"], valid_odds)]
     test_df["probability_bucket"] = test_df["model_probability"].apply(
         lambda v: _bucket(float(v), [(0.50, 0.55, "50-55%"), (0.55, 0.60, "55-60%"), (0.60, 0.65, "60-65%"), (0.65, 1.01, "65%+")])
     )

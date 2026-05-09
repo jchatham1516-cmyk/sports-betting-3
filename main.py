@@ -162,32 +162,40 @@ def nba_feature_health_check(df: pd.DataFrame, model=None) -> dict[str, object]:
     filled = available.fillna(0.0)
     all_zero = [col for col in feature_columns if filled[col].eq(0.0).all()]
     zero_share = (len(all_zero) / len(feature_columns)) if feature_columns else 0.0
+    zero_pct = zero_share * 100.0
     degraded = zero_share > 0.40
+    top_missing = missing[:12]
+    top_zero = all_zero[:12]
+    print("[NBA FEATURE HEALTH SUMMARY]")
+    print(f"missing_feature_count: {len(missing)}")
+    print(f"all_zero_feature_count: {len(all_zero)}")
+    print(f"all_nan_feature_count: {len(all_nan)}")
+    print(f"top_missing_features: {top_missing}")
+    print(f"top_all_zero_features: {top_zero}")
+    print(f"feature_zero_pct: {zero_pct:.1f}")
     debug_enabled = os.getenv("DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
-    print("[NBA FEATURE HEALTH]")
-    print(f"missing feature columns count: {len(missing)}")
-    print(f"all-zero feature columns count: {len(all_zero)}")
-    print(f"all-NaN feature columns count: {len(all_nan)}")
     if debug_enabled:
         print("missing feature columns:", missing)
         print("all-zero feature columns:", all_zero)
         print("all-NaN feature columns:", all_nan)
-    elif missing or all_zero or all_nan:
+    elif len(missing) > len(top_missing) or len(all_zero) > len(top_zero) or all_nan:
         print("Set DEBUG=true to print full NBA feature health column lists.")
     if model is not None and hasattr(model, "feature_importances_"):
         print("top 15 feature importances:")
         print(model.feature_importances_.head(15).to_string())
         total = float(model.feature_importances_.sum())
         if total > 0 and float(model.feature_importances_.head(3).sum() / total) > 0.75:
-            print("⚠️ NBA MODEL RELIANCE WARNING: model is relying too heavily on only 1–3 features")
+            print("⚠️ NBA MODEL RELIANCE WARNING: top three features exceed 75% importance; verify non-zero form, rating, rest/travel, market, and injury inputs above.")
     elif model is not None and hasattr(model, "coef_"):
         importances = pd.Series(np.abs(model.coef_[0]), index=feature_columns).sort_values(ascending=False)
         print("top 15 feature importances:")
         print(importances.head(15).to_string())
+        top_three = set(importances.head(3).index)
+        if {"elo_diff", "power_rating_diff"} & top_three:
+            print("⚠️ NBA MODEL RELIANCE WARNING: elo/power rating remains a top driver; inspect zero/missing features in this summary before trusting NBA units.")
     if degraded:
-        print(f"⚠️ NBA DATA QUALITY DEGRADED: {zero_share:.1%} of NBA features are all zero; units will be reduced")
-    return {"missing": missing, "all_zero": all_zero, "all_nan": all_nan, "zero_share": zero_share, "degraded": degraded}
-
+        print(f"⚠️ NBA DATA QUALITY DEGRADED: {zero_pct:.1f}% of NBA features are all zero; units will be reduced")
+    return {"missing": missing, "all_zero": all_zero, "all_nan": all_nan, "zero_share": zero_share, "zero_pct": zero_pct, "degraded": degraded}
 
 def apply_nba_tier_filters(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "sport" not in df.columns:
@@ -897,7 +905,7 @@ def train_runtime_home_win_model(historical_df: pd.DataFrame, sport_name: str):
     return model
 
 
-def predict_runtime(model, games_df: pd.DataFrame):
+def predict_runtime(model, games_df: pd.DataFrame, sport_name: str = "nba"):
     df = ensure_required_features(games_df)
     df_full = df.copy()
     if "home_moneyline" not in df.columns:
@@ -932,7 +940,8 @@ def predict_runtime(model, games_df: pd.DataFrame):
     df["spread_abs"] = df["spread"].abs()
     df["is_favorite"] = (df["home_moneyline"] < 0).astype(int)
     df["spread_value_signal"] = df["spread"] * df["implied_home_prob"]
-    print("[NBA] Using real odds for prediction")
+    sport_label = str(sport_name or "nba").upper()
+    print(f"[{sport_label}] Using real odds for prediction")
 
     runtime_model = model
     scaler = getattr(model, "scaler", None)
@@ -951,12 +960,12 @@ def predict_runtime(model, games_df: pd.DataFrame):
         X["implied_home_prob"] = X["implied_home_prob"].replace(0.0, 0.5)
 
     if os.getenv("DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
-        print(f"[NBA] Prediction columns: {list(X.columns)}")
-        print(f"[NBA] Non-numeric columns: {df.select_dtypes(exclude=['number']).columns.tolist()}")
+        print(f"[{sport_label}] Prediction columns: {list(X.columns)}")
+        print(f"[{sport_label}] Non-numeric columns: {df.select_dtypes(exclude=['number']).columns.tolist()}")
     else:
         non_numeric_count = len(df.select_dtypes(exclude=["number"]).columns)
-        print(f"[NBA] Prediction feature count: {len(X.columns)}")
-        print(f"[NBA] Non-numeric column count: {non_numeric_count} (set DEBUG=true for full lists)")
+        print(f"[{sport_label}] Prediction feature count: {len(X.columns)}")
+        print(f"[{sport_label}] Non-numeric column count: {non_numeric_count} (set DEBUG=true for full lists)")
     if scaler is not None:
         X = pd.DataFrame(scaler.transform(X), columns=FEATURE_COLUMNS, index=X.index)
 
@@ -1144,7 +1153,7 @@ def _build_runtime_moneyline_predictions(
         return []
 
     runtime_df = daily_df.copy()
-    runtime_df["predicted_home_win_prob"] = predict_runtime(runtime_model, runtime_df)
+    runtime_df["predicted_home_win_prob"] = predict_runtime(runtime_model, runtime_df, sport_name)
     def _calibrate_prob(p):
         return min(max(p, 0.05), 0.95)
     runtime_df["predicted_home_win_prob"] = runtime_df["predicted_home_win_prob"].apply(_calibrate_prob)
@@ -1554,10 +1563,54 @@ def _validate_exported_bets_against_sportsbook(game_id: str, game_row: dict, bet
     return True, None
 
 def _boost_nba_signal_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Amplify core NBA strength features to increase model separation."""
+    """Finalize NBA daily feature inputs without fabricating unavailable data."""
     if df.empty:
         return df
     out = df.copy()
+
+    for diff_col, home_col, away_col in [
+        ("offensive_rating_diff", "offensive_rating_home", "offensive_rating_away"),
+        ("defensive_rating_diff", "defensive_rating_home", "defensive_rating_away"),
+        ("net_rating_diff", "net_rating_home", "net_rating_away"),
+        ("pace_diff", "pace_home", "pace_away"),
+        ("recent_form_diff", "recent_form_home", "recent_form_away"),
+        ("recent_form_last5_diff", "recent_form_last5_home", "recent_form_last5_away"),
+        ("recent_form_last10_diff", "recent_form_last10_home", "recent_form_last10_away"),
+        ("last5_net_rating_diff", "last5_net_rating_home", "last5_net_rating_away"),
+        ("last10_net_rating_diff", "last10_net_rating_home", "last10_net_rating_away"),
+    ]:
+        if home_col in out.columns and away_col in out.columns:
+            derived = pd.to_numeric(out[home_col], errors="coerce") - pd.to_numeric(out[away_col], errors="coerce")
+            current = pd.to_numeric(out.get(diff_col, pd.Series(np.nan, index=out.index)), errors="coerce")
+            out[diff_col] = current.where(current.notna() & current.ne(0.0), derived).fillna(0.0)
+
+    if "momentum_diff" not in out.columns or pd.to_numeric(out["momentum_diff"], errors="coerce").fillna(0.0).abs().sum() == 0:
+        out["momentum_diff"] = (
+            pd.to_numeric(out.get("recent_form_last5_diff", out.get("last5_net_rating_diff", 0.0)), errors="coerce").fillna(0.0)
+            - 0.5 * pd.to_numeric(out.get("recent_form_last10_diff", out.get("last10_net_rating_diff", 0.0)), errors="coerce").fillna(0.0)
+        )
+    out["back_to_back_diff"] = pd.to_numeric(out.get("back_to_back_away", 0.0), errors="coerce").fillna(0.0) - pd.to_numeric(out.get("back_to_back_home", 0.0), errors="coerce").fillna(0.0)
+    out["three_in_four_diff"] = pd.to_numeric(out.get("three_in_four_away", 0.0), errors="coerce").fillna(0.0) - pd.to_numeric(out.get("three_in_four_home", 0.0), errors="coerce").fillna(0.0)
+
+    if (
+        "market_implied_probability" not in out.columns
+        or pd.to_numeric(out["market_implied_probability"], errors="coerce").isna().all()
+        or pd.to_numeric(out["market_implied_probability"], errors="coerce").fillna(0.0).eq(0.0).all()
+    ):
+        if "implied_home_prob" in out.columns:
+            out["market_implied_probability"] = pd.to_numeric(out["implied_home_prob"], errors="coerce").fillna(0.5)
+        elif "home_moneyline" in out.columns:
+            out["market_implied_probability"] = out["home_moneyline"].apply(american_to_implied_prob)
+        elif "home_odds" in out.columns:
+            out["market_implied_probability"] = out["home_odds"].apply(american_to_implied_prob)
+        else:
+            out["market_implied_probability"] = 0.5
+    if "spread_value_signal" not in out.columns or pd.to_numeric(out["spread_value_signal"], errors="coerce").isna().all():
+        spread = pd.to_numeric(out.get("spread", out.get("spread_line", 0.0)), errors="coerce").fillna(0.0)
+        out["spread_value_signal"] = spread * (pd.to_numeric(out["market_implied_probability"], errors="coerce").fillna(0.5) - 0.5)
+    if "line_movement" not in out.columns:
+        out["line_movement"] = 0.0
+
     out["elo_diff"] = pd.to_numeric(out.get("elo_diff"), errors="coerce").fillna(0.0) * 1.5
     out["net_rating_diff"] = pd.to_numeric(out.get("net_rating_diff"), errors="coerce").fillna(0.0) * 1.3
     out["last5_net_rating_diff"] = pd.to_numeric(out.get("last5_net_rating_diff"), errors="coerce").fillna(0.0) * 1.2
@@ -1566,17 +1619,18 @@ def _boost_nba_signal_features(df: pd.DataFrame) -> pd.DataFrame:
         + out["net_rating_diff"] * 0.3
         + out["last5_net_rating_diff"] * 0.2
     )
-    if "feature_zero_pct" not in out.columns:
-        feature_cols = [
-            "recent_form_diff", "recent_form_last5_diff", "recent_form_last10_diff", "momentum_diff",
-            "offensive_rating_diff", "defensive_rating_diff", "net_rating_diff", "rest_diff",
-            "back_to_back_home", "back_to_back_away", "three_in_four_home", "three_in_four_away",
-            "travel_fatigue_diff", "market_implied_probability", "spread_value_signal", "line_movement",
-        ]
-        present = [col for col in feature_cols if col in out.columns]
-        if present:
-            zero_pct = float((pd.DataFrame({col: pd.to_numeric(out[col], errors="coerce").fillna(0.0) for col in present}).abs().sum(axis=0) == 0).mean() * 100.0)
-            out["feature_zero_pct"] = zero_pct
+
+    feature_cols = [
+        "recent_form_diff", "recent_form_last5_diff", "recent_form_last10_diff", "momentum_diff",
+        "offensive_rating_diff", "defensive_rating_diff", "net_rating_diff", "pace_diff", "rest_diff",
+        "back_to_back_home", "back_to_back_away", "back_to_back_diff", "three_in_four_home",
+        "three_in_four_away", "three_in_four_diff", "travel_fatigue_diff", "market_implied_probability",
+        "spread_value_signal", "line_movement",
+    ]
+    present = [col for col in feature_cols if col in out.columns]
+    if present:
+        zero_pct = float((pd.DataFrame({col: pd.to_numeric(out[col], errors="coerce").fillna(0.0) for col in present}).abs().sum(axis=0) == 0).mean() * 100.0)
+        out["feature_zero_pct"] = zero_pct
     return out
 
 def run_daily_pipeline(
@@ -1670,6 +1724,13 @@ def run_daily_pipeline(
                 try:
                     injuries_df = fetch_injuries(sport_clean)
                     daily = compute_injury_impact(daily, injuries_df)
+                    if sport_clean == "nba" and int(getattr(injuries_df, "attrs", {}).get("rows_parsed", len(injuries_df))) == 0:
+                        daily["injury_impact_home"] = 0.0
+                        daily["injury_impact_away"] = 0.0
+                        daily["injury_impact_diff"] = 0.0
+                        daily["injury_data_quality_status"] = "degraded"
+                        daily["injury_confidence_score"] = 0.0
+                        print("[NBA INJURY INFO] ESPN returned 0 injury rows; neutral injury features applied and data quality marked degraded.")
                     print(f"[INJURY DEBUG][{sport_clean.upper()}]")
                     print(injuries_df.head())
                     print(
@@ -1864,7 +1925,8 @@ def run_daily_pipeline(
 
             if sport_clean == "nba":
                 nba_health = nba_feature_health_check(daily, runtime_home_win_model)
-                daily["data_quality_status"] = "degraded" if nba_health.get("degraded") else "ok"
+                injury_degraded = daily.get("injury_data_quality_status", pd.Series("normal", index=daily.index)).astype(str).str.contains("degraded", case=False, na=False).any() if len(daily) else False
+                daily["data_quality_status"] = "degraded" if (nba_health.get("degraded") or injury_degraded) else "ok"
 
             if hasattr(model, "runtime_model") and model.runtime_model is not None:
                 print(f"[{sport_clean.upper()}] Using runtime model for predictions")
@@ -2798,6 +2860,12 @@ Sport: {sport_name}
 Games processed: {summary['games_processed']}
 Candidates generated: {summary['candidates_generated']}
 Final bets: {int(final_bets_by_sport.get(sport_name, 0))}
+Data quality status: {summary.get('data_quality_status', summary.get('goalie_data_quality_status', 'ok'))}
+Feature zero pct: {float(summary.get('feature_zero_pct', 0.0)):.1f}
+Injury rows: {int(summary.get('injury_rows', 0))}
+NBA backtest status: {'available' if nba_backtest_summary else ('not run' if sport_name != 'nba' else 'unavailable')}
+MLB pitcher coverage: {_first_valid_pitcher_coverage(summary):.1f}
+NHL goalie coverage: {float(summary.get('goalie_coverage_pct', 0.0)):.1f}
 """
         )
 
@@ -2811,6 +2879,8 @@ Final bets: {int(final_bets_by_sport.get(sport_name, 0))}
     print(f"- data quality status: {nba_status}")
     print(f"- injury rows: {int(nba_summary.get('injury_rows', 0)) if nba_summary else 0}")
     print(f"- feature zero pct: {float(nba_summary.get('feature_zero_pct', 0.0)) if nba_summary else 0.0:.1f}")
+    if nba_summary and int(nba_summary.get('candidates_generated', 0)) > 0 and int(final_bets_by_sport.get('nba', 0)) == 0:
+        print("- NBA final bets explanation: candidates were generated, but bet filters rejected them; NBA pipeline did not break.")
     if nba_backtest_summary:
         print(f"- backtest summary: games={nba_backtest_summary.get('total_games_tested')}, win_rate={nba_backtest_summary.get('win_rate'):.3f}, roi={nba_backtest_summary.get('roi'):.3f}, profit_loss={nba_backtest_summary.get('profit_loss'):.3f}")
     else:
@@ -2885,7 +2955,19 @@ Final bets: {int(final_bets_by_sport.get(sport_name, 0))}
     else:
         report_lines.append("No bets exported today")
 
-    report_lines.extend(["", card])
+    report_lines.extend(["", card, "", "Per-sport validation summary:"])
+    for summary in sport_run_summaries:
+        sport_name = str(summary.get("sport", "")).lower()
+        report_lines.append(
+            f"- {sport_name.upper()}: games={summary.get('games_processed', 0)}, "
+            f"candidates={summary.get('candidates_generated', 0)}, "
+            f"final_bets={int(final_bets_by_sport.get(sport_name, 0))}, "
+            f"data_quality_status={summary.get('data_quality_status', summary.get('goalie_data_quality_status', 'ok'))}, "
+            f"feature_zero_pct={float(summary.get('feature_zero_pct', 0.0)):.1f}, "
+            f"injury_rows={int(summary.get('injury_rows', 0))}"
+        )
+    if nba_summary and int(nba_summary.get('candidates_generated', 0)) > 0 and int(final_bets_by_sport.get('nba', 0)) == 0:
+        report_lines.append("- NBA: candidates were generated, but final bet filters rejected them; NBA pipeline did not break.")
     (out_dir / "daily_report.txt").write_text("\n".join(report_lines), encoding="utf-8")
 
 
