@@ -1809,8 +1809,6 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             for pitcher_col in ["pitcher_era_home", "pitcher_era_away", "pitcher_diff"]:
                 if pitcher_col not in df.columns:
                     df[pitcher_col] = np.nan
-            print("[MLB DEBUG] Checking pitcher columns...")
-            print(df[["home_team", "away_team", "pitcher_era_home", "pitcher_era_away", "pitcher_diff"]].head())
 
             for side in ("home", "away"):
                 probable_col = f"{side}_probable_pitcher"
@@ -1879,6 +1877,15 @@ def enrich_daily_features_by_sport(df: pd.DataFrame, sport_name: str) -> pd.Data
             df["default_era_count"] = default_era_count
             if real_pitcher_coverage_pct < MLB_REAL_ERA_NORMAL_THRESHOLD and "confidence" in df.columns:
                 df["confidence"] = pd.to_numeric(df["confidence"], errors="coerce").fillna(0.5) * 0.75
+            pitcher_name_coverage_count = int(df["pitcher_name_home"].astype(str).str.strip().ne("").sum() + df["pitcher_name_away"].astype(str).str.strip().ne("").sum())
+            era_matched_count = int(real_home_era_count + real_away_era_count)
+            print("[MLB PITCHER ENRICHMENT EARLY]")
+            print(f"pitcher names coverage count: {pitcher_name_coverage_count}/{2 * total_mlb_games}")
+            print(f"ERA matched count: {era_matched_count}/{2 * total_mlb_games}")
+            print(f"real_pitcher_coverage_pct: {real_pitcher_coverage_pct:.1f}")
+            print(f"data_quality_status before model prediction: {df['data_quality_status'].iloc[0] if len(df) else 'severe'}")
+            print("[MLB DEBUG] Checking pitcher columns...")
+            print(df[["home_team", "away_team", "pitcher_name_home", "pitcher_name_away", "pitcher_era_home", "pitcher_era_away"]].head())
             print("[MLB REAL PITCHER ERA COVERAGE]")
             print("total_games:", total_mlb_games)
             print("real both ERAs:", f"{real_both_era_count}/{total_mlb_games}")
