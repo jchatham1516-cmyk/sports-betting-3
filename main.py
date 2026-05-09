@@ -2852,7 +2852,9 @@ def run_daily_pipeline(
     if "sport" in final_bets.columns and not final_bets.empty:
         final_bets_by_sport = final_bets["sport"].value_counts(dropna=False).to_dict()
     for summary in sport_run_summaries:
-        sport_name = str(summary["sport"])
+        sport_name = str(summary["sport"]).lower()
+        mlb_pitcher_coverage = f"{_first_valid_pitcher_coverage(summary):.1f}" if sport_name == "mlb" else "N/A"
+        nhl_goalie_coverage = f"{float(summary.get('goalie_coverage_pct', summary.get('nhl_goalie_coverage_pct', 0.0))):.1f}" if sport_name == "nhl" else "N/A"
         print(
             f"""
 [SPORT SUMMARY]
@@ -2864,8 +2866,8 @@ Data quality status: {summary.get('data_quality_status', summary.get('goalie_dat
 Feature zero pct: {float(summary.get('feature_zero_pct', 0.0)):.1f}
 Injury rows: {int(summary.get('injury_rows', 0))}
 NBA backtest status: {'available' if nba_backtest_summary else ('not run' if sport_name != 'nba' else 'unavailable')}
-MLB pitcher coverage: {_first_valid_pitcher_coverage(summary):.1f}
-NHL goalie coverage: {float(summary.get('goalie_coverage_pct', 0.0)):.1f}
+MLB pitcher coverage: {mlb_pitcher_coverage}
+NHL goalie coverage: {nhl_goalie_coverage}
 """
         )
 

@@ -217,6 +217,8 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     out["pitcher_away"] = out["away_team_norm"].map(pitchers_dict)
     out["pitcher_home"] = out["pitcher_home"].where(out["pitcher_home"].notna() & out["pitcher_home"].astype(str).str.strip().ne(""), existing_home_pitcher)
     out["pitcher_away"] = out["pitcher_away"].where(out["pitcher_away"].notna() & out["pitcher_away"].astype(str).str.strip().ne(""), existing_away_pitcher)
+    out["pitcher_name_home"] = out["pitcher_home"].fillna("").astype(str)
+    out["pitcher_name_away"] = out["pitcher_away"].fillna("").astype(str)
 
     print("[PITCHER MATCH CHECK]")
     print(out[["home_team", "pitcher_home"]].head(10))
@@ -301,6 +303,13 @@ def _attach_pitcher_data(df: pd.DataFrame) -> pd.DataFrame:
     out["pitcher_era_away"] = out["pitcher_era_away"].clip(lower=1.5, upper=8.0)
     default_era_count = int((~out["pitcher_era_home_is_real"]).sum() + (~out["pitcher_era_away_is_real"]).sum())
     out["default_era_count"] = default_era_count
+    pitcher_name_coverage_count = int(out["pitcher_home"].astype(str).str.strip().ne("").sum() + out["pitcher_away"].astype(str).str.strip().ne("").sum())
+    era_matched_count = int(real_home_era_count + real_away_era_count)
+    print("[MLB PITCHER ENRICHMENT EARLY]")
+    print(f"pitcher names coverage count: {pitcher_name_coverage_count}/{2 * total_games}")
+    print(f"ERA matched count: {era_matched_count}/{2 * total_games}")
+    print(f"real_pitcher_coverage_pct: {real_pitcher_coverage_pct:.1f}")
+    print(f"data_quality_status before model prediction: {out['data_quality_status'].iloc[0] if len(out) else 'severe'}")
     print("[MLB REAL PITCHER ERA COVERAGE]")
     print("total_games:", total_games)
     print("real both ERAs:", f"{real_both_era_count}/{total_games}")
@@ -344,8 +353,7 @@ def _ensure_daily_mlb_columns(df: pd.DataFrame) -> pd.DataFrame:
     )
     out["injury_impact_home"] = _safe_fillna(pd.to_numeric(out.get("injury_impact_home", pd.Series(index=out.index, dtype=float)), errors="coerce"), 0.0)
     out["injury_impact_away"] = _safe_fillna(pd.to_numeric(out.get("injury_impact_away", pd.Series(index=out.index, dtype=float)), errors="coerce"), 0.0)
-    out = enrich_mlb_live_features(out)
-    return build_mlb_features(out)
+    return out
 
 
 def run_mlb_pipeline(
@@ -370,6 +378,8 @@ def run_mlb_pipeline(
     frame = _ensure_daily_mlb_columns(daily_df)
     frame = _dedupe_mlb_odds_rows(frame)
     frame = _attach_pitcher_data(frame)
+    frame = enrich_mlb_live_features(frame)
+    frame = build_mlb_features(frame)
 
     for col in [
         "starter_rating_home",
@@ -405,6 +415,7 @@ def run_mlb_pipeline(
 
     print("[MLB DEBUG] pitcher_diff summary:")
     print(frame["pitcher_diff"].describe())
+    print(f"data_quality_status before model prediction: {frame['data_quality_status'].iloc[0] if len(frame) and 'data_quality_status' in frame.columns else 'normal'}")
 
     frame = predict_mlb_model(model_bundle, frame)
     frame["home_prob"] = frame["predicted_home_win_prob"].clip(0.01, 0.99)
