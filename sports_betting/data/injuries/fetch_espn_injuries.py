@@ -128,7 +128,7 @@ def fetch_espn_injuries():
     injuries = {}
     
     # Try multiple URLs and user agents
-    for url_idx, url in enumerate(URLs_TO_TRY):
+    for url_idx, url in enumerate(URLS_TO_TRY):
         print(f"[ESPN DEBUG] Trying URL {url_idx + 1}: {url}")
         
         for ua_idx, user_agent in enumerate(USER_AGENTS):
