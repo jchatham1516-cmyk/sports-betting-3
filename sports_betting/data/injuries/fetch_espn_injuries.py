@@ -78,14 +78,23 @@ def fetch_espn_api_injuries():
             if isinstance(injuries_data, list):
                 print(f"[ESPN API DEBUG] 'injuries' is a list with {len(injuries_data)} items")
                 if injuries_data:
-                    # Print structure of first item for debugging
-                    first_item = injuries_data[0]
-                    if isinstance(first_item, dict):
-                        print(f"[ESPN API DEBUG] First injury item keys: {list(first_item.keys())}")
-                    else:
-                        print(f"[ESPN API DEBUG] First injury item type: {type(first_item)}")
+                    # Print structure of first 2 items for debugging as requested
+                    print("[ESPN API DEBUG] === Structure of first 2 items ===")
+                    for i, item in enumerate(injuries_data[:2]):
+                        print(f"[ESPN API DEBUG] Item {i+1}:")
+                        if isinstance(item, dict):
+                            print(f"[ESPN API DEBUG]   Keys: {list(item.keys())}")
+                            # Print full structure for debugging
+                            import json
+                            print(f"[ESPN API DEBUG]   Full structure: {json.dumps(item, indent=4)}")
+                        else:
+                            print(f"[ESPN API DEBUG]   Type: {type(item)}, Value: {item}")
+                        print("[ESPN API DEBUG] " + "="*50)
             elif isinstance(injuries_data, dict):
                 print(f"[ESPN API DEBUG] 'injuries' is a dict with keys: {list(injuries_data.keys())}")
+                # Print full structure for debugging
+                import json
+                print(f"[ESPN API DEBUG] Full dict structure: {json.dumps(injuries_data, indent=4)}")
             else:
                 print(f"[ESPN API DEBUG] 'injuries' has unexpected type: {type(injuries_data)}")
             
@@ -114,69 +123,107 @@ def parse_api_injuries_data(injuries_data):
     injuries = {}
     
     if isinstance(injuries_data, list):
-        for item in injuries_data:
+        print(f"[ESPN API] Processing {len(injuries_data)} injury items")
+        
+        for i, item in enumerate(injuries_data):
             if not isinstance(item, dict):
+                print(f"[ESPN API DEBUG] Item {i+1}: Skipping non-dict item")
                 continue
                 
-            # Debug: Print keys for each item
-            print(f"[ESPN API DEBUG] Processing item with keys: {list(item.keys())}")
+            print(f"[ESPN API DEBUG] Item {i+1} keys: {list(item.keys())}")
             
-            # Try to extract team information
+            # Extract team information - ESPN typically has team in multiple formats
             team_name = None
-            if 'team' in item:
+            
+            # Method 1: Direct team object
+            if 'team' in item and isinstance(item['team'], dict):
                 team_data = item['team']
-                if isinstance(team_data, dict):
-                    team_name = team_data.get('displayName') or team_data.get('name') or team_data.get('shortDisplayName')
+                team_name = (team_data.get('displayName') or 
+                            team_data.get('name') or 
+                            team_data.get('shortDisplayName') or
+                            team_data.get('abbreviation'))
             
-            # Try alternative team key names
+            # Method 2: Direct team name fields
             if not team_name:
-                team_name = item.get('teamName') or item.get('teamDisplayName')
+                team_name = (item.get('teamName') or 
+                            item.get('teamDisplayName') or
+                            item.get('team'))
             
             if not team_name:
-                print(f"[ESPN API DEBUG] Could not find team name in item")
+                print(f"[ESPN API DEBUG] Item {i+1}: No team name found, skipping")
                 continue
                 
-            print(f"[ESPN API DEBUG] Found team: {team_name}")
+            print(f"[ESPN API DEBUG] Item {i+1}: Found team '{team_name}'")
             
-            # Try to extract player injury information
-            players = {}
+            # Extract player and injury information
+            # In ESPN API, the injury item typically IS the player injury record
+            player_name = None
+            injury_status = 'out'  # Default status
             
-            # Look for player data in various possible keys
-            player_keys = ['athletes', 'players', 'injuries']
-            for key in player_keys:
-                if key in item:
-                    player_data = item[key]
-                    if isinstance(player_data, list):
-                        print(f"[ESPN API DEBUG] Found {len(player_data)} items in '{key}'")
-                        for player_item in player_data:
-                            if isinstance(player_item, dict):
-                                # Extract player name
-                                player_name = None
-                                if 'athlete' in player_item and isinstance(player_item['athlete'], dict):
-                                    player_name = player_item['athlete'].get('displayName') or player_item['athlete'].get('name')
-                                elif 'displayName' in player_item:
-                                    player_name = player_item['displayName']
-                                elif 'name' in player_item:
-                                    player_name = player_item['name']
-                                
-                                if player_name:
-                                    # Extract injury status
-                                    status = player_item.get('status', 'out')
-                                    if isinstance(status, dict):
-                                        status = status.get('type', 'out')
-                                    players[player_name] = str(status).lower()
-                                    print(f"[ESPN API DEBUG] Added player: {player_name} ({status})")
+            # Method 1: Player info is directly in the item
+            if 'athlete' in item and isinstance(item['athlete'], dict):
+                athlete = item['athlete']
+                player_name = (athlete.get('displayName') or 
+                              athlete.get('name') or
+                              athlete.get('fullName'))
             
-            if players:
-                injuries[team_name.lower()] = players
-                print(f"[ESPN API DEBUG] Added {len(players)} players for {team_name}")
+            # Method 2: Player name is direct field
+            if not player_name:
+                player_name = (item.get('displayName') or 
+                              item.get('name') or
+                              item.get('playerName'))
+            
+            if player_name:
+                # Extract injury status
+                if 'status' in item:
+                    status_data = item['status']
+                    if isinstance(status_data, dict):
+                        injury_status = (status_data.get('type') or 
+                                       status_data.get('displayName') or
+                                       status_data.get('name', 'out'))
+                    elif isinstance(status_data, str):
+                        injury_status = status_data
+                elif 'injuryStatus' in item:
+                    injury_status = item['injuryStatus']
+                
+                # Normalize status to lowercase
+                injury_status = str(injury_status).lower()
+                
+                # Add to team's injury list
+                team_key = team_name.lower()
+                if team_key not in injuries:
+                    injuries[team_key] = {}
+                
+                injuries[team_key][player_name] = injury_status
+                print(f"[ESPN API DEBUG] Added: {team_name} - {player_name} ({injury_status})")
+            else:
+                print(f"[ESPN API DEBUG] Item {i+1}: No player name found")
     
     elif isinstance(injuries_data, dict):
-        # Handle case where injuries_data is a dict instead of list
         print(f"[ESPN API DEBUG] Processing dict-style injuries data with keys: {list(injuries_data.keys())}")
-        # Add logic here if needed based on actual API structure
+        # If injuries_data is a dict, it might contain teams as keys
+        for key, value in injuries_data.items():
+            if isinstance(value, list):
+                print(f"[ESPN API DEBUG] Processing team '{key}' with {len(value)} injuries")
+                team_injuries = {}
+                for injury_item in value:
+                    if isinstance(injury_item, dict):
+                        player_name = (injury_item.get('displayName') or 
+                                     injury_item.get('name') or
+                                     injury_item.get('playerName'))
+                        if player_name:
+                            status = injury_item.get('status', 'out')
+                            if isinstance(status, dict):
+                                status = status.get('type', 'out')
+                            team_injuries[player_name] = str(status).lower()
+                
+                if team_injuries:
+                    injuries[key.lower()] = team_injuries
     
     print(f"[ESPN API] Parsed {len(injuries)} teams with injuries")
+    total_players = sum(len(players) for players in injuries.values())
+    print(f"[ESPN API] Total injured players: {total_players}")
+    
     return injuries
 
 def _safe_team_name(table) -> str:
@@ -496,5 +543,47 @@ def run_injury_pipeline():
         json.dump(injuries, f, indent=2)
     print(f"[ESPN] Saved injuries to {output_path}")
 
+def test_parser():
+    """Test the parser with sample data structure."""
+    print("\n=== Testing parser with sample data ===")
+    
+    # Sample data structure based on typical ESPN API
+    sample_injuries = [
+        {
+            "team": {
+                "displayName": "Los Angeles Lakers",
+                "name": "Lakers",
+                "abbreviation": "LAL"
+            },
+            "athlete": {
+                "displayName": "LeBron James",
+                "name": "LeBron James"
+            },
+            "status": {
+                "type": "Out",
+                "displayName": "Out"
+            }
+        },
+        {
+            "team": {
+                "displayName": "Golden State Warriors",
+                "name": "Warriors"
+            },
+            "athlete": {
+                "displayName": "Stephen Curry",
+                "name": "Stephen Curry"
+            },
+            "status": "Questionable"
+        }
+    ]
+    
+    result = parse_api_injuries_data(sample_injuries)
+    print(f"\nTest result: {result}")
+    return result
+
 if __name__ == "__main__":
-    run_injury_pipeline()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        test_parser()
+    else:
+        run_injury_pipeline()
