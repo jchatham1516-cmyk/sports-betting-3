@@ -8,6 +8,7 @@ from pathlib import Path
 
 import joblib
 import pandas as pd
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import RandomForestClassifier
 
 from sports_betting.sports.common.baseline_model import DisciplinedBaselineModel
@@ -48,14 +49,19 @@ def train_mlb_model(historical_df: pd.DataFrame) -> MLBModelBundle:
     if y.nunique() < 2:
         raise ValueError("[MLB] Historical training target requires two classes in home_win.")
 
-    model = RandomForestClassifier(
+    base_model = RandomForestClassifier(
         n_estimators=300,
         max_depth=8,
         min_samples_leaf=8,
         random_state=42,
     )
-    model.fit(X, y)
-    return MLBModelBundle(runtime_model=model, feature_columns=feature_columns)
+    base_model.fit(X, y)
+    
+    # Wrap with CalibratedClassifierCV for probability calibration
+    calibrated_model = CalibratedClassifierCV(base_model, cv="prefit", method="sigmoid")
+    calibrated_model.fit(X, y)
+    
+    return MLBModelBundle(runtime_model=calibrated_model, feature_columns=feature_columns)
 
 
 def predict_mlb_games(bundle: MLBModelBundle, daily_df: pd.DataFrame) -> pd.DataFrame:
