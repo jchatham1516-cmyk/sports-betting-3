@@ -119,6 +119,14 @@ def fetch_espn_api_injuries():
 
 def parse_api_injuries_data(injuries_data):
     """Parse injury data from ESPN API response."""
+    if isinstance(injuries_data, list) and injuries_data:
+        import json
+        print("[ESPN STRUCTURE DEBUG] First item full dump:")
+        print(json.dumps(injuries_data[0], indent=2, default=str))
+        print("[ESPN STRUCTURE DEBUG] Second item full dump:")
+        if len(injuries_data) > 1:
+            print(json.dumps(injuries_data[1], indent=2, default=str))
+    
     print(f"[ESPN API] Parsing injuries data...")
     injuries = {}
     
