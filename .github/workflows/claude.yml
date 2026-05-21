@@ -17,9 +17,11 @@ jobs:
       issues: write
       pull-requests: write
       id-token: write
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.INTEGRATION_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: anthropics/claude-code-action@beta
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.INTEGRATION_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
