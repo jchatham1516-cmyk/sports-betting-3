@@ -161,33 +161,123 @@ def fetch_espn_injuries_for_sport(sport: str) -> pd.DataFrame:
     if sport_key not in endpoints:
         raise ValueError(f"Unsupported sport for injury fetch: {sport}")
     url = endpoints[sport_key]
+    print(f"[INJURY DEBUG] Fetching {sport_key} injuries from: {url}")
     fetch_success = False
     fallback_used = False
     injuries = []
-    try:
-        with urlopen(url, timeout=20) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        fetch_success = True
-    except (URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
-        print(f"[INJURY WARNING] ESPN injury API fetch failed for {sport_key}: {exc}")
-        data = {}
-    for team in data.get("teams", []):
+    # Try multiple request approaches to handle ESPN's protection
+    request_attempts = [
+        # Standard request with sports-specific user agent
+        {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36', 'Accept': 'application/json,*/*', 'Referer': 'https://www.espn.com/'},
+        # Mobile user agent
+        {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'},
+        # Original simple approach
+        {'User-Agent': 'Mozilla/5.0 (compatible; SportsBetting/1.0)'}
+    ]
+    
+    fetch_success = False
+    data = {}
+    last_exception = None
+    
+    for i, headers in enumerate(request_attempts):
+        try:
+            print(f"[INJURY DEBUG] Attempt {i+1}: Using User-Agent: {headers['User-Agent'][:50]}...")
+            request = Request(url, headers=headers)
+            with urlopen(request, timeout=30) as response:
+                response_text = response.read().decode("utf-8")
+                print(f"[INJURY DEBUG] Response status: {response.status}")
+                print(f"[INJURY DEBUG] Raw response length: {len(response_text)} characters")
+                
+                # Check if we got HTML instead of JSON (redirect/error page)
+                if response_text.strip().startswith('<'):
+                    print(f"[INJURY DEBUG] Got HTML response instead of JSON - likely blocked or redirected")
+                    print(f"[INJURY DEBUG] HTML preview: {response_text[:200]}...")
+                    continue
+                
+                data = json.loads(response_text)
+                fetch_success = True
+                print(f"[INJURY DEBUG] JSON parsed successfully. Keys: {list(data.keys())}")
+                break
+                
+        except (URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+            last_exception = exc
+            print(f"[INJURY DEBUG] Attempt {i+1} failed: {type(exc).__name__}: {exc}")
+            continue
+    
+    if not fetch_success:
+        print(f"[INJURY WARNING] All ESPN injury API attempts failed for {sport_key}. Last error: {last_exception}")
+    
+    teams_data = data.get("teams", [])
+    print(f"[INJURY DEBUG] Found {len(teams_data)} teams in response")
+    
+    # If no teams found, check if data structure has changed
+    if not teams_data and data:
+        print(f"[INJURY DEBUG] No 'teams' key found. Checking alternative structures...")
+        # Check for alternative data structures
+        possible_keys = ['items', 'data', 'results', 'leagues', 'competitions']
+        for key in possible_keys:
+            if key in data:
+                alt_data = data[key]
+                print(f"[INJURY DEBUG] Found alternative key '{key}' with {len(alt_data) if isinstance(alt_data, list) else 'non-list'} items")
+                if isinstance(alt_data, list) and alt_data:
+                    print(f"[INJURY DEBUG] Sample item keys: {list(alt_data[0].keys()) if isinstance(alt_data[0], dict) else 'not dict'}")
+    
+    for i, team in enumerate(teams_data):
         team_name = team.get("team", {}).get("displayName")
-        for athlete in team.get("injuries", []):
-            player_name = athlete.get("athlete", {}).get("displayName")
-            status = athlete.get("status")
-            injuries.append(
-                {
-                    "sport": sport_key,
-                    "team": _normalize_team_name(team_name),
-                    "player": player_name,
-                    "status": status,
-                }
-            )
+        team_injuries = team.get("injuries", [])
+        print(f"[INJURY DEBUG] Team {i+1}: {team_name} has {len(team_injuries)} injuries")
+        
+        for j, athlete in enumerate(team_injuries):
+            # Handle different possible data structures for athlete info
+            if isinstance(athlete, dict):
+                player_name = athlete.get("athlete", {}).get("displayName") or athlete.get("displayName") or athlete.get("name")
+                status = athlete.get("status") or athlete.get("injuryStatus") or "out"
+            else:
+                # Fallback if athlete is not a dict
+                player_name = str(athlete) if athlete else None
+                status = "out"
+            
+            print(f"[INJURY DEBUG]   Player {j+1}: {player_name} - {status}")
+            
+            if player_name:  # Only add if we have a player name
+                injuries.append(
+                    {
+                        "sport": sport_key,
+                        "team": _normalize_team_name(team_name),
+                        "player": player_name,
+                        "status": status,
+                    }
+                )
 
+    print(f"[INJURY DEBUG] Total injuries collected: {len(injuries)}")
+    
     if sport_key == "nba" and fetch_success and not injuries:
+        print(f"[INJURY DEBUG] No injuries from main API, trying fallback scoreboard...")
         fallback_used = True
-        injuries.extend(_fetch_nba_espn_scoreboard_injuries())
+        fallback_injuries = _fetch_nba_espn_scoreboard_injuries()
+        print(f"[INJURY DEBUG] Scoreboard fallback found {len(fallback_injuries)} injuries")
+        injuries.extend(fallback_injuries)
+        
+        # If scoreboard also failed, try alternative sources
+        if not fallback_injuries:
+            print(f"[INJURY DEBUG] Scoreboard fallback also empty, trying alternative sources...")
+            try:
+                from .injuries.alternative_sources import get_fallback_injury_data
+                alt_data = get_fallback_injury_data()
+                if alt_data:
+                    print(f"[INJURY DEBUG] Alternative sources found {len(alt_data)} teams")
+                    # Convert alternative data format to our format
+                    for team_name, players in alt_data.items():
+                        for player_name, status in players.items():
+                            injuries.append({
+                                "sport": sport_key,
+                                "team": _normalize_team_name(team_name),
+                                "player": player_name,
+                                "status": status,
+                            })
+                    print(f"[INJURY DEBUG] Added {len(alt_data)} teams from alternative sources")
+            except Exception as e:
+                print(f"[INJURY DEBUG] Alternative sources failed: {e}")
 
     df = pd.DataFrame(injuries)
     if df.empty:
@@ -213,24 +303,45 @@ def fetch_espn_injuries_for_sport(sport: str) -> pd.DataFrame:
 def _fetch_nba_espn_scoreboard_injuries() -> list[dict[str, object]]:
     """Fallback parser for injuries embedded in ESPN's NBA scoreboard payload."""
     rows: list[dict[str, object]] = []
+    scoreboard_url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+    print(f"[INJURY DEBUG] Attempting scoreboard fallback: {scoreboard_url}")
     try:
         request = Request(
-            "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
-            headers={"User-Agent": "Mozilla/5.0"},
+            scoreboard_url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; SportsBetting/1.0)"},
         )
         with urlopen(request, timeout=20) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+            response_text = response.read().decode("utf-8")
+            print(f"[INJURY DEBUG] Scoreboard response length: {len(response_text)} characters")
+            payload = json.loads(response_text)
+        print(f"[INJURY DEBUG] Scoreboard JSON keys: {list(payload.keys())}")
     except (URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
         print(f"[INJURY WARNING] ESPN scoreboard fallback failed for nba: {exc}")
+        print(f"[INJURY DEBUG] Scoreboard exception type: {type(exc).__name__}")
         return rows
 
-    for event in payload.get("events", []):
-        for competition in event.get("competitions", []):
-            for competitor in competition.get("competitors", []):
+    events = payload.get("events", [])
+    print(f"[INJURY DEBUG] Found {len(events)} events in scoreboard")
+    
+    for i, event in enumerate(events):
+        competitions = event.get("competitions", [])
+        print(f"[INJURY DEBUG] Event {i+1} has {len(competitions)} competitions")
+        
+        for j, competition in enumerate(competitions):
+            competitors = competition.get("competitors", [])
+            print(f"[INJURY DEBUG]   Competition {j+1} has {len(competitors)} competitors")
+            
+            for k, competitor in enumerate(competitors):
                 team_name = competitor.get("team", {}).get("displayName")
-                for injury in competitor.get("injuries", []) or []:
+                competitor_injuries = competitor.get("injuries", []) or []
+                print(f"[INJURY DEBUG]     Competitor {k+1}: {team_name} has {len(competitor_injuries)} injuries")
+                
+                for l, injury in enumerate(competitor_injuries):
                     athlete = injury.get("athlete", {}) if isinstance(injury, dict) else {}
                     player = athlete.get("displayName") or injury.get("displayName") or injury.get("name")
+                    status = injury.get("status") or injury.get("type") or "out"
+                    print(f"[INJURY DEBUG]       Injury {l+1}: {player} - {status}")
+                    
                     if not player:
                         continue
                     rows.append(
@@ -238,7 +349,7 @@ def _fetch_nba_espn_scoreboard_injuries() -> list[dict[str, object]]:
                             "sport": "nba",
                             "team": _normalize_team_name(team_name),
                             "player": player,
-                            "status": injury.get("status") or injury.get("type") or "out",
+                            "status": status,
                         }
                     )
     return rows
