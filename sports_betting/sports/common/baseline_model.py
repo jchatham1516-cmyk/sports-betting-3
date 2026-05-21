@@ -247,7 +247,7 @@ class DisciplinedBaselineModel(SportModel):
             + 0.25 * (0.5 + ml_strength * 0.25)
             + 0.15 * (0.5 + spread_strength * 0.25)
         )
-        final_prob = 0.8 * smart_prob + 0.2 * p_model
+        final_prob = 0.35 * smart_prob + 0.65 * p_model
         return float(final_prob)
 
     def _support_signals(self, row: pd.Series, p_model: float, p_market: float, market: str, odds: int) -> tuple[int, dict[str, float]]:
