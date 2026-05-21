@@ -185,6 +185,18 @@ def fetch_espn_injuries():
     if not injuries:
         print(f"[ESPN WARNING] No injury data found after trying all URLs and user agents")
     
+    # Remove empty teams
+    print(f"[ESPN DEBUG] Before filtering: {len(injuries)} teams")
+    for team, players in injuries.items():
+        print(f"[ESPN DEBUG]   {team}: {len(players)} players")
+    
+    injuries = {team: players for team, players in injuries.items() if players}
+    print(f"[ESPN] Found {len(injuries)} teams with injuries")
+    
+    # Final debug summary
+    total_players = sum(len(players) for players in injuries.values())
+    print(f"[ESPN DEBUG] Final result: {len(injuries)} teams, {total_players} total injured players")
+    
     return injuries
 
 def _parse_html_tables(content):
@@ -301,20 +313,6 @@ def _extract_players_from_modern_element(element):
             players[text] = status
     
     return players
-
-    # Remove empty teams
-    print(f"[ESPN DEBUG] Before filtering: {len(injuries)} teams")
-    for team, players in injuries.items():
-        print(f"[ESPN DEBUG]   {team}: {len(players)} players")
-    
-    injuries = {team: players for team, players in injuries.items() if players}
-    print(f"[ESPN] Found {len(injuries)} teams with injuries")
-    
-    # Final debug summary
-    total_players = sum(len(players) for players in injuries.values())
-    print(f"[ESPN DEBUG] Final result: {len(injuries)} teams, {total_players} total injured players")
-    
-    return injuries
 
 def run_injury_pipeline():
     """Run the injury scraping and save to JSON."""
