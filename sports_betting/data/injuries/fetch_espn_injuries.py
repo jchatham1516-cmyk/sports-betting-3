@@ -4,8 +4,11 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
-# Try multiple URLs as ESPN may have changed their structure
-URLS_TO_TRY = [
+# ESPN API endpoint for injury data
+ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
+
+# Fallback HTML URLs in case API fails
+FALLBACK_URLS = [
     "https://www.espn.com/nba/injuries",
     "https://www.espn.com/nba/injuries/_/type/injury-report", 
     "https://www.espn.com/nba/players/injuries",
@@ -31,6 +34,150 @@ def get_headers(user_agent):
         "Connection": "keep-alive",
         "Upgrade-Insecure-Requests": "1",
     }
+
+def get_api_headers():
+    """Headers for ESPN API requests."""
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.espn.com/",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+    }
+
+def fetch_espn_api_injuries():
+    """Fetch injury data from ESPN API."""
+    print(f"[ESPN API] Fetching data from: {ESPN_API_URL}")
+    
+    try:
+        headers = get_api_headers()
+        response = requests.get(ESPN_API_URL, headers=headers, timeout=30)
+        print(f"[ESPN API] Response status: {response.status_code}")
+        
+        if response.status_code != 200:
+            print(f"[ESPN API] Failed with status {response.status_code}")
+            return {}
+            
+        data = response.json()
+        print(f"[ESPN API] Successfully parsed JSON response")
+        
+        # Debug: Print the top-level keys
+        if isinstance(data, dict):
+            print(f"[ESPN API DEBUG] Top-level keys: {list(data.keys())}")
+        else:
+            print(f"[ESPN API DEBUG] Response is not a dict: {type(data)}")
+            return {}
+        
+        # Check for the 'injuries' key as mentioned in the issue
+        if 'injuries' in data:
+            injuries_data = data['injuries']
+            print(f"[ESPN API DEBUG] Found 'injuries' key with type: {type(injuries_data)}")
+            
+            if isinstance(injuries_data, list):
+                print(f"[ESPN API DEBUG] 'injuries' is a list with {len(injuries_data)} items")
+                if injuries_data:
+                    # Print structure of first item for debugging
+                    first_item = injuries_data[0]
+                    if isinstance(first_item, dict):
+                        print(f"[ESPN API DEBUG] First injury item keys: {list(first_item.keys())}")
+                    else:
+                        print(f"[ESPN API DEBUG] First injury item type: {type(first_item)}")
+            elif isinstance(injuries_data, dict):
+                print(f"[ESPN API DEBUG] 'injuries' is a dict with keys: {list(injuries_data.keys())}")
+            else:
+                print(f"[ESPN API DEBUG] 'injuries' has unexpected type: {type(injuries_data)}")
+            
+            # Parse the injuries data
+            return parse_api_injuries_data(injuries_data)
+        else:
+            print("[ESPN API DEBUG] 'injuries' key not found in response")
+            # Print available keys for debugging
+            available_keys = list(data.keys()) if isinstance(data, dict) else []
+            print(f"[ESPN API DEBUG] Available keys: {available_keys}")
+            return {}
+            
+    except requests.RequestException as e:
+        print(f"[ESPN API] Request failed: {e}")
+        return {}
+    except json.JSONDecodeError as e:
+        print(f"[ESPN API] Failed to parse JSON: {e}")
+        return {}
+    except Exception as e:
+        print(f"[ESPN API] Unexpected error: {e}")
+        return {}
+
+def parse_api_injuries_data(injuries_data):
+    """Parse injury data from ESPN API response."""
+    print(f"[ESPN API] Parsing injuries data...")
+    injuries = {}
+    
+    if isinstance(injuries_data, list):
+        for item in injuries_data:
+            if not isinstance(item, dict):
+                continue
+                
+            # Debug: Print keys for each item
+            print(f"[ESPN API DEBUG] Processing item with keys: {list(item.keys())}")
+            
+            # Try to extract team information
+            team_name = None
+            if 'team' in item:
+                team_data = item['team']
+                if isinstance(team_data, dict):
+                    team_name = team_data.get('displayName') or team_data.get('name') or team_data.get('shortDisplayName')
+            
+            # Try alternative team key names
+            if not team_name:
+                team_name = item.get('teamName') or item.get('teamDisplayName')
+            
+            if not team_name:
+                print(f"[ESPN API DEBUG] Could not find team name in item")
+                continue
+                
+            print(f"[ESPN API DEBUG] Found team: {team_name}")
+            
+            # Try to extract player injury information
+            players = {}
+            
+            # Look for player data in various possible keys
+            player_keys = ['athletes', 'players', 'injuries']
+            for key in player_keys:
+                if key in item:
+                    player_data = item[key]
+                    if isinstance(player_data, list):
+                        print(f"[ESPN API DEBUG] Found {len(player_data)} items in '{key}'")
+                        for player_item in player_data:
+                            if isinstance(player_item, dict):
+                                # Extract player name
+                                player_name = None
+                                if 'athlete' in player_item and isinstance(player_item['athlete'], dict):
+                                    player_name = player_item['athlete'].get('displayName') or player_item['athlete'].get('name')
+                                elif 'displayName' in player_item:
+                                    player_name = player_item['displayName']
+                                elif 'name' in player_item:
+                                    player_name = player_item['name']
+                                
+                                if player_name:
+                                    # Extract injury status
+                                    status = player_item.get('status', 'out')
+                                    if isinstance(status, dict):
+                                        status = status.get('type', 'out')
+                                    players[player_name] = str(status).lower()
+                                    print(f"[ESPN API DEBUG] Added player: {player_name} ({status})")
+            
+            if players:
+                injuries[team_name.lower()] = players
+                print(f"[ESPN API DEBUG] Added {len(players)} players for {team_name}")
+    
+    elif isinstance(injuries_data, dict):
+        # Handle case where injuries_data is a dict instead of list
+        print(f"[ESPN API DEBUG] Processing dict-style injuries data with keys: {list(injuries_data.keys())}")
+        # Add logic here if needed based on actual API structure
+    
+    print(f"[ESPN API] Parsed {len(injuries)} teams with injuries")
+    return injuries
 
 def _safe_team_name(table) -> str:
     """Extract the team name safely."""
@@ -124,66 +271,76 @@ def _extract_injuries_from_json(data, path=""):
     return injuries
 
 def fetch_espn_injuries():
-    """Fetch injury data from ESPN with multiple fallback approaches."""
+    """Fetch injury data from ESPN with API first, then HTML fallback approaches."""
     injuries = {}
     
-    # Try multiple URLs and user agents
-    for url_idx, url in enumerate(URLS_TO_TRY):
-        print(f"[ESPN DEBUG] Trying URL {url_idx + 1}: {url}")
+    # First try the ESPN API
+    print("[ESPN] Trying ESPN API first...")
+    api_injuries = fetch_espn_api_injuries()
+    if api_injuries:
+        print(f"[ESPN] Successfully got data from API: {len(api_injuries)} teams")
+        injuries.update(api_injuries)
+        return injuries
+    else:
+        print("[ESPN] API failed, falling back to HTML scraping...")
+    
+    # Fallback to HTML scraping with multiple URLs and user agents
+    for url_idx, url in enumerate(FALLBACK_URLS):
+        print(f"[ESPN HTML] Trying URL {url_idx + 1}: {url}")
         
         for ua_idx, user_agent in enumerate(USER_AGENTS):
             headers = get_headers(user_agent)
-            print(f"[ESPN DEBUG] Attempt {ua_idx + 1} with User-Agent: {user_agent[:50]}...")
+            print(f"[ESPN HTML] Attempt {ua_idx + 1} with User-Agent: {user_agent[:50]}...")
             
             try:
                 response = requests.get(url, headers=headers, timeout=30)
-                print(f"[ESPN DEBUG] Response status: {response.status_code}")
+                print(f"[ESPN HTML] Response status: {response.status_code}")
                 
                 if response.status_code != 200:
-                    print(f"[ESPN DEBUG] Non-200 status, trying next...")
+                    print(f"[ESPN HTML] Non-200 status, trying next...")
                     continue
                     
                 content = response.text
-                print(f"[ESPN DEBUG] Page content length: {len(content)} characters")
+                print(f"[ESPN HTML] Page content length: {len(content)} characters")
                 
                 # Check if we got blocked (common blocking responses)
                 if any(block_indicator in content.lower() for block_indicator in 
                        ['access denied', 'blocked', 'cloudflare', 'security check', 'rate limited']):
-                    print(f"[ESPN DEBUG] Appears to be blocked, trying next approach...")
+                    print(f"[ESPN HTML] Appears to be blocked, trying next approach...")
                     continue
                 
                 # First try to parse as traditional HTML tables
                 table_injuries = _parse_html_tables(content)
                 if table_injuries:
-                    print(f"[ESPN DEBUG] Successfully extracted {len(table_injuries)} teams from HTML tables")
+                    print(f"[ESPN HTML] Successfully extracted {len(table_injuries)} teams from HTML tables")
                     injuries.update(table_injuries)
                     break
                 
                 # If no tables found, try JSON extraction
                 json_injuries = extract_from_json_data(content)
                 if json_injuries:
-                    print(f"[ESPN DEBUG] Successfully extracted {len(json_injuries)} teams from JSON data")
+                    print(f"[ESPN HTML] Successfully extracted {len(json_injuries)} teams from JSON data")
                     injuries.update(json_injuries)
                     break
                 
                 # If still no data, try modern CSS selectors
                 modern_injuries = _parse_modern_structure(content)
                 if modern_injuries:
-                    print(f"[ESPN DEBUG] Successfully extracted {len(modern_injuries)} teams from modern structure")
+                    print(f"[ESPN HTML] Successfully extracted {len(modern_injuries)} teams from modern structure")
                     injuries.update(modern_injuries)
                     break
                     
-                print(f"[ESPN DEBUG] No injury data found with this URL/user-agent combination")
+                print(f"[ESPN HTML] No injury data found with this URL/user-agent combination")
                 
             except requests.RequestException as e:
-                print(f"[ESPN DEBUG] Request failed: {e}")
+                print(f"[ESPN HTML] Request failed: {e}")
                 continue
         
         if injuries:
             break  # Found data, stop trying other URLs
     
     if not injuries:
-        print(f"[ESPN WARNING] No injury data found after trying all URLs and user agents")
+        print(f"[ESPN WARNING] No injury data found after trying API and all HTML fallback URLs")
     
     # Remove empty teams
     print(f"[ESPN DEBUG] Before filtering: {len(injuries)} teams")
